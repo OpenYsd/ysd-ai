@@ -27,6 +27,8 @@ export interface ChatModel {
   id: string;
   nameAr: string;
   nameEn: string;
+  /** اسم الموفر — يظهر في منتقي النموذج */
+  provider?: string;
 }
 
 interface Msg {
@@ -324,6 +326,9 @@ export function ChatView({
                     {locale === "ar" ? m.nameAr : m.nameEn}
                     {m.id === modelId && <Check size={13} className="text-primary-glow" />}
                   </div>
+                  {m.provider && (
+                    <div className="text-[10.5px] text-ink-faint mt-0.5">{m.provider}</div>
+                  )}
                 </button>
               ))}
             </div>

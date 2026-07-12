@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { listAvailableModels } from "@/lib/ai/registry";
+import { listModelOptions } from "@/lib/ai/registry";
 import { ProjectsView, type ProjectListItem } from "@/components/projects/projects-view";
 
 export default async function ProjectsPage() {
@@ -28,11 +28,7 @@ export default async function ProjectsPage() {
     filesCount: p.files?.[0]?.count ?? 0,
   }));
 
-  const models = listAvailableModels().map((m) => ({
-    id: m.id,
-    nameAr: m.displayNameAr,
-    nameEn: m.displayNameEn,
-  }));
+  const models = listModelOptions();
 
   return <ProjectsView projects={projects} models={models} loadFailed={Boolean(error)} />;
 }

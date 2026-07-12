@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { listAvailableModels } from "@/lib/ai/registry";
+import { listModelOptions } from "@/lib/ai/registry";
 import { SettingsForm } from "@/components/settings/settings-form";
 
 export default async function SettingsPage() {
@@ -14,11 +14,7 @@ export default async function SettingsPage() {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  const models = listAvailableModels().map((m) => ({
-    id: m.id,
-    nameAr: m.displayNameAr,
-    nameEn: m.displayNameEn,
-  }));
+  const models = listModelOptions();
 
   return (
     <SettingsForm

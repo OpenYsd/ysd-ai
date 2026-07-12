@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { listAvailableModels } from "@/lib/ai/registry";
+import { listModelOptions } from "@/lib/ai/registry";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 
 export default async function NewChatPage() {
@@ -8,11 +8,7 @@ export default async function NewChatPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const models: ChatModel[] = listAvailableModels().map((m) => ({
-    id: m.id,
-    nameAr: m.displayNameAr,
-    nameEn: m.displayNameEn,
-  }));
+  const models: ChatModel[] = listModelOptions();
 
   const [{ data: prefs }, { data: profile }] = await Promise.all([
     supabase

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { listAvailableModels } from "@/lib/ai/registry";
+import { listModelOptions } from "@/lib/ai/registry";
 import { ProjectDetail } from "@/components/projects/project-detail";
 
 export default async function ProjectDetailPage({
@@ -45,11 +45,7 @@ export default async function ProjectDetailPage({
       .limit(100),
   ]);
 
-  const models = listAvailableModels().map((m) => ({
-    id: m.id,
-    nameAr: m.displayNameAr,
-    nameEn: m.displayNameEn,
-  }));
+  const models = listModelOptions();
 
   const settings = project.model_settings as { default_model_id?: string } | null;
 

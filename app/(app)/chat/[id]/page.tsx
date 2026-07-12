@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { listAvailableModels } from "@/lib/ai/registry";
+import { listModelOptions } from "@/lib/ai/registry";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 
 export default async function ConversationPage({
@@ -42,11 +42,7 @@ export default async function ConversationPage({
     supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
   ]);
 
-  const models: ChatModel[] = listAvailableModels().map((m) => ({
-    id: m.id,
-    nameAr: m.displayNameAr,
-    nameEn: m.displayNameEn,
-  }));
+  const models: ChatModel[] = listModelOptions();
 
   const candidates = [conv.model_id, prefs?.default_model_id];
   const initialModelId =
