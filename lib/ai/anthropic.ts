@@ -1,6 +1,58 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk } from "./types";
 
+/** تصنيف أخطاء Anthropic إلى رسائل عربية واضحة للمستخدم — دون كشف تفاصيل حساسة */
+export function mapAnthropicError(err: unknown): {
+  status: number | null;
+  kind: string;
+  userMessage: string;
+} {
+  if (err instanceof Anthropic.APIError) {
+    const status = err.status ?? null;
+    const raw = (err.message || "").toLowerCase();
+
+    if (status === 400 && raw.includes("credit balance")) {
+      return {
+        status,
+        kind: "insufficient_credit",
+        userMessage:
+          "رصيد خدمة الذكاء الاصطناعي غير كافٍ حاليًا. تواصل مع إدارة المنصة أو حاول لاحقًا.",
+      };
+    }
+    if (status === 401 || status === 403) {
+      return {
+        status,
+        kind: "auth",
+        userMessage: "إعدادات موفر الذكاء الاصطناعي غير صحيحة. تواصل مع إدارة المنصة.",
+      };
+    }
+    if (status === 429) {
+      return {
+        status,
+        kind: "rate_limit",
+        userMessage: "الخدمة مشغولة حاليًا. انتظر قليلًا ثم أعد المحاولة.",
+      };
+    }
+    if (status === 529 || (status !== null && status >= 500)) {
+      return {
+        status,
+        kind: "overloaded",
+        userMessage: "خدمة الذكاء الاصطناعي غير متاحة مؤقتًا. أعد المحاولة بعد قليل.",
+      };
+    }
+    return {
+      status,
+      kind: "api_error",
+      userMessage: "تعذّر إكمال الطلب لدى موفر الذكاء الاصطناعي.",
+    };
+  }
+  return {
+    status: null,
+    kind: "network",
+    userMessage: "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
+  };
+}
+
 /**
  * الموفر التجريبي الأول: Anthropic
  * المفتاح يُقرأ من البيئة على الخادم فقط — لا يصل للمتصفح أبدًا.
@@ -62,9 +114,10 @@ export class AnthropicProvider implements AIProviderAdapter {
         yield { type: "done" };
         return;
       }
-      // لا نُسرّب تفاصيل حساسة للعميل — التفاصيل تذهب للسجلات فقط
-      console.error("[anthropic] stream error:", err);
-      yield { type: "error", error: "تعذّر إكمال الطلب لدى موفر الذكاء الاصطناعي." };
+      // لا نُسرّب تفاصيل حساسة للعميل — نسجّل الحالة فقط دون أي مفاتيح
+      const mapped = mapAnthropicError(err);
+      console.error(`[anthropic] stream error: status=${mapped.status ?? "?"} kind=${mapped.kind}`);
+      yield { type: "error", error: mapped.userMessage };
     }
   }
 }
