@@ -1,0 +1,226 @@
+import { NextRequest } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { chatRequestSchema } from "@/lib/validation/chat";
+import { resolveProviderForModel } from "@/lib/ai/registry";
+import type { ChatMessage } from "@/lib/ai/types";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
+
+const DEFAULT_TITLE = "محادثة جديدة";
+const SYSTEM_PROMPT =
+  "أنت المساعد الذكي لمنصة YSD AI من YSD AI Studio. تحدث بالعربية افتراضيًا وبلغة المستخدم عند اختلافها. كن عمليًا ودقيقًا، واستخدم Markdown عند الحاجة.";
+
+/** Rate limiting بسيط داخل الذاكرة — يُستبدل بـ Redis/Upstash في الإنتاج */
+const buckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(userId: string, limit = 20, windowMs = 60_000): boolean {
+  const now = Date.now();
+  const b = buckets.get(userId);
+  if (!b || now > b.resetAt) {
+    buckets.set(userId, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (b.count >= limit) return false;
+  b.count++;
+  return true;
+}
+
+export async function POST(req: NextRequest) {
+  const supabase = await createClient();
+
+  // 1) المصادقة — على الخادم دائمًا
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return json({ error: "غير مصرح" }, 401);
+
+  // 2) Rate limiting
+  if (!rateLimit(user.id)) return json({ error: "تجاوزت حد الطلبات، حاول بعد قليل." }, 429);
+
+  // 3) التحقق من المدخلات
+  const parsed = chatRequestSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
+  const { conversationId, modelId, message, editMessageId, regenerate } = parsed.data;
+
+  // 4) التحقق من ملكية المحادثة (RLS يحمي أيضًا — دفاع مزدوج ضد IDOR)
+  const { data: conv } = await supabase
+    .from("conversations")
+    .select("id, title")
+    .eq("id", conversationId)
+    .eq("user_id", user.id)
+    .is("deleted_at", null)
+    .single();
+  if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
+
+  // 5) التحقق من حدود الاستهلاك
+  const { data: allowed } = await supabase.rpc("check_usage_allowed", { p_user_id: user.id });
+  if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
+
+  // 6) اختيار الموفر عبر الطبقة الموحدة
+  const provider = resolveProviderForModel(modelId);
+  if (!provider) return json({ error: "النموذج المطلوب غير متاح." }, 400);
+
+  // 7) تجهيز الرسائل حسب نوع العملية
+  let userMessageId: string | null = null;
+
+  if (editMessageId) {
+    // تعديل رسالة مستخدم سابقة: حدّث النص واحذف (ناعمًا) كل ما بعدها
+    const { data: target } = await supabase
+      .from("messages")
+      .select("id, role, created_at")
+      .eq("id", editMessageId)
+      .eq("conversation_id", conversationId)
+      .is("deleted_at", null)
+      .single();
+    if (!target || target.role !== "user")
+      return json({ error: "الرسالة غير موجودة." }, 404);
+
+    await supabase
+      .from("messages")
+      .update({ content: message })
+      .eq("id", editMessageId);
+    await supabase
+      .from("messages")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("conversation_id", conversationId)
+      .gt("created_at", target.created_at)
+      .is("deleted_at", null);
+    userMessageId = editMessageId;
+  } else if (regenerate) {
+    // إعادة توليد: احذف (ناعمًا) الردود التالية لآخر رسالة مستخدم
+    const { data: lastUser } = await supabase
+      .from("messages")
+      .select("id, created_at")
+      .eq("conversation_id", conversationId)
+      .eq("role", "user")
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    if (!lastUser) return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
+
+    await supabase
+      .from("messages")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("conversation_id", conversationId)
+      .eq("role", "assistant")
+      .gt("created_at", lastUser.created_at)
+      .is("deleted_at", null);
+    userMessageId = lastUser.id;
+  } else {
+    // رسالة جديدة
+    const { data: inserted, error: insertErr } = await supabase
+      .from("messages")
+      .insert({ conversation_id: conversationId, role: "user", content: message })
+      .select("id")
+      .single();
+    if (insertErr || !inserted) return json({ error: "تعذّر حفظ الرسالة." }, 500);
+    userMessageId = inserted.id;
+
+    // عنوان تلقائي من أول رسالة
+    if (conv.title === DEFAULT_TITLE && message) {
+      const title = message.length > 60 ? `${message.slice(0, 60)}…` : message;
+      await supabase.from("conversations").update({ title }).eq("id", conversationId);
+    }
+  }
+
+  // تحديث آخر نشاط للمحادثة
+  await supabase
+    .from("conversations")
+    .update({ updated_at: new Date().toISOString(), model_id: modelId })
+    .eq("id", conversationId);
+
+  // 8) جلب سياق المحادثة (آخر 30 رسالة)
+  const { data: historyRows } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("conversation_id", conversationId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: true })
+    .limit(30);
+
+  const history: ChatMessage[] = (historyRows ?? []).map((m) => ({
+    role: m.role as ChatMessage["role"],
+    content: m.content,
+  }));
+
+  // 9) بث الرد عبر SSE
+  const encoder = new TextEncoder();
+  let assistantText = "";
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      // enqueue آمن — قد ينقطع العميل أثناء البث
+      const send = (obj: unknown) => {
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        } catch {
+          /* العميل أغلق الاتصال */
+        }
+      };
+
+      try {
+        for await (const chunk of provider.streamChat({
+          modelId,
+          messages: history,
+          systemPrompt: SYSTEM_PROMPT,
+          signal: req.signal,
+        })) {
+          if (chunk.type === "text" && chunk.text) {
+            assistantText += chunk.text;
+            send({ type: "text", text: chunk.text });
+          } else if (chunk.type === "usage" && chunk.usage) {
+            await supabase.from("usage_events").insert({
+              user_id: user.id,
+              conversation_id: conversationId,
+              model_id: modelId,
+              input_tokens: chunk.usage.inputTokens,
+              output_tokens: chunk.usage.outputTokens,
+            });
+          } else if (chunk.type === "error") {
+            send({ type: "error", error: chunk.error });
+          }
+        }
+
+        // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف)
+        let assistantMessageId: string | null = null;
+        if (assistantText) {
+          const { data: saved } = await supabase
+            .from("messages")
+            .insert({
+              conversation_id: conversationId,
+              role: "assistant",
+              content: assistantText,
+              model_id: modelId,
+            })
+            .select("id")
+            .single();
+          assistantMessageId = saved?.id ?? null;
+        }
+        send({ type: "done", userMessageId, assistantMessageId });
+      } catch (err) {
+        console.error("[chat] stream failed:", err);
+        send({ type: "error", error: "حدث خطأ أثناء توليد الرد." });
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          /* مغلق مسبقًا */
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}

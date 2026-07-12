@@ -1,0 +1,99 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: "IBM Plex Sans Arabic";
+  --font-display: "Noto Kufi Arabic";
+}
+
+/* ===== هوية YSD AI — الوضع الداكن (الافتراضي) ===== */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-night: 13 9 24;
+  --c-surface: 21 15 40;
+  --c-raised: 26 19 48;
+  --c-line: 42 33 72;
+  --c-primary: 108 75 240;
+  --c-primary-deep: 78 46 212;
+  --c-primary-glow: 139 108 246;
+  --c-ink: 216 210 238;
+  --c-ink-strong: 242 238 255;
+  --c-ink-dim: 139 127 184;
+  --c-ink-faint: 110 95 160;
+  --bg-app: radial-gradient(1200px 700px at 85% -10%, #1e1440 0%, #0d0918 55%);
+  --scrollbar: #2e2450;
+}
+
+/* ===== الوضع الفاتح ===== */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --c-night: 250 249 254;
+  --c-surface: 243 240 252;
+  --c-raised: 255 255 255;
+  --c-line: 226 220 244;
+  --c-primary: 100 66 232;
+  --c-primary-deep: 78 46 212;
+  --c-primary-glow: 124 92 255;
+  --c-ink: 43 36 64;
+  --c-ink-strong: 23 16 46;
+  --c-ink-dim: 110 99 154;
+  --c-ink-faint: 151 141 190;
+  --bg-app: radial-gradient(1200px 700px at 85% -10%, #e9e2fb 0%, #faf9fe 55%);
+  --scrollbar: #d5ccef;
+}
+
+body {
+  background: var(--bg-app);
+  background-attachment: fixed;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 8px;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise {
+  animation: rise 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+  }
+}
+
+textarea:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgb(var(--c-primary-glow) / 0.35);
+  outline-offset: 1px;
+}
