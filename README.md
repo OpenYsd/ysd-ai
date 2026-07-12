@@ -38,6 +38,11 @@ npm run dev
 npm run typecheck && npm run lint && npm run build && npm test
 ```
 
+> ⚠️ **لا تشغّل `npm run build` أثناء عمل `npm run dev`** — كلاهما يكتب في `.next` نفسه،
+> وسيؤدي ذلك إلى صفحات بلا CSS (روابط أصول قديمة ترجع 404).
+> إن حدث ذلك: أوقف الخادم، احذف `.next`، ثم شغّل `npm run dev` من جديد.
+> اختبار `tests/styling-e2e.test.ts` (مع `YSD_E2E=1`) يكتشف هذه الحالة آليًا.
+
 ## بنية المشروع
 
 ```
