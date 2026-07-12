@@ -27,6 +27,9 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
 
+  // مسارات API تتحقق من الجلسة بنفسها وترجع 401 JSON — لا توجيه لصفحة HTML
+  if (path.startsWith("/api")) return response;
+
   // حماية الصفحات الخاصة
   if (!user && !isPublic && path !== "/") {
     return NextResponse.redirect(new URL("/login", request.url));
