@@ -33,12 +33,28 @@ export async function POST(req: NextRequest) {
   );
   if (!parsed.success) return json({ error: "بيانات غير صحيحة." }, 400);
 
+  // عند الإنشاء داخل مشروع: تحقق من ملكية المشروع + اعتمد نموذجه الافتراضي
+  let projectModelId: string | null = null;
+  if (parsed.data.projectId) {
+    const { data: proj } = await supabase
+      .from("projects")
+      .select("id, model_settings")
+      .eq("id", parsed.data.projectId)
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (!proj) return json({ error: "المشروع غير موجود." }, 404);
+    const settings = proj.model_settings as { default_model_id?: string } | null;
+    projectModelId = settings?.default_model_id ?? null;
+  }
+
   const { data, error } = await supabase
     .from("conversations")
     .insert({
       user_id: user.id,
       title: parsed.data.title ?? "محادثة جديدة",
       project_id: parsed.data.projectId ?? null,
+      model_id: projectModelId,
     })
     .select("id, title")
     .single();

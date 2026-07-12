@@ -43,12 +43,27 @@ export async function POST(req: NextRequest) {
   // 4) التحقق من ملكية المحادثة (RLS يحمي أيضًا — دفاع مزدوج ضد IDOR)
   const { data: conv } = await supabase
     .from("conversations")
-    .select("id, title")
+    .select("id, title, project_id")
     .eq("id", conversationId)
     .eq("user_id", user.id)
     .is("deleted_at", null)
     .single();
   if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
+
+  // تعليمات المشروع الخاصة تُضاف إلى موجه النظام
+  let systemPrompt = SYSTEM_PROMPT;
+  if (conv.project_id) {
+    const { data: proj } = await supabase
+      .from("projects")
+      .select("custom_instructions")
+      .eq("id", conv.project_id)
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (proj?.custom_instructions) {
+      systemPrompt = `${SYSTEM_PROMPT}\n\nتعليمات خاصة من صاحب المشروع:\n${proj.custom_instructions}`;
+    }
+  }
 
   // 5) التحقق من حدود الاستهلاك
   const { data: allowed } = await supabase.rpc("check_usage_allowed", { p_user_id: user.id });
@@ -122,11 +137,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // تحديث آخر نشاط للمحادثة
+  // تحديث آخر نشاط للمحادثة والمشروع المرتبط
   await supabase
     .from("conversations")
     .update({ updated_at: new Date().toISOString(), model_id: modelId })
     .eq("id", conversationId);
+  if (conv.project_id) {
+    await supabase
+      .from("projects")
+      .update({ last_activity_at: new Date().toISOString() })
+      .eq("id", conv.project_id)
+      .eq("user_id", user.id);
+  }
 
   // 8) جلب سياق المحادثة (آخر 30 رسالة)
   const { data: historyRows } = await supabase
@@ -161,7 +183,7 @@ export async function POST(req: NextRequest) {
         for await (const chunk of provider.streamChat({
           modelId,
           messages: history,
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt,
           signal: req.signal,
         })) {
           if (chunk.type === "text" && chunk.text) {

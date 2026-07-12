@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { renameConversationSchema } from "@/lib/validation/chat";
+import { updateConversationSchema } from "@/lib/validation/chat";
 
 export const runtime = "nodejs";
 
 const idSchema = z.string().uuid();
 
-/** إعادة تسمية محادثة */
+/** تعديل محادثة: إعادة تسمية و/أو ربط/فك ربط بمشروع */
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -19,13 +19,30 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "غير مصرح" }, 401);
 
-  const parsed = renameConversationSchema.safeParse(await req.json().catch(() => null));
+  const parsed = updateConversationSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: "بيانات غير صحيحة." }, 400);
+
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (parsed.data.title !== undefined) update.title = parsed.data.title;
+  if (parsed.data.projectId !== undefined) {
+    // عند الربط: تحقق أن المشروع ملك المستخدم نفسه — منع الربط بمشاريع الغير
+    if (parsed.data.projectId !== null) {
+      const { data: proj } = await supabase
+        .from("projects")
+        .select("id")
+        .eq("id", parsed.data.projectId)
+        .eq("user_id", user.id)
+        .is("deleted_at", null)
+        .maybeSingle();
+      if (!proj) return json({ error: "المشروع غير موجود." }, 404);
+    }
+    update.project_id = parsed.data.projectId;
+  }
 
   // RLS يضمن الملكية، وشرط user_id دفاع إضافي ضد IDOR
   const { data, error } = await supabase
     .from("conversations")
-    .update({ title: parsed.data.title, updated_at: new Date().toISOString() })
+    .update(update)
     .eq("id", id)
     .eq("user_id", user.id)
     .is("deleted_at", null)

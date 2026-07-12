@@ -179,9 +179,111 @@ check("DELETE حذف ناعم → 200", apiDelete.status === 200, `HTTP ${apiDel
 const gone = await a.from("conversations").select("id").eq("id", apiConvId).is("deleted_at", null);
 check("المحادثة المحذوفة لا تظهر", gone.data?.length === 0);
 
+console.log("\n=== 5ب) المشاريع: API + عزل RLS ===");
+// إنشاء مشروع عبر API
+const projCreate = await fetch(`${APP}/api/projects`, {
+  method: "POST",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({
+    name: "مشروع اختبار",
+    description: "وصف تجريبي",
+    customInstructions: "أجب دائمًا باختصار شديد.",
+  }),
+});
+const projBody = await projCreate.json().catch(() => null);
+check("POST /api/projects → 201", projCreate.status === 201, `HTTP ${projCreate.status}`);
+const projId = projBody?.project?.id;
+
+const projValidation = await fetch(`${APP}/api/projects`, {
+  method: "POST",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({ name: "" }),
+});
+check("Zod يرفض اسمًا فارغًا → 400", projValidation.status === 400, `HTTP ${projValidation.status}`);
+
+const projList = await fetch(`${APP}/api/projects`, { headers: jsonHeaders(cookieA) });
+const projListBody = await projList.json().catch(() => null);
+check(
+  "GET /api/projects يرجع المشروع مع العدادات",
+  projList.status === 200 &&
+    projListBody?.projects?.some((p) => p.id === projId && Array.isArray(p.conversations)),
+  `HTTP ${projList.status}`,
+);
+
+const projPatch = await fetch(`${APP}/api/projects/${projId}`, {
+  method: "PATCH",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({ name: "مشروع معدّل" }),
+});
+check("PATCH تعديل المشروع → 200", projPatch.status === 200, `HTTP ${projPatch.status}`);
+
+// إنشاء محادثة داخل المشروع
+const convInProj = await fetch(`${APP}/api/conversations`, {
+  method: "POST",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({ projectId: projId }),
+});
+const convInProjBody = await convInProj.json().catch(() => null);
+check("إنشاء محادثة داخل المشروع → 201", convInProj.status === 201, `HTTP ${convInProj.status}`);
+const projConvId = convInProjBody?.conversation?.id;
+const linkedCheck = await a.from("conversations").select("project_id").eq("id", projConvId).single();
+check("المحادثة مرتبطة بالمشروع فعلًا", linkedCheck.data?.project_id === projId);
+
+// فك الربط ثم إعادة الربط عبر PATCH /api/conversations
+const unlinkRes = await fetch(`${APP}/api/conversations/${projConvId}`, {
+  method: "PATCH",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({ projectId: null }),
+});
+const unlinkedCheck = await a.from("conversations").select("project_id").eq("id", projConvId).single();
+check("فك ربط المحادثة", unlinkRes.status === 200 && unlinkedCheck.data?.project_id === null, `HTTP ${unlinkRes.status}`);
+const relinkRes = await fetch(`${APP}/api/conversations/${projConvId}`, {
+  method: "PATCH",
+  headers: jsonHeaders(cookieA),
+  body: JSON.stringify({ projectId: projId }),
+});
+check("إعادة ربط المحادثة", relinkRes.status === 200, `HTTP ${relinkRes.status}`);
+
+// عزل RLS: ب لا يرى ولا يعدل ولا يربط بمشروع أ
+const projSpy1 = await b.from("projects").select("id").eq("id", projId);
+check("ب لا يرى مشروع أ (RLS)", projSpy1.data?.length === 0);
+const projSpy2 = await fetch(`${APP}/api/projects/${projId}`, {
+  method: "PATCH",
+  headers: jsonHeaders(cookieB),
+  body: JSON.stringify({ name: "اختراق" }),
+});
+check("IDOR: ب لا يعدل مشروع أ عبر API → 404", projSpy2.status === 404, `HTTP ${projSpy2.status}`);
+const projSpy3 = await fetch(`${APP}/api/projects/${projId}`, { headers: jsonHeaders(cookieB) });
+check("IDOR: ب لا يقرأ مشروع أ عبر API → 404", projSpy3.status === 404, `HTTP ${projSpy3.status}`);
+// ب يحاول إنشاء محادثة داخل مشروع أ
+const projSpy4 = await fetch(`${APP}/api/conversations`, {
+  method: "POST",
+  headers: jsonHeaders(cookieB),
+  body: JSON.stringify({ projectId: projId }),
+});
+check("ب لا ينشئ محادثة داخل مشروع أ → 404", projSpy4.status === 404, `HTTP ${projSpy4.status}`);
+// ب يحاول ربط محادثته بمشروع أ
+const bConv = await b.from("conversations").insert({ user_id: signupB.data.user.id, title: "محادثة ب" }).select("id").single();
+const projSpy5 = await fetch(`${APP}/api/conversations/${bConv.data?.id}`, {
+  method: "PATCH",
+  headers: jsonHeaders(cookieB),
+  body: JSON.stringify({ projectId: projId }),
+});
+check("ب لا يربط محادثته بمشروع أ → 404", projSpy5.status === 404, `HTTP ${projSpy5.status}`);
+
+// حذف المشروع (ناعم) وفك ربط محادثاته
+const projDel = await fetch(`${APP}/api/projects/${projId}`, { method: "DELETE", headers: jsonHeaders(cookieA) });
+check("DELETE حذف المشروع → 200", projDel.status === 200, `HTTP ${projDel.status}`);
+const goneProj = await a.from("projects").select("id").eq("id", projId).is("deleted_at", null);
+check("المشروع المحذوف لا يظهر", goneProj.data?.length === 0);
+const orphaned = await a.from("conversations").select("project_id").eq("id", projConvId).single();
+check("محادثات المشروع المحذوف فُك ربطها وبقيت", orphaned.data?.project_id === null);
+
 console.log("\n=== 6) تنظيف ===");
 const clean1 = await a.from("conversations").update({ deleted_at: new Date().toISOString() }).eq("id", convId);
 check("حذف ناعم لمحادثة الاختبار", !clean1.error, clean1.error?.message);
+await a.from("conversations").update({ deleted_at: new Date().toISOString() }).eq("id", projConvId);
+if (bConv.data?.id) await b.from("conversations").update({ deleted_at: new Date().toISOString() }).eq("id", bConv.data.id);
 console.log(`  ℹ مستخدما الاختبار (${emailA.split("@")[0]}…, ${emailB.split("@")[0]}…) يحتاجان service role للحذف الكامل — تُركا.`);
 
 console.log(`\n========================================`);

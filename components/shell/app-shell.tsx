@@ -262,7 +262,6 @@ function ShellInner({ userName, tier, conversations, children }: AppShellProps) 
             href="/projects"
             icon={<FolderKanban size={15} />}
             label={t("projects")}
-            badge={t("comingSoon")}
             collapsed={collapsed}
             active={pathname.startsWith("/projects")}
           />

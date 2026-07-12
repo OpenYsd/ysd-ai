@@ -22,6 +22,12 @@ export const createConversationSchema = z.object({
   projectId: z.string().uuid().optional(),
 });
 
-export const renameConversationSchema = z.object({
-  title: z.string().min(1).max(120),
-});
+export const updateConversationSchema = z
+  .object({
+    title: z.string().min(1).max(120).optional(),
+    /** ربط بمشروع (uuid) أو فك الربط (null) */
+    projectId: z.string().uuid().nullable().optional(),
+  })
+  .refine((d) => d.title !== undefined || d.projectId !== undefined, {
+    message: "لا يوجد ما يُحدّث",
+  });
