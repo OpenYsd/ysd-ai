@@ -157,7 +157,7 @@ const bad3 = await upload(A.cookie, "fake.pdf", "text/plain", Buffer.from("not p
 check("رفض عدم تطابق الامتداد/MIME → 400", bad3.status === 400, `HTTP ${bad3.status}`);
 const big = Buffer.alloc(11 * 1024 * 1024, 65); // 11MB > حد free (10MB)
 const bad4 = await upload(A.cookie, "big.txt", "text/plain", big);
-check("رفض تجاوز حد الحجم → 413", bad4.status === 413, `HTTP ${bad4.status}`);
+check("رفض تجاوز حد الحجم → 413", bad4.status === 413, `HTTP ${bad4.status} ${bad4.body?.error ?? ""}`);
 
 console.log("\n=== 5) فشل الاستخراج → failed مع السبب ===");
 const corrupt = Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.from([0, 1, 2, 3, 4, 5])]);
@@ -223,7 +223,7 @@ check("ب لا يحذف ملف أ → 404", spy3.status === 404, `HTTP ${spy3.st
 const spy4 = await B.client.from("files").select("id").eq("id", txtId);
 check("RLS: ب لا يرى الصف مباشرة", spy4.data?.length === 0);
 // وصول مباشر للتخزين بمسار أ
-const aPath = txtRow?.storage_path;
+const aPath = txtRow?.storage_path ?? `${A.userId}/general/unknown/file.txt`;
 const spy5 = await B.client.storage.from("files").download(aPath);
 check("Storage: ب لا ينزّل بمسار أ", Boolean(spy5.error));
 const spy6 = await B.client.storage.from("files").createSignedUrl(aPath, 60);
@@ -231,6 +231,22 @@ check("Storage: ب لا يوقّع رابطًا لمسار أ", Boolean(spy6.err
 // ب لا يرفع في مجلد أ
 const spy7 = await B.client.storage.from("files").upload(`${A.userId}/general/x/hack.txt`, Buffer.from("x"));
 check("Storage: ب لا يرفع في مجلد أ", Boolean(spy7.error));
+
+console.log("\n=== 8ب) قيود الـ Bucket نفسها ===");
+// خاص: الوصول العام المباشر (بدون توقيع) يجب أن يفشل
+const publicUrl = `${URL_}/storage/v1/object/public/files/${aPath}`;
+const pubRes = await fetch(publicUrl);
+check("Bucket خاص: لا وصول عامًا بدون توقيع", pubRes.status !== 200, `HTTP ${pubRes.status}`);
+// تقييد MIME على مستوى المزود (migration 0006): رفع نوع محظور مباشرة إلى Storage
+const mimeBypass = await A.client.storage
+  .from("files")
+  .upload(`${A.userId}/general/qa-mime/evil.bin`, Buffer.from("MZ..."), {
+    contentType: "application/x-msdownload",
+  });
+check("Bucket يرفض MIME محظورًا حتى بتجاوز API (0006)", Boolean(mimeBypass.error), mimeBypass.error?.message?.slice(0, 60) ?? "uploaded!");
+if (!mimeBypass.error) {
+  await A.client.storage.from("files").remove([`${A.userId}/general/qa-mime/evil.bin`]);
+}
 
 console.log("\n=== 9) البقاء بعد التحديث ثم الحذف ===");
 const again = await fileRow(A.client, txtId);

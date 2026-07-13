@@ -6,6 +6,7 @@ import {
   buildStoragePath,
   resolveAllowedType,
   sanitizeFileName,
+  storageSafeName,
 } from "@/lib/files/config";
 import {
   FILES_BUCKET,
@@ -35,7 +36,8 @@ export async function POST(req: NextRequest) {
   let form: FormData;
   try {
     form = await req.formData();
-  } catch {
+  } catch (err) {
+    console.error(`[files] formData parse failed: ${(err as Error).message?.slice(0, 120)}`);
     return json({ error: "طلب غير صحيح | Malformed request" }, 400);
   }
 
@@ -66,11 +68,13 @@ export async function POST(req: NextRequest) {
     getFileUsage(supabase, user.id),
   ]);
   const maxBytes = limits.maxFileMb * 1024 * 1024;
-  if (fileEntry.size > maxBytes)
-    return json(
-      { error: `حجم الملف يتجاوز حد باقتك (${limits.maxFileMb}MB) | File exceeds plan limit` },
-      413,
-    );
+  if (fileEntry.size > maxBytes) {
+    // الحد الفعلي = min(حد الباقة, سقف مزود التخزين)
+    const reason = limits.providerLimited
+      ? `الحد الأقصى الحالي للملف ${limits.maxFileMb} ميجابايت بسبب قيود مزود التخزين. | Current file limit is ${limits.maxFileMb}MB due to storage provider constraints`
+      : `حجم الملف يتجاوز حد باقتك (${limits.maxFileMb}MB) | File exceeds plan limit`;
+    return json({ error: reason }, 413);
+  }
   if (usage.count + 1 > limits.maxFiles)
     return json({ error: `بلغت الحد الأقصى لعدد الملفات (${limits.maxFiles}) | File count limit reached` }, 403);
   if (usage.bytes + fileEntry.size > limits.maxStorageMb * 1024 * 1024)
@@ -91,8 +95,14 @@ export async function POST(req: NextRequest) {
   }
 
   const fileId = crypto.randomUUID();
+  // الاسم الأصلي (يدعم العربية) للعرض — ومفتاح ASCII آمن للتخزين
   const safeName = sanitizeFileName(fileEntry.name);
-  const storagePath = buildStoragePath(user.id, projectId ?? null, fileId, safeName);
+  const storagePath = buildStoragePath(
+    user.id,
+    projectId ?? null,
+    fileId,
+    storageSafeName(fileEntry.name),
+  );
 
   // صف قاعدة البيانات أولًا (status: uploaded)
   const { error: insertError } = await supabase.from("files").insert({

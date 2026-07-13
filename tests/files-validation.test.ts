@@ -2,8 +2,11 @@
 import { describe, it, expect } from "vitest";
 import {
   buildStoragePath,
+  effectiveFileLimitMb,
   resolveAllowedType,
   sanitizeFileName,
+  storageSafeName,
+  STORAGE_PROVIDER_MAX_FILE_MB,
 } from "../lib/files/config";
 
 describe("resolveAllowedType — الامتداد وMIME معًا", () => {
@@ -57,6 +60,36 @@ describe("sanitizeFileName — منع path traversal", () => {
   });
   it("لا يُرجع اسمًا فارغًا", () => {
     expect(sanitizeFileName("///")).toBe("file");
+  });
+});
+
+describe("storageSafeName — مفتاح تخزين ASCII آمن", () => {
+  it("الاسم العربي يتحول لمفتاح آمن مع بقاء الامتداد", () => {
+    expect(storageSafeName("ملاحظات.txt")).toBe("file.txt");
+    expect(storageSafeName("تقرير المشروع.pdf")).toBe("file.pdf");
+  });
+  it("الاسم اللاتيني يبقى", () => {
+    expect(storageSafeName("report-v2.pdf")).toBe("report-v2.pdf");
+  });
+  it("الخليط ينتج مفتاحًا ASCII صالحًا", () => {
+    expect(storageSafeName("تقرير report نهائي.docx")).toMatch(/^[A-Za-z0-9._-]+\.docx$/);
+  });
+  it("لا فواصل مسارات ولا traversal", () => {
+    expect(storageSafeName("../../x/ملف.txt")).toMatch(/^[A-Za-z0-9._-]+$/);
+  });
+});
+
+describe("effectiveFileLimitMb — min(حد الباقة, سقف المزود)", () => {
+  it("سقف المزود الحالي 50MB", () => {
+    expect(STORAGE_PROVIDER_MAX_FILE_MB).toBe(50);
+  });
+  it("الباقات الصغيرة تحتفظ بحدها", () => {
+    expect(effectiveFileLimitMb(10)).toBe(10);
+    expect(effectiveFileLimitMb(25)).toBe(25);
+  });
+  it("الحدود التجارية العالية تُقيَّد بسقف المزود دون فقدها", () => {
+    expect(effectiveFileLimitMb(100)).toBe(50);
+    expect(effectiveFileLimitMb(250)).toBe(50);
   });
 });
 

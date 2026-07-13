@@ -6,12 +6,18 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { extractText, MAX_EXTRACTED_CHARS } from "./extract";
+import { effectiveFileLimitMb, STORAGE_PROVIDER_MAX_FILE_MB } from "./config";
 
 export const FILES_BUCKET = "files";
 
 export interface FileLimits {
   tier: string;
+  /** الحد الفعلي = min(حد الباقة, سقف مزود التخزين) */
   maxFileMb: number;
+  /** حد الباقة التجاري (قد يكون أعلى من سقف المزود) */
+  planMaxFileMb: number;
+  /** هل سقف المزود هو المقيّد؟ (لعرض رسالة واضحة للمستخدم) */
+  providerLimited: boolean;
   maxFiles: number;
   maxStorageMb: number;
 }
@@ -34,9 +40,12 @@ export async function getFileLimits(
     .eq("tier", tier)
     .maybeSingle();
 
+  const planMaxFileMb = (limits?.max_file_mb as number | undefined) ?? 10;
   return {
     tier,
-    maxFileMb: (limits?.max_file_mb as number | undefined) ?? 10,
+    maxFileMb: effectiveFileLimitMb(planMaxFileMb),
+    planMaxFileMb,
+    providerLimited: planMaxFileMb > STORAGE_PROVIDER_MAX_FILE_MB,
     maxFiles: (limits?.max_files as number | undefined) ?? 50,
     maxStorageMb: (limits?.max_storage_mb as number | undefined) ?? 200,
   };

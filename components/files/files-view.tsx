@@ -33,7 +33,12 @@ interface FilesViewProps {
   initialFiles: UploadedFileRow[];
   projects: ProjectLite[];
   usage: { count: number; bytes: number };
-  limits: { maxFileMb: number; maxFiles: number; maxStorageMb: number };
+  limits: {
+    maxFileMb: number;
+    maxFiles: number;
+    maxStorageMb: number;
+    providerLimited?: boolean;
+  };
   loadFailed?: boolean;
 }
 
@@ -232,6 +237,9 @@ export function FilesView({
             <p className="text-[11px] text-ink-faint mt-1.5">
               {t("allowedTypesHint")} — {limits.maxFileMb}MB
             </p>
+            {limits.providerLimited && (
+              <p className="text-[11px] text-amber-400/90 mt-1">{t("providerLimitNote")}</p>
+            )}
             <input
               ref={inputRef}
               type="file"

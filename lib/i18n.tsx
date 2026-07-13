@@ -187,6 +187,10 @@ const dict = {
     ar: "الملف رُفع وعولج وربُط بالمحادثة، لكنه لا يدخل سياق الذكاء الاصطناعي بعد (حتى تكتمل مرحلة RAG).",
     en: "File uploaded, processed, and linked to this chat — it won't enter the AI context until the RAG stage is complete.",
   },
+  providerLimitNote: {
+    ar: "الحد الأقصى الحالي للملف 50 ميجابايت بسبب قيود مزود التخزين.",
+    en: "Current maximum file size is 50MB due to storage provider constraints.",
+  },
   projectFiles: { ar: "ملفات المشروع", en: "Project files" },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },
   suggestions: {
