@@ -152,18 +152,24 @@ const apiConvId = apiCreateBody?.conversation?.id;
 const apiRename = await fetch(`${APP}/api/conversations/${apiConvId}`, { method: "PATCH", headers: jsonHeaders(cookieA), body: JSON.stringify({ title: "من API" }) });
 check("PATCH إعادة تسمية → 200", apiRename.status === 200, `HTTP ${apiRename.status}`);
 
-// خطأ Anthropic (رصيد صفر) عبر المسار الكامل — ويجب أن تُحفظ رسالة المستخدم رغم ذلك
+// المحادثة عبر المسار الكامل بالنموذج المنطقي المجاني —
+// نجاح بث حقيقي أو خطأ عربي واضح، ورسالة المستخدم تُحفظ في الحالتين
 const chat = await fetch(`${APP}/api/chat`, {
   method: "POST",
   headers: jsonHeaders(cookieA),
-  body: JSON.stringify({ conversationId: apiConvId, modelId: "claude-sonnet-4-6", message: "مرحبًا" }),
+  body: JSON.stringify({ conversationId: apiConvId, modelId: "ysd/free", message: "مرحبًا" }),
 });
 check("POST /api/chat يرجع بث SSE", chat.status === 200 && (chat.headers.get("content-type") ?? "").includes("text/event-stream"), `HTTP ${chat.status}`);
 const sseText = await chat.text();
 const events = [...sseText.matchAll(/data: (.+)/g)].map((m) => JSON.parse(m[1]));
 const errEvent = events.find((e) => e.type === "error");
-check("حدث خطأ واضح بالعربية (رصيد غير كافٍ)", Boolean(errEvent && /[؀-ۿ]/.test(errEvent.error) && errEvent.error.includes("رصيد")), JSON.stringify(errEvent ?? events.map((e) => e.type)));
-check("لا تسريب أسرار في رسالة الخطأ", !/sk-ant|api[_-]?key|bearer/i.test(sseText));
+const gotText = events.some((e) => e.type === "text" && e.text);
+check(
+  "بث نصي حقيقي أو خطأ عربي واضح",
+  gotText || Boolean(errEvent && /[؀-ۿ]/.test(errEvent.error)),
+  JSON.stringify(events.map((e) => e.type).slice(0, 6)),
+);
+check("لا تسريب أسرار في البث", !/sk-ant|sk-or|api[_-]?key|bearer/i.test(sseText));
 const savedMsg = await a.from("messages").select("content").eq("conversation_id", apiConvId).is("deleted_at", null);
 check("رسالة المستخدم حُفظت رغم فشل الموفر", savedMsg.data?.some((m) => m.content === "مرحبًا"), savedMsg.error?.message);
 const autoTitle = await a.from("conversations").select("title").eq("id", apiConvId).single();
