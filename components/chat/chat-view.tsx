@@ -36,6 +36,8 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  /** النموذج الفعلي الذي أجاب — يُعرض في وضع التطوير فقط */
+  model?: string;
 }
 
 interface ChatViewProps {
@@ -45,12 +47,15 @@ interface ChatViewProps {
   models: ChatModel[];
   initialModelId: string | null;
   greetingName: string;
+  /** وضع التطوير: يعرض معرّف النموذج الفعلي تحت الرد */
+  devMode?: boolean;
 }
 
 interface SSEEvent {
-  type: "text" | "error" | "done";
+  type: "text" | "error" | "done" | "meta";
   text?: string;
   error?: string;
+  model?: string;
   userMessageId?: string | null;
   assistantMessageId?: string | null;
 }
@@ -62,6 +67,7 @@ export function ChatView({
   models,
   initialModelId,
   greetingName,
+  devMode,
 }: ChatViewProps) {
   const { t, locale } = useI18n();
   const router = useRouter();
@@ -163,6 +169,10 @@ export function ChatView({
                 prev.map((m) =>
                   m.id === asstTempId ? { ...m, content: m.content + data.text } : m,
                 ),
+              );
+            } else if (data.type === "meta" && data.model) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === asstTempId ? { ...m, model: data.model } : m)),
               );
             } else if (data.type === "error" && data.error) {
               setError(data.error);
@@ -470,6 +480,11 @@ export function ChatView({
                                 style={{ animation: `pulse-dot 1.1s ${i * 0.18}s infinite` }}
                               />
                             ))}
+                          </div>
+                        )}
+                        {devMode && m.model && !m.streaming && (
+                          <div className="mt-1.5 text-[10px] text-ink-faint" dir="ltr">
+                            {m.model}
                           </div>
                         )}
                         {!m.streaming && m.content && (

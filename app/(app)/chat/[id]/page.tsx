@@ -67,6 +67,7 @@ export default async function ConversationPage({
       models={models}
       initialModelId={initialModelId}
       greetingName={profile?.display_name ?? ""}
+      devMode={process.env.NODE_ENV !== "production"}
     />
   );
 }

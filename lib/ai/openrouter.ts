@@ -1,9 +1,20 @@
-import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk } from "./types";
+import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk, UsageReport } from "./types";
+import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "./free-models";
+import {
+  GUARD_FAILURE_MESSAGE,
+  GUARD_WINDOW_CHARS,
+  STRICT_LANGUAGE_SUFFIX,
+  detectExpectedLanguage,
+  violatesLanguage,
+} from "./language-guard";
 
 /**
- * موفر OpenRouter — عبر واجهة Chat Completions المتوافقة مع OpenAI.
- * النموذج الافتراضي للتطوير: "openrouter/free" — موجّه رسمي من OpenRouter
- * يختار تلقائيًا نموذجًا مجانيًا متاحًا، فلا يعتمد النظام على نموذج مجاني بعينه.
+ * موفر OpenRouter — واجهة Chat Completions المتوافقة مع OpenAI.
+ *
+ * النموذج المنطقي "ysd/free" يُحل إلى سلسلة نماذج مجانية معتمدة
+ * (lib/ai/free-models.ts) بدلًا من الموجّه العشوائي openrouter/free.
+ * حارس اللغة يخزّن أول نافذة من الرد ويوقف النموذج قبل عرض خليط لغات،
+ * ثم يعيد المحاولة مرة واحدة بالنموذج الاحتياطي وبموجه أكثر صرامة.
  * المفتاح يُقرأ من البيئة على الخادم فقط — لا يصل للمتصفح أو السجلات أبدًا.
  */
 
@@ -31,8 +42,7 @@ export function mapOpenRouterError(status: number | null, raw: string): {
   if (status === 429) {
     return {
       kind: "rate_limit",
-      userMessage:
-        "الخدمة المجانية مضغوطة حاليًا. انتظر قليلًا ثم أعد المحاولة.",
+      userMessage: "الخدمة المجانية مضغوطة حاليًا. انتظر قليلًا ثم أعد المحاولة.",
     };
   }
   if (status === 404 || lower.includes("no endpoints") || lower.includes("not found")) {
@@ -55,9 +65,17 @@ export function mapOpenRouterError(status: number | null, raw: string): {
 }
 
 interface SSEDelta {
+  model?: string;
   choices?: { delta?: { content?: string } }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
   error?: { message?: string };
+}
+
+/** نتيجة محاولة واحدة مع نموذج واحد */
+interface AttemptResult {
+  status: "ok" | "guard_violation" | "http_error" | "network_error" | "aborted";
+  httpStatus?: number;
+  errorRaw?: string;
 }
 
 export class OpenRouterProvider implements AIProviderAdapter {
@@ -71,19 +89,79 @@ export class OpenRouterProvider implements AIProviderAdapter {
   listModels(): ModelInfo[] {
     return [
       {
-        id: "openrouter/free",
+        id: YSD_FREE_MODEL_ID,
         providerId: this.id,
         displayNameAr: "YSD مجاني",
         displayNameEn: "YSD Free",
-        contextWindow: 32_000,
+        contextWindow: 131_072,
         enabled: true,
       },
     ];
   }
 
   async *streamChat(req: ChatRequest): AsyncGenerator<StreamChunk> {
+    const chain: readonly string[] =
+      req.modelId === YSD_FREE_MODEL_ID ? FREE_MODEL_CHAIN : [req.modelId];
+
+    const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+    const userText = lastUser?.content ?? "";
+    const expected = detectExpectedLanguage(userText);
+
+    let guardRetryUsed = false;
+    let lastError: { kind: string; userMessage: string } | null = null;
+
+    for (let i = 0; i < chain.length; i++) {
+      const model = chain[i];
+      if (!model) continue;
+      const strict = guardRetryUsed;
+      const result: AttemptResult = yield* this.attempt(req, model, strict, userText, expected);
+
+      if (result.status === "ok" || result.status === "aborted") return;
+
+      if (result.status === "guard_violation") {
+        console.error(`[openrouter] language guard tripped: model=${model} expected=${expected}`);
+        if (!guardRetryUsed && i + 1 < chain.length) {
+          // إعادة محاولة واحدة بالنموذج الاحتياطي وبموجه أكثر صرامة
+          guardRetryUsed = true;
+          continue;
+        }
+        yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+        return;
+      }
+
+      // فشل تقني (429/5xx/شبكة) — جرّب التالي في السلسلة
+      lastError =
+        result.status === "network_error"
+          ? {
+              kind: "network",
+              userMessage: "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
+            }
+          : mapOpenRouterError(result.httpStatus ?? null, result.errorRaw ?? "");
+      console.error(
+        `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} kind=${lastError.kind}`,
+      );
+    }
+
+    yield {
+      type: "error",
+      error: lastError?.userMessage ?? GUARD_FAILURE_MESSAGE,
+    };
+  }
+
+  /**
+   * محاولة واحدة مع نموذج محدد: بث + نافذة حارس اللغة.
+   * لا تُصدر usage إلا عند نجاح المحاولة — فلا يُسجل استهلاك لمحاولة فاشلة.
+   */
+  private async *attempt(
+    req: ChatRequest,
+    model: string,
+    strictPrompt: boolean,
+    userText: string,
+    expected: ReturnType<typeof detectExpectedLanguage>,
+  ): AsyncGenerator<StreamChunk, AttemptResult> {
+    const system = (req.systemPrompt ?? "") + (strictPrompt ? STRICT_LANGUAGE_SUFFIX : "");
     const messages: { role: string; content: string }[] = [];
-    if (req.systemPrompt) messages.push({ role: "system", content: req.systemPrompt });
+    if (system) messages.push({ role: "system", content: system });
     for (const m of req.messages) {
       if (m.role !== "system") messages.push({ role: m.role, content: m.content });
     }
@@ -95,16 +173,16 @@ export class OpenRouterProvider implements AIProviderAdapter {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
-          // تعريف اختياري لدى OpenRouter — لا يحمل أي أسرار
           "HTTP-Referer": "https://ysd.ai",
           "X-Title": "YSD AI",
         },
         body: JSON.stringify({
-          model: req.modelId,
+          model,
           messages,
           stream: true,
           max_tokens: req.maxTokens ?? 2048,
-          temperature: req.temperature,
+          temperature: req.temperature ?? 0.3,
+          top_p: 0.9,
           usage: { include: true },
         }),
         signal: req.signal,
@@ -112,29 +190,25 @@ export class OpenRouterProvider implements AIProviderAdapter {
     } catch {
       if (req.signal?.aborted) {
         yield { type: "done" };
-        return;
+        return { status: "aborted" };
       }
-      console.error("[openrouter] fetch failed: network");
-      yield {
-        type: "error",
-        error: "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
-      };
-      return;
+      return { status: "network_error" };
     }
 
     if (!res.ok || !res.body) {
       const raw = await res.text().catch(() => "");
-      const mapped = mapOpenRouterError(res.status, raw);
-      // السجل يحمل الحالة والتصنيف فقط — لا مفاتيح ولا نص خام
-      console.error(`[openrouter] request failed: status=${res.status} kind=${mapped.kind}`);
-      yield { type: "error", error: mapped.userMessage };
-      return;
+      return { status: "http_error", httpStatus: res.status, errorRaw: raw };
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    let usage: { inputTokens: number; outputTokens: number } | null = null;
+    let usage: UsageReport | null = null;
+    let actualModel = model;
+
+    // نافذة الحارس: نخزّن أول جزء من الرد قبل عرضه
+    let window = "";
+    let windowFlushed = false;
 
     try {
       for (;;) {
@@ -158,31 +232,74 @@ export class OpenRouterProvider implements AIProviderAdapter {
           }
 
           if (chunk.error?.message) {
-            const mapped = mapOpenRouterError(null, chunk.error.message);
-            console.error(`[openrouter] stream error event: kind=${mapped.kind}`);
-            yield { type: "error", error: mapped.userMessage };
-            return;
+            if (windowFlushed) {
+              // الخطأ بعد بدء العرض — نبلغه ونُنهي
+              const mapped = mapOpenRouterError(null, chunk.error.message);
+              console.error(`[openrouter] mid-stream error: kind=${mapped.kind}`);
+              yield { type: "error", error: mapped.userMessage };
+              return { status: "ok" };
+            }
+            await reader.cancel().catch(() => undefined);
+            return { status: "http_error", errorRaw: chunk.error.message };
           }
-          const text = chunk.choices?.[0]?.delta?.content;
-          if (text) yield { type: "text", text };
+
+          if (chunk.model) actualModel = chunk.model;
           if (chunk.usage) {
             usage = {
               inputTokens: chunk.usage.prompt_tokens ?? 0,
               outputTokens: chunk.usage.completion_tokens ?? 0,
             };
           }
+
+          const text = chunk.choices?.[0]?.delta?.content;
+          if (!text) continue;
+
+          if (windowFlushed) {
+            yield { type: "text", text };
+            continue;
+          }
+
+          window += text;
+          if (window.length >= GUARD_WINDOW_CHARS) {
+            const verdict = violatesLanguage(window, expected, userText);
+            if (verdict.violated) {
+              await reader.cancel().catch(() => undefined);
+              return { status: "guard_violation" };
+            }
+            yield { type: "meta", model: actualModel };
+            yield { type: "text", text: window };
+            windowFlushed = true;
+          }
         }
+      }
+
+      // انتهى البث والنافذة لم تُعرض بعد (رد قصير) — افحص ثم اعرض
+      if (!windowFlushed) {
+        const verdict = violatesLanguage(window, expected, userText);
+        if (verdict.violated) return { status: "guard_violation" };
+        yield { type: "meta", model: actualModel };
+        if (window) yield { type: "text", text: window };
       }
 
       if (usage) yield { type: "usage", usage };
       yield { type: "done" };
+      return { status: "ok" };
     } catch {
       if (req.signal?.aborted) {
+        // عرض ما وصل قبل الإيقاف إن لم تكن النافذة عُرضت
+        if (!windowFlushed && window) {
+          yield { type: "meta", model: actualModel };
+          yield { type: "text", text: window };
+        }
         yield { type: "done" };
-        return;
+        return { status: "aborted" };
       }
       console.error("[openrouter] stream read failed");
-      yield { type: "error", error: "انقطع البث أثناء توليد الرد. أعد المحاولة." };
+      if (windowFlushed) {
+        yield { type: "error", error: "انقطع البث أثناء توليد الرد. أعد المحاولة." };
+        return { status: "ok" };
+      }
+      return { status: "network_error" };
     }
   }
 }

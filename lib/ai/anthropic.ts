@@ -85,7 +85,8 @@ export class AnthropicProvider implements AIProviderAdapter {
         {
           model: req.modelId,
           max_tokens: req.maxTokens ?? 2048,
-          temperature: req.temperature,
+          // Anthropic توصي بضبط temperature أو top_p لا كليهما
+          temperature: req.temperature ?? 0.3,
           system: req.systemPrompt,
           messages: req.messages
             .filter((m) => m.role !== "system")

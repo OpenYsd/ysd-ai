@@ -8,8 +8,14 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const DEFAULT_TITLE = "محادثة جديدة";
-const SYSTEM_PROMPT =
-  "أنت المساعد الذكي لمنصة YSD AI من YSD AI Studio. تحدث بالعربية افتراضيًا وبلغة المستخدم عند اختلافها. كن عمليًا ودقيقًا، واستخدم Markdown عند الحاجة.";
+const SYSTEM_PROMPT = `أنت YSD AI، مساعد ذكي احترافي تابع لمنصة YSD AI Studio.
+أجب دائمًا بلغة آخر رسالة كتبها المستخدم، حتى لو كانت المحادثة بدأت بلغة أخرى.
+عندما يكتب المستخدم بالعربية، استخدم العربية فقط، باستثناء أسماء التقنيات والأكواد عند الحاجة.
+عندما يكتب بالإنجليزية أو لغة أخرى، أجب بتلك اللغة.
+لا تخلط العربية مع لغات أخرى.
+لا تخترع اسم منشئ أو شركة أو معلومات شخصية.
+لا تدّعِ أنك طورت المنتج.
+اكتب بإجابة واضحة ومنظمة ومباشرة.`;
 
 /** Rate limiting بسيط داخل الذاكرة — يُستبدل بـ Redis/Upstash في الإنتاج */
 const buckets = new Map<string, { count: number; resetAt: number }>();
@@ -167,6 +173,8 @@ export async function POST(req: NextRequest) {
   // 9) بث الرد عبر SSE
   const encoder = new TextEncoder();
   let assistantText = "";
+  // النموذج الفعلي الذي أجاب (قد يختلف عن المنطقي مثل ysd/free)
+  let actualModelId: string | null = null;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -189,11 +197,15 @@ export async function POST(req: NextRequest) {
           if (chunk.type === "text" && chunk.text) {
             assistantText += chunk.text;
             send({ type: "text", text: chunk.text });
+          } else if (chunk.type === "meta" && chunk.model) {
+            actualModelId = chunk.model;
+            // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
+            send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
             await supabase.from("usage_events").insert({
               user_id: user.id,
               conversation_id: conversationId,
-              model_id: modelId,
+              model_id: actualModelId ?? modelId,
               input_tokens: chunk.usage.inputTokens,
               output_tokens: chunk.usage.outputTokens,
             });
@@ -211,7 +223,7 @@ export async function POST(req: NextRequest) {
               conversation_id: conversationId,
               role: "assistant",
               content: assistantText,
-              model_id: modelId,
+              model_id: actualModelId ?? modelId,
             })
             .select("id")
             .single();

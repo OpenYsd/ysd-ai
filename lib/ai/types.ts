@@ -30,10 +30,12 @@ export interface UsageReport {
 }
 
 export interface StreamChunk {
-  type: "text" | "usage" | "done" | "error";
+  type: "text" | "usage" | "done" | "error" | "meta";
   text?: string;
   usage?: UsageReport;
   error?: string;
+  /** معرّف النموذج الفعلي الذي أجاب (مع "meta") — للتسجيل والعرض في التطوير */
+  model?: string;
 }
 
 export interface ModelInfo {
