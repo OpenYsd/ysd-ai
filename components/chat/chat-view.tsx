@@ -14,10 +14,14 @@ import {
   Check,
   ChevronDown,
   Copy,
+  FileText,
+  Loader2,
+  Paperclip,
   Pencil,
   RefreshCw,
   Square,
 } from "lucide-react";
+import { uploadWithProgress } from "@/components/files/upload";
 import { useI18n } from "@/lib/i18n";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
@@ -82,6 +86,10 @@ export function ChatView({
   const [modelOpen, setModelOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [attachments, setAttachments] = useState<
+    { id: string; name: string; status: string }[]
+  >([]);
+  const [attachProgress, setAttachProgress] = useState<number | null>(null);
 
   const convIdRef = useRef<string | null>(conversationId);
   const abortRef = useRef<AbortController | null>(null);
@@ -213,6 +221,57 @@ export function ChatView({
     [router, t],
   );
 
+  /** إنشاء المحادثة عند الحاجة (أول رسالة أو أول مرفق) */
+  const ensureConversation = useCallback(async (): Promise<string | null> => {
+    const existing = convIdRef.current;
+    if (existing) return existing;
+    try {
+      const res = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error();
+      const j = (await res.json()) as { conversation: { id: string } };
+      convIdRef.current = j.conversation.id;
+      // تحديث الرابط دون إعادة تحميل الصفحة
+      window.history.replaceState(null, "", `/chat/${j.conversation.id}`);
+      return j.conversation.id;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /** إرفاق ملف: رفع + ربط بالمحادثة فقط — لا يدخل سياق النموذج قبل RAG */
+  const attachFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      const convId = await ensureConversation();
+      if (!convId) {
+        setError(t("sendError"));
+        return;
+      }
+      setAttachProgress(0);
+      const handle = uploadWithProgress({
+        file,
+        conversationId: convId,
+        onProgress: setAttachProgress,
+      });
+      const res = await handle.done;
+      setAttachProgress(null);
+      if (res.ok && res.file) {
+        setAttachments((prev) => [
+          ...prev,
+          { id: res.file!.id, name: res.file!.original_name, status: res.file!.status },
+        ]);
+        router.refresh();
+      } else if (res.error && res.error !== "aborted") {
+        setError(res.error === "network" ? t("sendError") : res.error);
+      }
+    },
+    [ensureConversation, router, t],
+  );
+
   const send = useCallback(
     async (textOverride?: string) => {
       const text = (textOverride ?? input).trim();
@@ -221,26 +280,11 @@ export function ChatView({
       setError(null);
       if (taRef.current) taRef.current.style.height = "auto";
 
-      // أنشئ المحادثة عند أول رسالة
-      let convId = convIdRef.current;
+      const convId = await ensureConversation();
       if (!convId) {
-        try {
-          const res = await fetch("/api/conversations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-          if (!res.ok) throw new Error();
-          const j = (await res.json()) as { conversation: { id: string } };
-          convId = j.conversation.id;
-          convIdRef.current = convId;
-          // تحديث الرابط دون إعادة تحميل الصفحة
-          window.history.replaceState(null, "", `/chat/${convId}`);
-        } catch {
-          setError(t("sendError"));
-          setInput(text);
-          return;
-        }
+        setError(t("sendError"));
+        setInput(text);
+        return;
       }
 
       const tempUserId = `tmp-u-${Date.now()}`;
@@ -250,7 +294,7 @@ export function ChatView({
         tempUserId,
       );
     },
-    [input, generating, modelId, streamRequest, t],
+    [input, generating, modelId, streamRequest, ensureConversation, t],
   );
 
   const regenerate = useCallback(async () => {
@@ -374,11 +418,19 @@ export function ChatView({
               <p className="text-[14.5px] text-ink-dim">{t("welcomeSub")}</p>
             </div>
 
+            <AttachmentBar
+              attachments={attachments}
+              progress={attachProgress}
+              notice={t("attachmentNotice")}
+            />
             <Composer
               input={input}
               setInput={setInput}
               onSend={() => void send()}
               onStop={stop}
+              onAttach={(f) => void attachFile(f)}
+              attachBusy={attachProgress !== null}
+              attachLabel={t("attachFile")}
               generating={generating}
               disabled={noProvider}
               taRef={taRef}
@@ -526,11 +578,19 @@ export function ChatView({
 
           <div className="px-4 md:px-6 pb-4 pt-1">
             <div className="max-w-[760px] mx-auto">
+              <AttachmentBar
+                attachments={attachments}
+                progress={attachProgress}
+                notice={t("attachmentNotice")}
+              />
               <Composer
                 input={input}
                 setInput={setInput}
                 onSend={() => void send()}
                 onStop={stop}
+                onAttach={(f) => void attachFile(f)}
+                attachBusy={attachProgress !== null}
+                attachLabel={t("attachFile")}
                 generating={generating}
                 disabled={noProvider}
                 taRef={taRef}
@@ -573,12 +633,74 @@ function MsgAction({
   );
 }
 
+/* ---------- المرفقات ---------- */
+function AttachmentBar({
+  attachments,
+  progress,
+  notice,
+}: {
+  attachments: { id: string; name: string; status: string }[];
+  progress: number | null;
+  notice: string;
+}) {
+  if (attachments.length === 0 && progress === null) return null;
+  return (
+    <div className="mb-2 space-y-1.5">
+      {attachments.map((a) => (
+        <div
+          key={a.id}
+          className="flex items-center gap-2 rounded-xl border border-line bg-surface/70 px-3 py-2"
+        >
+          <FileText size={13} className="text-primary-glow shrink-0" />
+          <span className="text-[12px] text-ink truncate flex-1" dir="ltr">
+            {a.name}
+          </span>
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded-md border shrink-0 ${
+              a.status === "ready"
+                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                : a.status === "failed"
+                  ? "bg-red-500/15 text-red-400 border-red-500/30"
+                  : "bg-raised text-ink-faint border-line"
+            }`}
+          >
+            {a.status}
+          </span>
+        </div>
+      ))}
+      {progress !== null && (
+        <div className="flex items-center gap-2 rounded-xl border border-primary/40 bg-surface/70 px-3 py-2">
+          <Loader2 size={13} className="animate-spin text-primary-glow shrink-0" />
+          <div className="flex-1 h-1.5 rounded-full bg-raised overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${progress}%`,
+                background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
+              }}
+            />
+          </div>
+          <span className="text-[10.5px] text-ink-faint" dir="ltr">
+            {progress}%
+          </span>
+        </div>
+      )}
+      {attachments.length > 0 && (
+        <p className="text-[10.5px] text-ink-faint leading-relaxed px-1">{notice}</p>
+      )}
+    </div>
+  );
+}
+
 /* ---------- شريط الكتابة ---------- */
 function Composer({
   input,
   setInput,
   onSend,
   onStop,
+  onAttach,
+  attachBusy,
+  attachLabel,
   generating,
   disabled,
   taRef,
@@ -592,6 +714,9 @@ function Composer({
   setInput: (v: string) => void;
   onSend: () => void;
   onStop: () => void;
+  onAttach: (file: File) => void;
+  attachBusy: boolean;
+  attachLabel: string;
   generating: boolean;
   disabled?: boolean;
   taRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -601,6 +726,7 @@ function Composer({
   stopLabel: string;
   centered?: boolean;
 }) {
+  const fileRef = useRef<HTMLInputElement>(null);
   return (
     <div
       className={`rounded-2xl border bg-surface/90 backdrop-blur transition-all ${
@@ -629,6 +755,29 @@ function Composer({
         style={{ maxHeight: 180 }}
       />
       <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={disabled || attachBusy}
+          title={attachLabel}
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors disabled:opacity-40"
+        >
+          {attachBusy ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Paperclip size={14} />
+          )}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onAttach(f);
+            e.target.value = "";
+          }}
+        />
         <div className="flex-1" />
         {generating ? (
           <button

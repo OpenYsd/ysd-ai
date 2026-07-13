@@ -2,7 +2,9 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { listModelOptions } from "@/lib/ai/registry";
+import { PUBLIC_FILE_FIELDS } from "@/lib/files/service";
 import { ProjectDetail } from "@/components/projects/project-detail";
+import type { UploadedFileRow } from "@/components/files/upload";
 
 export default async function ProjectDetailPage({
   params,
@@ -26,7 +28,7 @@ export default async function ProjectDetailPage({
     .maybeSingle();
   if (!project) redirect("/projects");
 
-  const [{ data: linked }, { data: unlinked }] = await Promise.all([
+  const [{ data: linked }, { data: unlinked }, { data: projectFiles }] = await Promise.all([
     supabase
       .from("conversations")
       .select("id, title, updated_at")
@@ -42,6 +44,14 @@ export default async function ProjectDetailPage({
       .eq("user_id", user.id)
       .is("deleted_at", null)
       .order("updated_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("files")
+      .select(PUBLIC_FILE_FIELDS)
+      .eq("project_id", id)
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
       .limit(100),
   ]);
 
@@ -62,6 +72,7 @@ export default async function ProjectDetailPage({
       linkedConversations={linked ?? []}
       unlinkedConversations={unlinked ?? []}
       models={models}
+      files={(projectFiles ?? []) as unknown as UploadedFileRow[]}
     />
   );
 }

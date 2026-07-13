@@ -269,7 +269,6 @@ function ShellInner({ userName, tier, conversations, children }: AppShellProps) 
             href="/files"
             icon={<FileText size={15} />}
             label={t("files")}
-            badge={t("comingSoon")}
             collapsed={collapsed}
             active={pathname.startsWith("/files")}
           />

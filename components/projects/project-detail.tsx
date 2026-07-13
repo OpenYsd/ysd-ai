@@ -19,6 +19,8 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { formatRelative } from "@/lib/time";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { ProjectFiles } from "@/components/files/project-files";
+import type { UploadedFileRow } from "@/components/files/upload";
 
 interface ConversationLite {
   id: string;
@@ -44,6 +46,7 @@ interface ProjectDetailProps {
   linkedConversations: ConversationLite[];
   unlinkedConversations: ConversationLite[];
   models: ModelOption[];
+  files: UploadedFileRow[];
 }
 
 export function ProjectDetail({
@@ -51,6 +54,7 @@ export function ProjectDetail({
   linkedConversations,
   unlinkedConversations,
   models,
+  files,
 }: ProjectDetailProps) {
   const { t, locale, dir } = useI18n();
   const router = useRouter();
@@ -319,6 +323,9 @@ export function ProjectDetail({
               </div>
             )}
           </section>
+
+          {/* ملفات المشروع */}
+          <ProjectFiles projectId={project.id} initialFiles={files} />
         </div>
       </div>
     </>
