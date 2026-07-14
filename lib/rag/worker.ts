@@ -81,6 +81,22 @@ async function loadFile(
   return (data as FileRow) ?? null;
 }
 
+/** إعادة تحقق أن الملف لم يُحذف — تُستدعى قبل كل مرحلة حفظ (منع سباق الحذف) */
+async function assertFileAlive(
+  supabase: SupabaseClient,
+  fileId: string,
+  userId: string,
+): Promise<void> {
+  const { data } = await supabase
+    .from("files")
+    .select("id")
+    .eq("id", fileId)
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (!data) throw new CancelledError();
+}
+
 async function buildChunks(
   supabase: SupabaseClient,
   file: FileRow,
@@ -168,6 +184,7 @@ export async function runRagJob(
         );
 
       await checkAlive();
+      await assertFileAlive(supabase, file.id, file.user_id); // قبل حفظ المقاطع
       await supabase.from("files").update({ status: "chunking", updated_at: now() }).eq("id", file.id);
       // استبدال آمن: احذف القديمة ثم أدرج المقاطع بلا embedding
       await supabase.from("file_chunks").delete().eq("file_id", file.id);
@@ -217,6 +234,7 @@ export async function runRagJob(
       if (!pending || pending.length === 0) break;
 
       await checkAlive();
+      await assertFileAlive(supabase, file.id, file.user_id); // قبل حفظ كل دفعة embedding
       const vectors = await provider.embedPassages(pending.map((p) => p.content as string));
       if (vectors.length !== pending.length)
         throw new Error("embedding batch mismatch"); // transient
@@ -253,6 +271,7 @@ export async function runRagJob(
     if ((withEmb ?? 0) !== totalChunks || totalChunks === 0)
       throw new Error("final verify failed"); // transient — سيُعاد
 
+    await assertFileAlive(supabase, file.id, file.user_id); // قبل الإعلان النهائي
     await supabase
       .from("files")
       .update({

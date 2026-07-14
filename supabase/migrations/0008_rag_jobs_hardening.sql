@@ -57,7 +57,7 @@ create index if not exists idx_rag_jobs_file on rag_jobs (file_id);
 
 -- محفّز updated_at
 create or replace function touch_rag_job_updated_at() returns trigger
-language plpgsql as $$
+language plpgsql set search_path = public, pg_temp as $$
 begin new.updated_at := now(); return new; end $$;
 drop trigger if exists trg_rag_jobs_updated_at on rag_jobs;
 create trigger trg_rag_jobs_updated_at before update on rag_jobs
@@ -77,7 +77,10 @@ do $$ begin
       );
   end if;
   if not exists (select 1 from pg_policies where tablename='rag_jobs' and policyname='rag_jobs_update_own') then
-    create policy "rag_jobs_update_own" on rag_jobs for update using (user_id = auth.uid());
+    -- USING يقيّد الصفوف القابلة للتعديل، وWITH CHECK يمنع نقل الملكية لمستخدم آخر
+    create policy "rag_jobs_update_own" on rag_jobs for update
+      using (user_id = auth.uid())
+      with check (user_id = auth.uid());
   end if;
   if not exists (select 1 from pg_policies where tablename='rag_jobs' and policyname='rag_jobs_delete_own') then
     create policy "rag_jobs_delete_own" on rag_jobs for delete using (user_id = auth.uid());
@@ -92,7 +95,7 @@ end $$;
 -- ============================================================
 create or replace function claim_rag_job(p_worker_id text, p_lease_seconds int default 120)
 returns setof rag_jobs
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   v_id uuid;
 begin
@@ -137,7 +140,7 @@ end $$;
 -- استرجاع الوظائف المعلّقة يدويًا (لأدوات الصيانة) — نفس منطق انتهاء القفل
 create or replace function reclaim_expired_rag_jobs(p_lease_seconds int default 120)
 returns int
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_count int;
 begin
   if auth.uid() is null then return 0; end if;
@@ -157,7 +160,7 @@ end $$;
 -- ============================================================
 create or replace function cleanup_old_rag_jobs(p_retention_days int default 7)
 returns int
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, pg_temp as $$
 declare v_count int;
 begin
   delete from rag_jobs
@@ -167,3 +170,16 @@ begin
   get diagnostics v_count = row_count;
   return v_count;
 end $$;
+
+-- ============================================================
+-- صلاحيات التنفيذ: منع public/anon، ومنح authenticated الدوال المقيّدة بالمالك.
+-- cleanup_old_rag_jobs تنظّف كل المستخدمين عند auth.uid() is null → لا تُمنح
+-- للمستخدم العادي إطلاقًا (service_role/cron فقط).
+-- ============================================================
+revoke all on function claim_rag_job(text, int) from public;
+revoke all on function reclaim_expired_rag_jobs(int) from public;
+revoke all on function cleanup_old_rag_jobs(int) from public;
+
+grant execute on function claim_rag_job(text, int) to authenticated;
+grant execute on function reclaim_expired_rag_jobs(int) to authenticated;
+-- cleanup لا تُمنح لـ authenticated ولا anon — service_role/postgres فقط.
