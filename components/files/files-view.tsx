@@ -157,6 +157,20 @@ export function FilesView({
     }
   }
 
+  /** إلغاء تجهيز جارٍ */
+  async function cancelRag(f: UploadedFileRow) {
+    setBusyId(f.id);
+    const res = await api(`/api/files/${f.id}/rag/cancel`, "POST");
+    setBusyId(null);
+    if (res) {
+      const fresh = await fetch(`/api/files/${f.id}`);
+      if (fresh.ok) {
+        const j = (await fresh.json()) as { file?: UploadedFileRow };
+        if (j.file) setFiles((prev) => prev.map((x) => (x.id === f.id ? j.file! : x)));
+      }
+    }
+  }
+
   /** تجهيز الملف للذكاء الاصطناعي — مع استطلاع التقدم الحقيقي */
   async function prepareRag(f: UploadedFileRow) {
     setBusyId(f.id);
@@ -392,6 +406,7 @@ export function FilesView({
                 onDelete={() => void removeFile(f)}
                 onRetry={() => void retryProcess(f)}
                 onPrepareRag={() => void prepareRag(f)}
+                onCancelRag={() => void cancelRag(f)}
                 onLinkProject={(pid) => void linkProject(f, pid)}
                 onDownload={() => void download(f)}
               />
@@ -410,6 +425,7 @@ function FileRow({
   onDelete,
   onRetry,
   onPrepareRag,
+  onCancelRag,
   onLinkProject,
   onDownload,
 }: {
@@ -419,6 +435,7 @@ function FileRow({
   onDelete: () => void;
   onRetry: () => void;
   onPrepareRag: () => void;
+  onCancelRag: () => void;
   onLinkProject: (projectId: string | null) => void;
   onDownload: () => void;
 }) {
@@ -526,6 +543,15 @@ function FileRow({
               >
                 {busy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
                 {file.status === "ready" ? t("ragPrepare") : t("ragRetry")}
+              </button>
+            )}
+            {ragProcessing && (
+              <button
+                onClick={onCancelRag}
+                disabled={busy}
+                className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-lg text-ink bg-raised border border-line hover:border-red-500/40 transition-colors disabled:opacity-50"
+              >
+                {t("cancel")}
               </button>
             )}
             {projects.length > 0 && (

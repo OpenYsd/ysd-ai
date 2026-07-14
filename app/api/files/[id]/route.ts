@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { linkFileSchema } from "@/lib/validation/files";
 import { FILES_BUCKET, PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { getLatestJobForFile } from "@/lib/rag/jobs";
 
 export const runtime = "nodejs";
 
@@ -28,7 +29,10 @@ export async function GET(
     .is("deleted_at", null)
     .maybeSingle();
   if (!data) return json({ error: "الملف غير موجود | File not found" }, 404);
-  return json({ file: data }, 200);
+
+  // حالة وظيفة التجهيز من قاعدة البيانات — لتعرضها الواجهة بعد التحديث
+  const job = await getLatestJobForFile(supabase, id, user.id);
+  return json({ file: data, job }, 200);
 }
 
 /** ربط/فك ربط الملف بمشروع أو محادثة — مع تحقق الملكية */
@@ -106,6 +110,14 @@ export async function DELETE(
     .from(FILES_BUCKET)
     .remove([row.storage_path]);
   if (rmError) console.error(`[files] storage remove warning: ${rmError.message.slice(0, 80)}`);
+
+  // ألغِ أي وظيفة تجهيز نشطة أولًا (يمنع العامل من إعادة إنشاء البيانات)
+  await supabase
+    .from("rag_jobs")
+    .update({ status: "cancelled", locked_by: null, error_code: "file_deleted" })
+    .eq("file_id", id)
+    .eq("user_id", user.id)
+    .in("status", ["queued", "running", "retrying"]);
 
   // حذف كل مقاطع RAG والمتجهات نهائيًا (الحذف ناعم للملف، صلب للمقاطع)
   await supabase.from("file_chunks").delete().eq("file_id", id).eq("user_id", user.id);

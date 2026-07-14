@@ -9,7 +9,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "worker:rag": "node scripts/worker-rag.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
