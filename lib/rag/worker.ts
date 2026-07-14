@@ -10,6 +10,7 @@ import { extractText } from "@/lib/files/extract";
 import { chunkText, contentHash, type Chunk } from "./chunking";
 import { getEmbeddingProvider } from "./embeddings";
 import { getRagLimits } from "./pipeline";
+import { getRagRuntimeConfig } from "./runtime-config";
 import {
   claimRagJob,
   completeRagJob,
@@ -19,7 +20,6 @@ import {
   type RagJob,
 } from "./jobs";
 
-const EMBED_DB_BATCH = 8;
 const MAX_EXTRACTED_FOR_CHUNKS = 500_000;
 
 /** حد التزامن داخل العملية الواحدة (تسلسلي — يحمي RAM) */
@@ -171,9 +171,11 @@ export async function runRagJob(
       if (chunks.length === 0)
         throw new PermanentError("no_chunks", "لم ينتج التقسيم أي مقاطع.");
 
+      // الحد الفعلي = min(حد الباقة, حد وضع التشغيل/الذاكرة المنخفضة)
+      const cfg = getRagRuntimeConfig();
       const limits = await getRagLimits(supabase, file.user_id);
-      if (chunks.length > limits.maxChunksPerFile)
-        chunks = chunks.slice(0, limits.maxChunksPerFile);
+      const chunkCap = Math.min(limits.maxChunksPerFile, cfg.maxChunksPerFile);
+      if (chunks.length > chunkCap) chunks = chunks.slice(0, chunkCap);
 
       const { count: otherTotal } = await supabase
         .from("file_chunks")
@@ -225,6 +227,7 @@ export async function runRagJob(
     const totalChunks = total ?? 0;
 
     const provider = getEmbeddingProvider();
+    const embedBatch = getRagRuntimeConfig().embedDbBatch;
     let embedded = totalChunks;
     for (;;) {
       const { data: pending } = await supabase
@@ -233,7 +236,7 @@ export async function runRagJob(
         .eq("file_id", file.id)
         .is("embedding", null)
         .order("chunk_index", { ascending: true })
-        .limit(EMBED_DB_BATCH);
+        .limit(embedBatch);
       if (!pending || pending.length === 0) break;
 
       await checkAlive();

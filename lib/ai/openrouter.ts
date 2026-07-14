@@ -19,6 +19,8 @@ import {
  */
 
 const API_URL = "https://openrouter.ai/api/v1/chat/completions";
+/** مهلة اتصال الموفر الخارجي */
+const PROVIDER_TIMEOUT_MS = 60_000;
 
 /** تصنيف أخطاء OpenRouter إلى رسائل عربية واضحة — دون كشف تفاصيل حساسة */
 export function mapOpenRouterError(status: number | null, raw: string): {
@@ -166,6 +168,12 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (m.role !== "system") messages.push({ role: m.role, content: m.content });
     }
 
+    // مهلة صريحة للموفر الخارجي (مع احترام إلغاء العميل)
+    const timeout = new AbortController();
+    const timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+    const onClientAbort = () => timeout.abort();
+    req.signal?.addEventListener("abort", onClientAbort);
+
     let res: Response;
     try {
       res = await fetch(API_URL, {
@@ -185,15 +193,20 @@ export class OpenRouterProvider implements AIProviderAdapter {
           top_p: 0.9,
           usage: { include: true },
         }),
-        signal: req.signal,
+        signal: timeout.signal,
       });
     } catch {
+      clearTimeout(timeoutId);
+      req.signal?.removeEventListener("abort", onClientAbort);
       if (req.signal?.aborted) {
         yield { type: "done" };
         return { status: "aborted" };
       }
+      // مهلة الموفر أو انقطاع الشبكة — قابل لإعادة المحاولة
       return { status: "network_error" };
     }
+    clearTimeout(timeoutId);
+    req.signal?.removeEventListener("abort", onClientAbort);
 
     if (!res.ok || !res.body) {
       const raw = await res.text().catch(() => "");

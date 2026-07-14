@@ -41,11 +41,21 @@ if (!serviceKey) {
 }
 
 // وضع (أ): عامل حقيقي عبر service role — يتجاوز RLS، فالالتقاط عبر كل المستخدمين.
-console.log(`عامل RAG (${workerId}) — وضع الخدمة: يستطلع الطابور كل 3 ثوانٍ…`);
-const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
+console.log(`عامل RAG (${workerId}) — وضع الخدمة.`);
+createClient(url, serviceKey, { auth: { persistSession: false } });
 
-// ملاحظة: claim_rag_job مقيّد بـ auth.uid()؛ عبر service role نحتاج التقاطًا إداريًا.
-// يُنفَّذ عبر استعلام مباشر SKIP LOCKED على مستوى الخدمة (يُضاف عند تفعيل الوضع أ).
-console.log("تنبيه: منطق التقاط الخدمة الإداري يُضاف عند اعتماد مفتاح الخدمة.");
-console.log("لم يُنفَّذ التقاط عبر المستخدمين بعد — بانتظار موافقتك على المفتاح والمعمارية.");
+// Graceful shutdown — لا نقطع وظيفة جارية؛ ننتظر انتهاء الحالية ثم نخرج.
+let shuttingDown = false;
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    if (shuttingDown) process.exit(0);
+    shuttingDown = true;
+    console.log(`\n[${sig}] إيقاف لطيف — بانتظار انتهاء الوظيفة الحالية…`);
+  });
+}
+
+// ملاحظة: claim_rag_job مقيّد بـ auth.uid()؛ عبر service role نحتاج التقاطًا إداريًا
+// (claim_rag_job_admin عبر كل المستخدمين) يُضاف عند اعتماد مفتاح الخدمة والموافقة.
+console.log("تنبيه: منطق التقاط الخدمة الإداري غير مُفعّل — بانتظار موافقتك على المعمارية.");
+console.log("الإيقاف اللطيف مُهيّأ (SIGINT/SIGTERM). لا التقاط عبر المستخدمين بعد.");
 process.exit(0);

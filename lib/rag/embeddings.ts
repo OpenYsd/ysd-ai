@@ -31,10 +31,29 @@ type Extractor = (
 ) => Promise<{ tolist(): number[][] }>;
 
 let extractorPromise: Promise<Extractor> | null = null;
+let instanceCount = 0;
 
-/** تحميل النموذج مرة واحدة وإعادة استخدامه */
+/** حالة النموذج للفحص الصحي — لا يُحمّل النموذج، يقرأ الحالة فقط */
+export type EmbeddingModelState = "not_loaded" | "loading" | "ready" | "failed";
+let modelState: EmbeddingModelState = "not_loaded";
+export function getEmbeddingModelState(): {
+  state: EmbeddingModelState;
+  model: string;
+  dims: number;
+  instances: number;
+} {
+  return { state: modelState, model: MODEL_ID, dims: DIMS, instances: instanceCount };
+}
+
+/** تحميل النموذج مرة واحدة وإعادة استخدامه — نسخة واحدة فقط داخل العملية */
 async function getExtractor(): Promise<Extractor> {
   if (!extractorPromise) {
+    instanceCount += 1;
+    if (instanceCount > 1) {
+      // حارس صريح: يجب ألا تُحمّل أكثر من نسخة في العملية نفسها
+      console.error("[embeddings] guard: multiple model instances attempted");
+    }
+    modelState = "loading";
     extractorPromise = (async () => {
       const { pipeline, env } = await import("@huggingface/transformers");
       // كاش محلي داخل المشروع (مُتجاهَل في git)
@@ -42,10 +61,13 @@ async function getExtractor(): Promise<Extractor> {
       const pipe = await pipeline("feature-extraction", MODEL_ID, {
         dtype: "q8",
       });
+      modelState = "ready";
       return pipe as unknown as Extractor;
     })().catch((err) => {
       // فشل التحميل يجب ألا يسمّم المحاولات اللاحقة
       extractorPromise = null;
+      instanceCount = Math.max(0, instanceCount - 1);
+      modelState = "failed";
       throw err;
     });
   }
