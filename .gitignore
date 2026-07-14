@@ -6,3 +6,5 @@ node_modules/
 .DS_Store
 tsconfig.tsbuildinfo
 .cache/
+scripts/.fixtures/
+/public/qa-*
