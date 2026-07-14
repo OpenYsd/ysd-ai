@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { contentHash } from "@/lib/rag/chunking";
 import { enqueueRagJob, getLatestJobForFile } from "@/lib/rag/jobs";
-import { drainOwnJobs } from "@/lib/rag/worker";
+import { drainOwnJobs, LEASE_SECONDS } from "@/lib/rag/worker";
 import { PUBLIC_FILE_FIELDS } from "@/lib/files/service";
 
 export const runtime = "nodejs";
@@ -43,10 +43,23 @@ export async function POST(
 
   if (row.mime_type.startsWith("image/"))
     return json({ error: "الصور غير مدعومة في RAG بعد | Images unsupported" }, 400);
-  if (!["ready", "ready_for_rag", "rag_failed"].includes(row.status))
+  // حالات نُصّ مستخرج (يسمح بالبدء أو الاستئناف) — chunking/embedding مقبولة للاستئناف
+  const TEXT_READY = ["ready", "ready_for_rag", "rag_failed", "chunking", "embedding"];
+  if (!TEXT_READY.includes(row.status))
     return json({ error: "استخرج نص الملف أولًا | Extract text first" }, 400);
   if (!row.extracted_text || !row.extracted_text.trim())
     return json({ error: "لا يوجد نص مستخرج | No extracted text" }, 400);
+
+  // منتصف معالجة: امنع فقط عند وجود عامل نشط (heartbeat حديث)؛ اسمح بالاستئناف عند التوقف
+  if (["chunking", "embedding"].includes(row.status)) {
+    const active = await getLatestJobForFile(supabase, id, user.id);
+    const fresh =
+      active?.status === "running" &&
+      active.heartbeat_at != null &&
+      Date.now() - new Date(active.heartbeat_at).getTime() < LEASE_SECONDS * 1000;
+    if (fresh)
+      return json({ error: "الملف قيد التجهيز حاليًا | Already processing", job: active }, 409);
+  }
 
   const docHash = contentHash(row.extracted_text);
 

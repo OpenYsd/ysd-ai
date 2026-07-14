@@ -25,6 +25,9 @@ const MAX_EXTRACTED_FOR_CHUNKS = 500_000;
 /** حد التزامن داخل العملية الواحدة (تسلسلي — يحمي RAM) */
 export const WORKER_CONCURRENCY = 1;
 
+/** مدة القفل — بعدها يُعتبر العامل متوقفًا وتُستعاد الوظيفة */
+export const LEASE_SECONDS = 120;
+
 interface FileRow {
   id: string;
   user_id: string;

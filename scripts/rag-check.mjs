@@ -107,7 +107,8 @@ const rag = await prepareRag(A.cookie, fileId);
 const ragMs = Date.now() - t0;
 check("تجهيز RAG → 200", rag.status === 200, `HTTP ${rag.status} ${rag.body?.error ?? ""}`);
 check("الحالة ready_for_rag", rag.body?.file?.status === "ready_for_rag", String(rag.body?.file?.status));
-const totalChunks = rag.body?.totalChunks ?? 0;
+// المصدر الموثوق لعدد المقاطع: قاعدة البيانات (المسار يعيد {file, job} لا totalChunks)
+const totalChunks = (await A.client.from("file_chunks").select("id", { count: "exact", head: true }).eq("file_id", fileId)).count ?? 0;
 check("مقاطع منشأة (>0)", totalChunks > 0, `chunks=${totalChunks}`);
 console.log(`  ℹ ${totalChunks} مقطع · زمن التجهيز ${ragMs}ms`);
 

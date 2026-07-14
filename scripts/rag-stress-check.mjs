@@ -41,6 +41,15 @@ async function uploadTxt(cookie, name, content, extra = {}) {
 }
 const ragPost = (cookie, id) => fetch(`${APP}/api/files/${id}/rag`, { method: "POST", headers: { Cookie: cookie } });
 const chunkCount = async (client, fileId) => (await client.from("file_chunks").select("id", { count: "exact", head: true }).eq("file_id", fileId)).count ?? 0;
+const fileStatus = async (client, fileId) => (await client.from("files").select("status").eq("id", fileId).single()).data?.status;
+async function waitReady(client, fileId, ms = 60000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if ((await fileStatus(client, fileId)) === "ready_for_rag") return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
 
 const A = await newUser("a");
 const B = await newUser("b");
@@ -60,8 +69,12 @@ console.log("\n=== 2) خمسة ملفات متزامنة ===");
 const five = await Promise.all([1, 2, 3, 4, 5].map((i) => uploadTxt(A.cookie, `ملف-${i}.txt`, DOC(`M${i}`))));
 const t0 = Date.now();
 const results = await Promise.all(five.map((f) => ragPost(A.cookie, f.id)));
-const okCount = results.filter((r) => r.status === 200).length;
-check("الخمسة اكتملت (200)", okCount === 5, `ok=${okCount}/5 in ${Date.now() - t0}ms`);
+// request-driven: بعض الطلبات ترجع 202 (نظير يعالج ملفها) — المعيار هو الحالة النهائية
+const noServerErr = results.every((r) => r.status < 500);
+let allReady = true;
+for (const f of five) if (!(await waitReady(A.client, f.id))) allReady = false;
+check("لا أخطاء خادم في الطلبات الخمسة", noServerErr, results.map((r) => r.status).join(","));
+check("الملفات الخمسة وصلت ready_for_rag", allReady, `في ${Date.now() - t0}ms`);
 let noDup = true;
 for (const f of five) {
   const cc = await chunkCount(A.client, f.id);
@@ -72,18 +85,25 @@ check("لا تكرار مقاطع في أي ملف", noDup);
 console.log(`  ℹ راقب [rag-worker] rss_start/rss_end في سجل الخادم لأعلى RAM.`);
 
 console.log("\n=== 3) استكمال بعد \"توقف العامل\" أثناء embedding ===");
-// حاكِ توقف العامل: صفّر embedding لبعض المقاطع + أعد الحالة + أنشئ وظيفة queued
+// محاكاة توقف حقيقي: مقاطع بلا embedding + حالة embedding + وظيفة running بـ heartbeat منتهٍ
 const f3 = five[0];
 const before3 = await chunkCount(A.client, f3.id);
 const someChunks = (await A.client.from("file_chunks").select("id").eq("file_id", f3.id).limit(2)).data ?? [];
 for (const ch of someChunks) await A.client.from("file_chunks").update({ embedding: null }).eq("id", ch.id);
 await A.client.from("files").update({ status: "embedding" }).eq("id", f3.id);
-// أعد التجهيز → يجب أن يستكمل (chunksCurrent=true عبر hash) دون إعادة chunking
+// اقلب الوظيفة المكتملة إلى running عالقة (heartbeat قديم) — توقف عامل حقيقي
+const job3 = (await A.client.from("rag_jobs").select("id").eq("file_id", f3.id).eq("status", "completed").maybeSingle()).data;
+await A.client.from("rag_jobs").update({
+  status: "running", locked_by: "dead-worker",
+  heartbeat_at: new Date(Date.now() - 600000).toISOString(),
+}).eq("id", job3.id);
+// إعادة التجهيز → يستعيد الوظيفة العالقة ويستكمل embedding للمقاطع الفارغة فقط
 const resume = await ragPost(A.cookie, f3.id);
 const after3 = await chunkCount(A.client, f3.id);
 const nullAfter = (await A.client.from("file_chunks").select("id", { count: "exact", head: true }).eq("file_id", f3.id).is("embedding", null)).count ?? 0;
 check("الاستكمال أكمل embedding المتبقي", resume.status === 200 && nullAfter === 0, `HTTP ${resume.status} null=${nullAfter}`);
 check("لا تكرار مقاطع بعد الاستكمال", after3 === before3, `${before3}→${after3}`);
+check("الملف عاد ready_for_rag", (await fileStatus(A.client, f3.id)) === "ready_for_rag");
 
 console.log("\n=== 4) انتهاء Lease/Heartbeat: استرجاع الوظيفة ===");
 const f4 = await uploadTxt(A.cookie, "lease.txt", DOC("L4"));
