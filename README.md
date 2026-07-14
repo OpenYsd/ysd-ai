@@ -63,7 +63,12 @@ middleware.ts              حماية الجلسات والصفحات ولوحة
 
 انظر `docs/ADDING_A_PROVIDER.md` — باختصار: نفّذ واجهة `AIProviderAdapter` وسجّله في `lib/ai/registry.ts`. لا حاجة لتعديل أي شيء آخر.
 
-## الميزات — v0.4.0
+## الميزات — v0.4.1
+
+**Deployment Ready:**
+- فحص صحي آمن `GET /api/health` (تطبيق · Supabase · DB · pgvector · Storage · OpenRouter · Embeddings) بلا طلب AI مدفوع ولا كشف أسرار، مع `correlation_id`
+- فحص متغيرات البيئة عند الإقلاع دون طباعة قيم؛ سجلات JSON منظّمة؛ وضع ذاكرة منخفضة
+- مهلات صريحة، حارس نسخة نموذج واحدة، graceful shutdown، `docs/DEPLOYMENT.md` + `PRODUCTION_CHECKLIST.md`
 
 **Production-Hardened RAG (طابور دائم في قاعدة البيانات):**
 - **PostgreSQL مصدر الحقيقة** للوظائف والأقفال والمحاولات (جدول `rag_jobs`) — الذاكرة للأداء فقط

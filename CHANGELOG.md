@@ -2,6 +2,16 @@
 
 جميع الإصدارات مُختبرة (typecheck · lint · build · unit + runtime tests) قبل الوسم.
 
+## v0.4.1 — 2026-07-14 · Deployment Ready
+
+- فحص متغيرات البيئة عند الإقلاع (`instrumentation.ts`) دون طباعة قيم؛ `YSD_STRICT_ENV`.
+- `GET /api/health` آمن: التطبيق · Supabase · DB · pgvector · Storage · OpenRouter (إعداد
+  فقط، بلا طلب AI مدفوع) · نموذج Embeddings — بلا كشف أسرار/مسارات، مع `correlation_id`.
+- سجلات JSON منظّمة (`lib/logger.ts`) بلا نصوص/مفاتيح؛ وضع الذاكرة المنخفضة (`YSD_LOW_MEMORY`).
+- مهلة موفر صريحة 60ث، حارس نسخة نموذج واحدة، واجهة العامل المستقل (غير مُفعّل)، graceful shutdown.
+- `docs/DEPLOYMENT.md` + `docs/PRODUCTION_CHECKLIST.md` + `.env.example` محدّث.
+- اختبارات: env 7/7، deployment-check حي 11/11 (فشل خدمة لا يُسقط المنصة).
+
 ## v0.4.0 — 2026-07-14 · Production-Hardened RAG
 
 - **طابور RAG دائم في قاعدة البيانات** (`rag_jobs`) — PostgreSQL مصدر الحقيقة الوحيد
