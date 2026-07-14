@@ -3,6 +3,13 @@ import { createClient } from "@/lib/supabase/server";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import type { ChatMessage } from "@/lib/ai/types";
+import {
+  buildSourcesContext,
+  getContextFileIds,
+  NO_MATCH_HINT,
+  retrieveSnippets,
+  type RetrievedSnippet,
+} from "@/lib/rag/retrieval";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -170,6 +177,37 @@ export async function POST(req: NextRequest) {
     content: m.content,
   }));
 
+  // RAG: استرجاع مقاطع الملفات المرتبطة بالمحادثة/المشروع (الجاهزة فقط)
+  let ragSnippets: RetrievedSnippet[] = [];
+  let ragSearchedNoMatch = false;
+  const queryText =
+    message ?? [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+  if (queryText) {
+    try {
+      const contextFileIds = await getContextFileIds(
+        supabase,
+        user.id,
+        conversationId,
+        conv.project_id,
+      );
+      if (contextFileIds.length > 0) {
+        const outcome = await retrieveSnippets(supabase, queryText, contextFileIds);
+        ragSnippets = outcome.snippets;
+        // بُحث في ملفات جاهزة لكن بلا تطابق واثق → نلمّح للنموذج بالتصريح
+        ragSearchedNoMatch = outcome.searched && outcome.snippets.length === 0;
+      }
+    } catch (err) {
+      // فشل الاسترجاع لا يمنع المحادثة — تُكمل بدون مصادر
+      console.error(`[rag] retrieval failed: ${(err as Error).message?.slice(0, 80)}`);
+    }
+  }
+  if (ragSnippets.length > 0) {
+    // كتلة منفصلة مُسوَّرة — الموجه الأساسي لا يتغير ومحتوى الملفات ليس تعليمات
+    systemPrompt = `${systemPrompt}\n\n${buildSourcesContext(ragSnippets)}`;
+  } else if (ragSearchedNoMatch) {
+    systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
+  }
+
   // 9) بث الرد عبر SSE
   const encoder = new TextEncoder();
   let assistantText = "";
@@ -186,6 +224,22 @@ export async function POST(req: NextRequest) {
           /* العميل أغلق الاتصال */
         }
       };
+
+      // مصادر الرد — للعرض تحت الإجابة (similarity في وضع التطوير فقط)
+      if (ragSnippets.length > 0) {
+        send({
+          type: "sources",
+          sources: ragSnippets.map((s) => ({
+            fileId: s.fileId,
+            fileName: s.fileName,
+            pageNumber: s.pageNumber,
+            snippet: s.content.slice(0, 180),
+            ...(process.env.NODE_ENV !== "production"
+              ? { similarity: s.similarity }
+              : {}),
+          })),
+        });
+      }
 
       try {
         for await (const chunk of provider.streamChat({
@@ -214,17 +268,29 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف)
+        // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
         let assistantMessageId: string | null = null;
         if (assistantText) {
+          const insertRow: Record<string, unknown> = {
+            conversation_id: conversationId,
+            role: "assistant",
+            content: assistantText,
+            model_id: actualModelId ?? modelId,
+          };
+          // عمود metadata يأتي مع migration 0007 — لا نرسله إلا عند وجود مصادر
+          if (ragSnippets.length > 0) {
+            insertRow.metadata = {
+              sources: ragSnippets.map((s) => ({
+                fileId: s.fileId,
+                fileName: s.fileName,
+                pageNumber: s.pageNumber,
+                snippet: s.content.slice(0, 180),
+              })),
+            };
+          }
           const { data: saved } = await supabase
             .from("messages")
-            .insert({
-              conversation_id: conversationId,
-              role: "assistant",
-              content: assistantText,
-              model_id: actualModelId ?? modelId,
-            })
+            .insert(insertRow)
             .select("id")
             .single();
           assistantMessageId = saved?.id ?? null;

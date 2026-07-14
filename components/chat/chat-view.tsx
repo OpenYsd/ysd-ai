@@ -20,6 +20,7 @@ import {
   Pencil,
   RefreshCw,
   Square,
+  X,
 } from "lucide-react";
 import { uploadWithProgress } from "@/components/files/upload";
 import { useI18n } from "@/lib/i18n";
@@ -35,6 +36,15 @@ export interface ChatModel {
   provider?: string;
 }
 
+export interface MsgSource {
+  fileId: string;
+  fileName: string;
+  pageNumber: number | null;
+  snippet: string;
+  /** يظهر في وضع التطوير فقط */
+  similarity?: number;
+}
+
 interface Msg {
   id: string;
   role: "user" | "assistant";
@@ -42,6 +52,17 @@ interface Msg {
   streaming?: boolean;
   /** النموذج الفعلي الذي أجاب — يُعرض في وضع التطوير فقط */
   model?: string;
+  /** مصادر RAG المستند إليها الرد */
+  sources?: MsgSource[];
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  status: string;
+  ragTotal?: number | null;
+  ragDone?: number | null;
+  ragError?: string | null;
 }
 
 interface ChatViewProps {
@@ -51,15 +72,18 @@ interface ChatViewProps {
   models: ChatModel[];
   initialModelId: string | null;
   greetingName: string;
+  /** مرفقات المحادثة الجاهزة — تُحمّل من الخادم لتبقى بعد التحديث */
+  initialAttachments?: Attachment[];
   /** وضع التطوير: يعرض معرّف النموذج الفعلي تحت الرد */
   devMode?: boolean;
 }
 
 interface SSEEvent {
-  type: "text" | "error" | "done" | "meta";
+  type: "text" | "error" | "done" | "meta" | "sources";
   text?: string;
   error?: string;
   model?: string;
+  sources?: MsgSource[];
   userMessageId?: string | null;
   assistantMessageId?: string | null;
 }
@@ -71,6 +95,7 @@ export function ChatView({
   models,
   initialModelId,
   greetingName,
+  initialAttachments,
   devMode,
 }: ChatViewProps) {
   const { t, locale } = useI18n();
@@ -86,9 +111,9 @@ export function ChatView({
   const [modelOpen, setModelOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
-  const [attachments, setAttachments] = useState<
-    { id: string; name: string; status: string }[]
-  >([]);
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    initialAttachments ?? [],
+  );
   const [attachProgress, setAttachProgress] = useState<number | null>(null);
 
   const convIdRef = useRef<string | null>(conversationId);
@@ -182,6 +207,12 @@ export function ChatView({
               setMessages((prev) =>
                 prev.map((m) => (m.id === asstTempId ? { ...m, model: data.model } : m)),
               );
+            } else if (data.type === "sources" && data.sources?.length) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === asstTempId ? { ...m, sources: data.sources } : m,
+                ),
+              );
             } else if (data.type === "error" && data.error) {
               setError(data.error);
             } else if (data.type === "done") {
@@ -242,7 +273,40 @@ export function ChatView({
     }
   }, []);
 
-  /** إرفاق ملف: رفع + ربط بالمحادثة فقط — لا يدخل سياق النموذج قبل RAG */
+  /** متابعة تجهيز RAG بالتقدم الحقيقي (استطلاع حالة الملف) */
+  const pollRagStatus = useCallback(async (fileId: string) => {
+    for (let i = 0; i < 200; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const res = await fetch(`/api/files/${fileId}`);
+      if (!res.ok) return;
+      const j = (await res.json()) as {
+        file?: {
+          status: string;
+          rag_total_chunks?: number | null;
+          rag_done_chunks?: number | null;
+          rag_error?: string | null;
+        };
+      };
+      const f = j.file;
+      if (!f) return;
+      setAttachments((prev) =>
+        prev.map((a) =>
+          a.id === fileId
+            ? {
+                ...a,
+                status: f.status,
+                ragTotal: f.rag_total_chunks,
+                ragDone: f.rag_done_chunks,
+                ragError: f.rag_error,
+              }
+            : a,
+        ),
+      );
+      if (["ready_for_rag", "rag_failed", "ready", "failed"].includes(f.status)) return;
+    }
+  }, []);
+
+  /** إرفاق ملف: رفع + ربط بالمحادثة + تجهيز تلقائي للذكاء الاصطناعي (RAG) */
   const attachFile = useCallback(
     async (file: File) => {
       setError(null);
@@ -260,17 +324,34 @@ export function ChatView({
       const res = await handle.done;
       setAttachProgress(null);
       if (res.ok && res.file) {
+        const uploaded = res.file;
+        // لا نستدعي router.refresh هنا — يُعيد بناء المكوّن ويمسح حالة المرفقات؛
+        // المرفقات تبقى في حالة العميل وتُحمّل من الخادم عند التحديث/التنقل
         setAttachments((prev) => [
           ...prev,
-          { id: res.file!.id, name: res.file!.original_name, status: res.file!.status },
+          { id: uploaded.id, name: uploaded.original_name, status: uploaded.status },
         ]);
-        router.refresh();
+        // المستندات الجاهزة النص: ابدأ التجهيز للذكاء الاصطناعي تلقائيًا
+        if (!uploaded.mime_type.startsWith("image/") && uploaded.status === "ready") {
+          void fetch(`/api/files/${uploaded.id}/rag`, { method: "POST" });
+          void pollRagStatus(uploaded.id);
+        }
       } else if (res.error && res.error !== "aborted") {
         setError(res.error === "network" ? t("sendError") : res.error);
       }
     },
-    [ensureConversation, router, t],
+    [ensureConversation, pollRagStatus, t],
   );
+
+  /** إزالة ملف من سياق المحادثة دون حذفه */
+  const unlinkAttachment = useCallback(async (fileId: string) => {
+    await fetch(`/api/files/${fileId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId: null }),
+    });
+    setAttachments((prev) => prev.filter((a) => a.id !== fileId));
+  }, []);
 
   const send = useCallback(
     async (textOverride?: string) => {
@@ -421,7 +502,7 @@ export function ChatView({
             <AttachmentBar
               attachments={attachments}
               progress={attachProgress}
-              notice={t("attachmentNotice")}
+              onUnlink={(id) => void unlinkAttachment(id)}
             />
             <Composer
               input={input}
@@ -534,6 +615,9 @@ export function ChatView({
                             ))}
                           </div>
                         )}
+                        {!m.streaming && m.sources && m.sources.length > 0 && (
+                          <SourcesList sources={m.sources} devMode={devMode} />
+                        )}
                         {devMode && m.model && !m.streaming && (
                           <div className="mt-1.5 text-[10px] text-ink-faint" dir="ltr">
                             {m.model}
@@ -581,7 +665,7 @@ export function ChatView({
               <AttachmentBar
                 attachments={attachments}
                 progress={attachProgress}
-                notice={t("attachmentNotice")}
+                onUnlink={(id) => void unlinkAttachment(id)}
               />
               <Composer
                 input={input}
@@ -637,37 +721,68 @@ function MsgAction({
 function AttachmentBar({
   attachments,
   progress,
-  notice,
+  onUnlink,
 }: {
-  attachments: { id: string; name: string; status: string }[];
+  attachments: Attachment[];
   progress: number | null;
-  notice: string;
+  onUnlink: (fileId: string) => void;
 }) {
+  const { t } = useI18n();
   if (attachments.length === 0 && progress === null) return null;
+
+  const badge = (a: Attachment) => {
+    if (a.status === "ready_for_rag")
+      return { label: t("ragReady"), cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" };
+    if (a.status === "rag_failed" || a.status === "failed")
+      return { label: t("ragFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" };
+    if (a.status === "chunking" || a.status === "embedding") {
+      const pct =
+        a.ragTotal && a.ragTotal > 0
+          ? Math.round(((a.ragDone ?? 0) / a.ragTotal) * 100)
+          : null;
+      return {
+        label: `${t("ragPreparing")}${pct !== null ? ` ${pct}%` : "…"}`,
+        cls: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+        spinning: true,
+      };
+    }
+    if (a.status === "ready")
+      return { label: t("textExtracted"), cls: "bg-raised text-ink-dim border-line" };
+    return { label: t("statusUploaded"), cls: "bg-raised text-ink-faint border-line" };
+  };
+
+  const anyReady = attachments.some((a) => a.status === "ready_for_rag");
+
   return (
     <div className="mb-2 space-y-1.5">
-      {attachments.map((a) => (
-        <div
-          key={a.id}
-          className="flex items-center gap-2 rounded-xl border border-line bg-surface/70 px-3 py-2"
-        >
-          <FileText size={13} className="text-primary-glow shrink-0" />
-          <span className="text-[12px] text-ink truncate flex-1" dir="ltr">
-            {a.name}
-          </span>
-          <span
-            className={`text-[10px] px-1.5 py-0.5 rounded-md border shrink-0 ${
-              a.status === "ready"
-                ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                : a.status === "failed"
-                  ? "bg-red-500/15 text-red-400 border-red-500/30"
-                  : "bg-raised text-ink-faint border-line"
-            }`}
+      {attachments.map((a) => {
+        const b = badge(a);
+        return (
+          <div
+            key={a.id}
+            className="flex items-center gap-2 rounded-xl border border-line bg-surface/70 px-3 py-2"
           >
-            {a.status}
-          </span>
-        </div>
-      ))}
+            {b.spinning ? (
+              <Loader2 size={13} className="animate-spin text-amber-400 shrink-0" />
+            ) : (
+              <FileText size={13} className="text-primary-glow shrink-0" />
+            )}
+            <span className="text-[12px] text-ink truncate flex-1" dir="ltr">
+              {a.name}
+            </span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-md border shrink-0 ${b.cls}`}>
+              {b.label}
+            </span>
+            <button
+              onClick={() => onUnlink(a.id)}
+              title={t("removeFromContext")}
+              className="p-1 rounded text-ink-faint hover:text-red-400 shrink-0 transition-colors"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        );
+      })}
       {progress !== null && (
         <div className="flex items-center gap-2 rounded-xl border border-primary/40 bg-surface/70 px-3 py-2">
           <Loader2 size={13} className="animate-spin text-primary-glow shrink-0" />
@@ -686,8 +801,53 @@ function AttachmentBar({
         </div>
       )}
       {attachments.length > 0 && (
-        <p className="text-[10.5px] text-ink-faint leading-relaxed px-1">{notice}</p>
+        <p className="text-[10.5px] text-ink-faint leading-relaxed px-1">
+          {anyReady ? t("ragAttachmentReady") : t("attachmentNotice")}
+        </p>
       )}
+    </div>
+  );
+}
+
+/* ---------- مصادر الرد ---------- */
+function SourcesList({ sources, devMode }: { sources: MsgSource[]; devMode?: boolean }) {
+  const { t } = useI18n();
+
+  async function openSource(fileId: string) {
+    const res = await fetch(`/api/files/${fileId}/download`);
+    if (!res.ok) return;
+    const j = (await res.json()) as { url?: string };
+    if (j.url) window.open(j.url, "_blank", "noopener");
+  }
+
+  return (
+    <div className="mt-3 pt-2.5 border-t border-line/40">
+      <div className="text-[11px] font-medium text-ink-faint mb-1.5">{t("sources")}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {sources.map((s, i) => (
+          <button
+            key={`${s.fileId}-${i}`}
+            onClick={() => void openSource(s.fileId)}
+            title={s.snippet}
+            className="group flex items-center gap-1.5 max-w-full rounded-lg border border-line bg-raised/70 px-2.5 py-1.5 text-start hover:border-primary/40 transition-colors"
+          >
+            <FileText size={11} className="text-primary-glow shrink-0" />
+            <span className="text-[11.5px] text-ink truncate" dir="ltr">
+              {s.fileName}
+            </span>
+            {s.pageNumber != null && (
+              <span className="text-[10px] text-ink-faint shrink-0">
+                {t("page")} {s.pageNumber}
+              </span>
+            )}
+            {devMode && s.similarity !== undefined && (
+              <span className="text-[9.5px] text-ink-faint shrink-0" dir="ltr">
+                {s.similarity.toFixed(2)}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

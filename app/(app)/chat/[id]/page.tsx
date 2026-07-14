@@ -26,10 +26,11 @@ export default async function ConversationPage({
     .maybeSingle();
   if (!conv) redirect("/chat");
 
-  const [{ data: rows }, { data: prefs }, { data: profile }] = await Promise.all([
+  const [{ data: rows }, { data: prefs }, { data: profile }, { data: convFiles }] =
+    await Promise.all([
     supabase
       .from("messages")
-      .select("id, role, content")
+      .select("id, role, content, metadata")
       .eq("conversation_id", id)
       .is("deleted_at", null)
       .order("created_at", { ascending: true })
@@ -40,9 +41,26 @@ export default async function ConversationPage({
       .eq("user_id", user.id)
       .maybeSingle(),
     supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
+    supabase
+      .from("files")
+      .select("id, original_name, status, rag_total_chunks, rag_done_chunks, rag_error")
+      .eq("conversation_id", id)
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: true })
+      .limit(20),
   ]);
 
   const models: ChatModel[] = listModelOptions();
+
+  const initialAttachments = (convFiles ?? []).map((f) => ({
+    id: f.id,
+    name: f.original_name,
+    status: f.status,
+    ragTotal: f.rag_total_chunks,
+    ragDone: f.rag_done_chunks,
+    ragError: f.rag_error,
+  }));
 
   const candidates = [conv.model_id, prefs?.default_model_id];
   const initialModelId =
@@ -52,11 +70,17 @@ export default async function ConversationPage({
 
   const initialMessages = (rows ?? [])
     .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({
-      id: m.id,
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
+    .map((m) => {
+      const meta = (m.metadata ?? {}) as { sources?: unknown };
+      return {
+        id: m.id,
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        sources: Array.isArray(meta.sources)
+          ? (meta.sources as import("@/components/chat/chat-view").MsgSource[])
+          : undefined,
+      };
+    });
 
   return (
     <ChatView
@@ -67,6 +91,7 @@ export default async function ConversationPage({
       models={models}
       initialModelId={initialModelId}
       greetingName={profile?.display_name ?? ""}
+      initialAttachments={initialAttachments}
       devMode={process.env.NODE_ENV !== "production"}
     />
   );

@@ -149,4 +149,4 @@ export async function processFile(
 
 /** الحقول الآمنة للإرجاع للواجهة — بلا storage_path */
 export const PUBLIC_FILE_FIELDS =
-  "id, original_name, mime_type, size_bytes, status, project_id, conversation_id, extraction_error, metadata, created_at, updated_at";
+  "id, original_name, mime_type, size_bytes, status, project_id, conversation_id, extraction_error, metadata, created_at, updated_at, rag_total_chunks, rag_done_chunks, rag_error";

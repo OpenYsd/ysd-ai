@@ -14,6 +14,9 @@ export interface UploadedFileRow {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  rag_total_chunks?: number | null;
+  rag_done_chunks?: number | null;
+  rag_error?: string | null;
 }
 
 export interface UploadHandle {

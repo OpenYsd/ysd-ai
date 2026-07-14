@@ -157,6 +157,35 @@ export function FilesView({
     }
   }
 
+  /** تجهيز الملف للذكاء الاصطناعي — مع استطلاع التقدم الحقيقي */
+  async function prepareRag(f: UploadedFileRow) {
+    setBusyId(f.id);
+    // أطلق التجهيز (طويل) واستطلع الحالة بالتوازي
+    const prepare = fetch(`/api/files/${f.id}/rag`, { method: "POST" });
+    const poll = (async () => {
+      for (let i = 0; i < 200; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const res = await fetch(`/api/files/${f.id}`);
+        if (!res.ok) return;
+        const j = (await res.json()) as { file?: UploadedFileRow };
+        if (!j.file) return;
+        setFiles((prev) => prev.map((x) => (x.id === f.id ? j.file! : x)));
+        if (!["chunking", "embedding"].includes(j.file.status)) return;
+      }
+    })();
+    const res = await prepare;
+    const body = (await res.json().catch(() => null)) as {
+      file?: UploadedFileRow;
+      error?: string;
+    } | null;
+    await poll;
+    setBusyId(null);
+    if (body?.file) {
+      setFiles((prev) => prev.map((x) => (x.id === f.id ? body.file! : x)));
+    }
+    if (!res.ok && body?.error) setError(body.error);
+  }
+
   async function linkProject(f: UploadedFileRow, projectId: string | null) {
     setBusyId(f.id);
     const ok = await api(`/api/files/${f.id}`, "PATCH", { projectId });
@@ -362,6 +391,7 @@ export function FilesView({
                 busy={busyId === f.id}
                 onDelete={() => void removeFile(f)}
                 onRetry={() => void retryProcess(f)}
+                onPrepareRag={() => void prepareRag(f)}
                 onLinkProject={(pid) => void linkProject(f, pid)}
                 onDownload={() => void download(f)}
               />
@@ -379,6 +409,7 @@ function FileRow({
   busy,
   onDelete,
   onRetry,
+  onPrepareRag,
   onLinkProject,
   onDownload,
 }: {
@@ -387,6 +418,7 @@ function FileRow({
   busy: boolean;
   onDelete: () => void;
   onRetry: () => void;
+  onPrepareRag: () => void;
   onLinkProject: (projectId: string | null) => void;
   onDownload: () => void;
 }) {
@@ -395,14 +427,29 @@ function FileRow({
   const isImage = file.mime_type.startsWith("image/");
   const extractedChars = (file.metadata?.extracted_chars as number | undefined) ?? 0;
 
+  const ragProcessing = file.status === "chunking" || file.status === "embedding";
+  const ragPct =
+    ragProcessing && file.rag_total_chunks
+      ? Math.round(((file.rag_done_chunks ?? 0) / file.rag_total_chunks) * 100)
+      : null;
+
   const statusBadge =
-    file.status === "ready"
-      ? { label: t("statusReady"), cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
-      : file.status === "processing"
-        ? { label: t("statusProcessing"), cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
-        : file.status === "failed"
-          ? { label: t("statusFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" }
-          : { label: t("statusUploaded"), cls: "bg-raised text-ink-faint border-line" };
+    file.status === "ready_for_rag"
+      ? { label: t("ragReady"), cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
+      : file.status === "rag_failed"
+        ? { label: t("ragFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" }
+        : ragProcessing
+          ? {
+              label: `${t("ragPreparing")}${ragPct !== null ? ` ${ragPct}%` : "…"}`,
+              cls: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+            }
+          : file.status === "ready"
+            ? { label: isImage ? t("statusReady") : t("textExtracted"), cls: "bg-primary/15 text-primary-glow border-primary/30" }
+            : file.status === "processing"
+              ? { label: t("statusProcessing"), cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
+              : file.status === "failed"
+                ? { label: t("statusFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" }
+                : { label: t("statusUploaded"), cls: "bg-raised text-ink-faint border-line" };
 
   return (
     <div className="rise rounded-xl border border-line/70 bg-surface/60 hover:border-primary/30 transition-colors">
@@ -446,6 +493,11 @@ function FileRow({
               {file.extraction_error}
             </p>
           )}
+          {file.rag_error && file.status === "rag_failed" && (
+            <p className="text-[12px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              {file.rag_error}
+            </p>
+          )}
 
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -463,6 +515,17 @@ function FileRow({
               >
                 <RefreshCw size={11} />
                 {t("retryProcess")}
+              </button>
+            )}
+            {!isImage && ["ready", "rag_failed", "ready_for_rag"].includes(file.status) && (
+              <button
+                onClick={onPrepareRag}
+                disabled={busy}
+                className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-lg font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
+                style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+              >
+                {busy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                {file.status === "ready" ? t("ragPrepare") : t("ragRetry")}
               </button>
             )}
             {projects.length > 0 && (

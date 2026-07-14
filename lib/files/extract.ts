@@ -5,7 +5,13 @@
  */
 
 export type ExtractResult =
-  | { ok: true; text: string; meta?: Record<string, unknown> }
+  | {
+      ok: true;
+      text: string;
+      meta?: Record<string, unknown>;
+      /** نصوص الصفحات (PDF) — للحفاظ على أرقام الصفحات في RAG */
+      pages?: string[];
+    }
   | { ok: false; error: string };
 
 const EMPTY_ERROR = "الملف لا يحتوي نصًا قابلًا للاستخراج.";
@@ -43,15 +49,17 @@ export async function extractText(
     if (ext === "pdf") {
       const { extractText: pdfExtract, getDocumentProxy } = await import("unpdf");
       const doc = await getDocumentProxy(new Uint8Array(buffer));
-      const { text, totalPages } = await pdfExtract(doc, { mergePages: true });
-      const merged = (Array.isArray(text) ? text.join("\n") : text).trim();
+      // بدون دمج — نحتفظ بنص كل صفحة لأرقام الصفحات في RAG
+      const { text, totalPages } = await pdfExtract(doc, { mergePages: false });
+      const pages = (Array.isArray(text) ? text : [text]).map((p) => (p ?? "").trim());
+      const merged = pages.join("\n\n").trim();
       if (!merged) {
         return {
           ok: false,
           error: "لا يحتوي PDF على نص قابل للاستخراج (قد يكون صورًا ممسوحة — OCR غير مدعوم بعد).",
         };
       }
-      return { ok: true, text: merged, meta: { pages: totalPages } };
+      return { ok: true, text: merged, meta: { pages: totalPages }, pages };
     }
 
     if (ext === "docx") {

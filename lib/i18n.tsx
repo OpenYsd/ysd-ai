@@ -192,6 +192,25 @@ const dict = {
     en: "Current maximum file size is 50MB due to storage provider constraints.",
   },
   projectFiles: { ar: "ملفات المشروع", en: "Project files" },
+  ragPreparing: {
+    ar: "جارٍ تجهيز الملف للذكاء الاصطناعي",
+    en: "Preparing file for AI",
+  },
+  ragReady: { ar: "جاهز للمحادثة", en: "Ready for chat" },
+  ragFailed: { ar: "فشل التجهيز", en: "Preparation failed" },
+  ragPrepare: { ar: "تجهيز للذكاء الاصطناعي", en: "Prepare for AI" },
+  ragRetry: { ar: "إعادة تجهيز للذكاء الاصطناعي", en: "Re-prepare for AI" },
+  textExtracted: { ar: "تم استخراج النص", en: "Text extracted" },
+  sources: { ar: "المصادر", en: "Sources" },
+  page: { ar: "صفحة", en: "Page" },
+  removeFromContext: {
+    ar: "إزالة من سياق المحادثة (دون حذف الملف)",
+    en: "Remove from chat context (keeps the file)",
+  },
+  ragAttachmentReady: {
+    ar: "الملف جاهز — اسأل عن محتواه وسيجيب YSD AI من مقاطعه مع ذكر المصادر.",
+    en: "File ready — ask about its content and YSD AI will answer from it with sources.",
+  },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },
   suggestions: {
     ar: [

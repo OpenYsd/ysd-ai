@@ -107,6 +107,9 @@ export async function DELETE(
     .remove([row.storage_path]);
   if (rmError) console.error(`[files] storage remove warning: ${rmError.message.slice(0, 80)}`);
 
+  // حذف كل مقاطع RAG والمتجهات نهائيًا (الحذف ناعم للملف، صلب للمقاطع)
+  await supabase.from("file_chunks").delete().eq("file_id", id).eq("user_id", user.id);
+
   await supabase
     .from("files")
     .update({

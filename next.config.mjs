@@ -8,6 +8,8 @@ const securityHeaders = [
 const nextConfig = {
   // يوجد package-lock.json آخر في مجلد أعلى — نثبّت جذر المشروع هنا
   outputFileTracingRoot: import.meta.dirname,
+  // نموذج Embeddings المحلي — لا يُحزَّم مع webpack (native/onnx)
+  serverExternalPackages: ["@huggingface/transformers", "onnxruntime-node"],
   experimental: {
     // مع وجود middleware يخزّن Next جسم الطلب بحد افتراضي 10MB —
     // نرفعه ليتسع لسقف مزود التخزين (50MB) + هامش multipart
