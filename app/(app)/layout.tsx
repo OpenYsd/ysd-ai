@@ -13,7 +13,7 @@ export default async function AppLayout({
 
   const [{ data: profile }, { data: sub }, { data: conversations }] =
     await Promise.all([
-      supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
+      supabase.from("profiles").select("display_name, role").eq("id", user.id).maybeSingle(),
       supabase.from("subscriptions").select("tier").eq("user_id", user.id).maybeSingle(),
       supabase
         .from("conversations")
@@ -29,6 +29,7 @@ export default async function AppLayout({
       userName={profile?.display_name ?? user.email?.split("@")[0] ?? ""}
       tier={sub?.tier ?? "free"}
       conversations={conversations ?? []}
+      isAdmin={profile?.role === "admin" || profile?.role === "owner"}
     >
       {children}
     </AppShell>

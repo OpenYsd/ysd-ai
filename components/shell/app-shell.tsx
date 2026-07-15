@@ -22,6 +22,7 @@ import {
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Sun,
   Trash2,
   User,
@@ -42,6 +43,7 @@ interface AppShellProps {
   userName: string;
   tier: string;
   conversations: ConversationItem[];
+  isAdmin?: boolean;
   children: React.ReactNode;
 }
 
@@ -53,7 +55,7 @@ export function AppShell(props: AppShellProps) {
   );
 }
 
-function ShellInner({ userName, tier, conversations, children }: AppShellProps) {
+function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShellProps) {
   const { t, locale, setLocale, dir } = useI18n();
   const { theme, setTheme } = useTheme();
   const { mobileOpen, setMobileOpen } = useShell();
@@ -286,6 +288,15 @@ function ShellInner({ userName, tier, conversations, children }: AppShellProps) 
             collapsed={collapsed}
             active={pathname.startsWith("/settings")}
           />
+          {isAdmin && (
+            <NavItem
+              href="/admin"
+              icon={<ShieldCheck size={15} />}
+              label="لوحة الإدارة"
+              collapsed={collapsed}
+              active={pathname.startsWith("/admin")}
+            />
+          )}
 
           {/* المستخدم + أدوات سريعة */}
           <div

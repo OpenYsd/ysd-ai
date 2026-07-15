@@ -48,6 +48,14 @@ export async function POST(req: NextRequest) {
   // 2) Rate limiting
   if (!rateLimit(user.id)) return json({ error: "تجاوزت حد الطلبات، حاول بعد قليل." }, 429);
 
+  // 2ب) حالة الحساب — حظر/تعليق AI من لوحة الإدارة (تحقق خادمي)
+  const { data: prof } = await supabase
+    .from("profiles").select("status").eq("id", user.id).maybeSingle();
+  if (prof?.status === "banned")
+    return json({ error: "حسابك موقوف. تواصل مع إدارة المنصة." }, 403);
+  if (prof?.status === "ai_suspended")
+    return json({ error: "استخدام الذكاء الاصطناعي معلّق لحسابك. تواصل مع إدارة المنصة." }, 403);
+
   // 3) التحقق من المدخلات
   const parsed = chatRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
