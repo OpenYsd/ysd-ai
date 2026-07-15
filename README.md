@@ -63,7 +63,13 @@ middleware.ts              حماية الجلسات والصفحات ولوحة
 
 انظر `docs/ADDING_A_PROVIDER.md` — باختصار: نفّذ واجهة `AIProviderAdapter` وسجّله في `lib/ai/registry.ts`. لا حاجة لتعديل أي شيء آخر.
 
-## الميزات — v0.4.1
+## الميزات — v0.5.0
+
+**لوحة الإدارة والمراقبة (`/admin`):**
+- حماية متعددة الطبقات (middleware + حارس خادمي + RLS + دوال `security definer` owner-only)
+- 7 صفحات ببيانات حقيقية: نظرة عامة، مستخدمون، نماذج، RAG، استهلاك، تدقيق، إعدادات
+- إدارة المستخدمين (دور/باقة/حظر/تعليق AI/إعادة تعيين استهلاك)، حدود الباقات، وظائف RAG
+- سجل تدقيق آمن (before/after، correlation، ip) بلا أسرار — و**إصلاح ثغرة تصعيد صلاحيات**
 
 **Deployment Ready:**
 - فحص صحي آمن `GET /api/health` (تطبيق · Supabase · DB · pgvector · Storage · OpenRouter · Embeddings) بلا طلب AI مدفوع ولا كشف أسرار، مع `correlation_id`

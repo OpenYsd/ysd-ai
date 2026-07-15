@@ -32,13 +32,16 @@ export async function GET(req: NextRequest) {
   const { data, count, error } = await q.range(page * PAGE, page * PAGE + PAGE - 1);
   if (error) return json({ error: "تعذّر جلب السجل | Failed" }, 500);
 
-  // أسماء المشرفين
-  const adminIds = [...new Set((data ?? []).map((r) => r.admin_id))];
+  // أسماء المشرفين — admin_id قد يكون NULL (حساب مشرف محذوف، ON DELETE SET NULL)
+  const adminIds = [...new Set((data ?? []).map((r) => r.admin_id).filter(Boolean))];
   const admins = adminIds.length
     ? (await ctx.supabase.from("profiles").select("id, display_name").in("id", adminIds)).data ?? []
     : [];
   const nameById = new Map(admins.map((a) => [a.id, a.display_name]));
 
-  const logs = (data ?? []).map((r) => ({ ...r, adminName: nameById.get(r.admin_id) ?? "—" }));
+  const logs = (data ?? []).map((r) => ({
+    ...r,
+    adminName: r.admin_id ? (nameById.get(r.admin_id) ?? "—") : "حساب محذوف",
+  }));
   return json({ logs, total: count ?? 0, page, pageSize: PAGE }, 200);
 }

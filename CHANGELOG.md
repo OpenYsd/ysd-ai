@@ -2,6 +2,19 @@
 
 جميع الإصدارات مُختبرة (typecheck · lint · build · unit + runtime tests) قبل الوسم.
 
+## v0.5.0 — 2026-07-15 · لوحة الإدارة والمراقبة
+
+- حماية متعددة الطبقات: middleware + حارس خادمي `getAdminContext` + سياسات RLS
+  (`is_admin`) + دوال `security definer` بقواعد owner-only — لا اعتماد على إخفاء الرابط.
+- **إصلاح أمني حرج**: سياسة `profiles` منذ 0001 كانت تتيح للمستخدم تعديل `role/status`
+  لنفسه (تصعيد صلاحيات) → صلاحيات على مستوى الأعمدة (0009). مُثبت حيًا: `42501 permission denied`.
+- صفحات: نظرة عامة (بيانات حقيقية + فلاتر)، المستخدمون، النماذج، RAG، الاستهلاك،
+  سجل التدقيق، الإعدادات — RTL/LTR، جداول/بطاقات جوال، pagination، skeletons، confirm.
+- 8 مسارات API إدارية (Zod، عملية واحدة صريحة ضد mass assignment، تدقيق لكل عملية).
+- سجل تدقيق آمن (correlation/ip/before/after مُنقّاة، بلا أسرار/نصوص). حالة الحساب
+  (banned/ai_suspended) تُفرض في المحادثة. migrations 0009 + 0010 (admin_id nullable).
+- اختبارات: تصعيد مغلق + صلاحيات 35/35 حيًا + تحقق واجهة owner (كمبيوتر/جوال).
+
 ## v0.4.1 — 2026-07-14 · Deployment Ready
 
 - فحص متغيرات البيئة عند الإقلاع (`instrumentation.ts`) دون طباعة قيم؛ `YSD_STRICT_ENV`.
