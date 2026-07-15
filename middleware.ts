@@ -3,7 +3,20 @@ import { NextResponse, type NextRequest } from "next/server";
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 
-const PUBLIC_PATHS = ["/login", "/register", "/forgot-password", "/auth"];
+const PUBLIC_PATHS = [
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/auth",
+  "/beta",
+  "/invite",
+  "/terms",
+  "/privacy",
+  "/suspended",
+  "/maintenance",
+];
+// مسارات API عامة لا تتطلب مستخدمًا نشطًا
+const PUBLIC_API = ["/api/health"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -26,26 +39,56 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   const path = request.nextUrl.pathname;
   const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
+  const isApi = path.startsWith("/api");
 
-  // مسارات API تتحقق من الجلسة بنفسها وترجع 401 JSON — لا توجيه لصفحة HTML
-  if (path.startsWith("/api")) return response;
+  if (PUBLIC_API.some((p) => path.startsWith(p))) return response;
 
-  // حماية الصفحات الخاصة
-  if (!user && !isPublic && path !== "/") {
-    return NextResponse.redirect(new URL("/login", request.url));
+  // غير مصادَق
+  if (!user) {
+    if (isApi) return response; // API يتحقق بنفسه ويرجع 401
+    if (!isPublic && path !== "/") return NextResponse.redirect(new URL("/login", request.url));
+    return response;
   }
 
-  // حماية لوحة الإدارة — حتى بكتابة الرابط يدويًا
-  if (path.startsWith("/admin")) {
-    if (!user) return NextResponse.redirect(new URL("/login", request.url));
-    const { data: profile } = await supabase
-      .from("profiles").select("role").eq("id", user.id).single();
-    if (!profile || (profile.role !== "admin" && profile.role !== "owner")) {
-      return NextResponse.redirect(new URL("/chat", request.url));
-    }
+  // مصادَق: اجلب الدور والحالة مرة واحدة
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, status")
+    .eq("id", user.id)
+    .maybeSingle();
+  const role = profile?.role;
+  const isStaff = role === "admin" || role === "owner";
+
+  // محظور: يُمنع من كل الصفحات والـAPIs الخاصة
+  if (profile?.status === "banned") {
+    if (isApi) return json403();
+    if (!isPublic) return NextResponse.redirect(new URL("/suspended", request.url));
+    return response;
+  }
+
+  // وضع الصيانة: يمنع المستخدم العادي، يسمح admin/owner (الصفحات فقط)
+  if (!isApi && !isPublic && !isStaff) {
+    const { data: mm } = await supabase
+      .from("platform_settings")
+      .select("value")
+      .eq("key", "maintenance_mode")
+      .maybeSingle();
+    if (mm?.value === true) return NextResponse.redirect(new URL("/maintenance", request.url));
+  }
+
+  // لوحة الإدارة — حتى بكتابة الرابط يدويًا
+  if (path.startsWith("/admin") && !isStaff) {
+    return NextResponse.redirect(new URL("/chat", request.url));
   }
 
   return response;
+}
+
+function json403() {
+  return new NextResponse(
+    JSON.stringify({ error: "حسابك موقوف | Account suspended" }),
+    { status: 403, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 export const config = {

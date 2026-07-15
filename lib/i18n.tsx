@@ -212,6 +212,56 @@ const dict = {
     en: "File ready — ask about its content and YSD AI will answer from it with sources.",
   },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },
+  betaTitle: { ar: "النسخة التجريبية الخاصة", en: "Private Beta" },
+  betaIntro: {
+    ar: "YSD AI حاليًا في نسخة تجريبية خاصة بالدعوة فقط. أدخل كود الدعوة للانضمام.",
+    en: "YSD AI is currently in invite-only private beta. Enter your invite code to join.",
+  },
+  inviteCode: { ar: "كود الدعوة", en: "Invite code" },
+  haveInvite: { ar: "لديّ كود دعوة", en: "I have an invite code" },
+  checkInvite: { ar: "تحقّق من الكود", en: "Verify code" },
+  inviteValid: { ar: "الكود صالح — أكمل التسجيل.", en: "Code valid — continue registration." },
+  inviteInvalid: {
+    ar: "كود الدعوة غير صالح أو منتهٍ أو مستنفد.",
+    en: "Invite code is invalid, expired, or exhausted.",
+  },
+  registrationClosed: {
+    ar: "التسجيل العام مغلق حاليًا. الانضمام بالدعوة فقط.",
+    en: "Public registration is closed. Invite only.",
+  },
+  agreeTerms: {
+    ar: "أوافق على شروط الاستخدام وسياسة الخصوصية",
+    en: "I agree to the Terms of Use and Privacy Policy",
+  },
+  mustAgree: {
+    ar: "يجب الموافقة على الشروط والخصوصية للمتابعة.",
+    en: "You must accept the Terms and Privacy Policy to continue.",
+  },
+  termsLink: { ar: "شروط الاستخدام", en: "Terms of Use" },
+  privacyLink: { ar: "سياسة الخصوصية", en: "Privacy Policy" },
+  suspendedTitle: { ar: "الحساب موقوف", en: "Account suspended" },
+  suspendedBody: {
+    ar: "تم إيقاف حسابك. إن كنت تعتقد أن هذا خطأ، تواصل مع إدارة المنصة.",
+    en: "Your account has been suspended. If you believe this is a mistake, contact support.",
+  },
+  maintenanceTitle: { ar: "صيانة مؤقتة", en: "Under maintenance" },
+  maintenanceBody: {
+    ar: "المنصة قيد الصيانة حاليًا. نعود قريبًا — شكرًا لصبرك.",
+    en: "The platform is under maintenance. We'll be back shortly — thanks for your patience.",
+  },
+  usageTitle: { ar: "استهلاكي", en: "My usage" },
+  remaining: { ar: "المتبقي", en: "Remaining" },
+  dailyMessages: { ar: "الرسائل اليوم", en: "Messages today" },
+  monthlyMessages: { ar: "الرسائل هذا الشهر", en: "Messages this month" },
+  ragOps: { ar: "عمليات RAG", en: "RAG operations" },
+  nearLimit: {
+    ar: "اقتربت من الحد — استخدمت أكثر من ٨٠٪.",
+    en: "Approaching your limit — over 80% used.",
+  },
+  atLimit: {
+    ar: "بلغت الحد. انتظر التجديد أو رقِّ باقتك.",
+    en: "You've reached the limit. Wait for renewal or upgrade.",
+  },
   suggestions: {
     ar: [
       { title: "ساعدني في البرمجة", desc: "اكتب، اشرح، أو صحّح كودًا" },

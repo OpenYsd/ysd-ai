@@ -14,6 +14,7 @@ import {
   ChevronsRight,
   FileText,
   FolderKanban,
+  Gauge,
   Languages,
   LogOut,
   Menu,
@@ -280,6 +281,13 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
             label={t("account")}
             collapsed={collapsed}
             active={pathname.startsWith("/account")}
+          />
+          <NavItem
+            href="/usage"
+            icon={<Gauge size={15} />}
+            label={t("usageTitle")}
+            collapsed={collapsed}
+            active={pathname.startsWith("/usage")}
           />
           <NavItem
             href="/settings"

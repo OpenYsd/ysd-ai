@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getAdminContext } from "@/lib/admin/guard";
 import { StatCard, StatusPill } from "@/components/admin/stat-card";
 import { AdminRangeFilter } from "@/components/admin/range-filter";
+import { BetaReport } from "@/components/admin/beta-report";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,8 @@ export default async function AdminOverview({
         <h1 className="text-[17px] font-semibold text-ink-strong">نظرة عامة</h1>
         <AdminRangeFilter current={range} />
       </div>
+
+      <BetaReport />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="إجمالي المستخدمين" value={totalUsers.count ?? 0} />
