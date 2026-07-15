@@ -13,7 +13,7 @@ alter table profiles add column if not exists status text not null default 'acti
 -- سياسة 0001 كانت تسمح للمستخدم بتعديل صفّه كاملًا (بما فيه role/status).
 -- نقيّد التعديل على الأعمدة الآمنة فقط؛ role/status لا تُغيَّر إلا عبر دوال
 -- security definer (admin_set_user_role/status). أمّا handle_new_user فتعمل كـ definer.
-revoke update on profiles from authenticated;
+revoke update on profiles from authenticated, anon;
 grant update (display_name, avatar_url, locale, updated_at) on profiles to authenticated;
 
 -- ---------- إعدادات المنصة المركزية ----------
@@ -80,6 +80,14 @@ do $$ begin
     create policy "usage_admin_read" on usage_events for select using (is_admin());
   end if;
 end $$;
+
+-- تقوية is_admin (البوابة الأمنية) بنفس search_path الآمن — كانت 'public' فقط في 0001
+create or replace function is_admin() returns boolean
+language sql security definer set search_path = public, pg_temp stable as $$
+  select exists (
+    select 1 from profiles where id = auth.uid() and role in ('admin', 'owner')
+  );
+$$;
 
 -- دالة: هل المستخدم الحالي owner؟
 create or replace function is_owner() returns boolean
@@ -239,9 +247,14 @@ begin
     'admin_cancel_rag_job(uuid)'
   ]) loop
     execute format('revoke all on function %s from public', fn);
+    execute format('revoke all on function %s from anon', fn);
     execute format('grant execute on function %s to authenticated', fn);
   end loop;
 end $$;
+
+-- ملاحظة أمنية: is_admin()/is_owner() تبقى قابلة للتنفيذ (كما في 0001) لأنها
+-- تُستدعى داخل سياسات RLS؛ سحب تنفيذها يجعل تقييم السياسة يفشل لغير المصرّح.
+-- وهي آمنة: تُرجع false لغير المشرف ولا تكشف أي بيانات. لا تُغيّر شيئًا.
 
 -- ============================================================
 -- تمهيد أول owner يدويًا (شغّله مرة واحدة ببريدك):

@@ -83,8 +83,16 @@ const joined = bodies.join(" ");
 check("لا تسريب مفاتيح", !/sk-or-[A-Za-z0-9]{10}|sk-ant|eyJ[A-Za-z0-9]{10}/.test(joined));
 
 // ===== اختبارات owner/admin الكاملة (إن توفّر owner مُمهّد) =====
-const ownerEmail = process.env.YSD_OWNER_EMAIL;
-const ownerPass = process.env.YSD_OWNER_PASSWORD;
+// يقرأ البيانات من env أو من ملف scripts/.qa-owner.json المُتجاهَل
+let ownerEmail = process.env.YSD_OWNER_EMAIL;
+let ownerPass = process.env.YSD_OWNER_PASSWORD;
+if (!ownerEmail || !ownerPass) {
+  try {
+    const creds = JSON.parse(readFileSync(new URL("./.qa-owner.json", import.meta.url), "utf8"));
+    ownerEmail = creds.email;
+    ownerPass = creds.password;
+  } catch { /* لا ملف — يُتخطّى القسم */ }
+}
 if (ownerEmail && ownerPass) {
   console.log("\n=== د) عمليات owner/admin الكاملة ===");
   const oc = createClient(URL_, ANON, { auth: { persistSession: false } });

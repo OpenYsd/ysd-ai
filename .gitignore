@@ -8,3 +8,5 @@ tsconfig.tsbuildinfo
 .cache/
 scripts/.fixtures/
 /public/qa-*
+scripts/.qa-owner.json
+scripts/.qa-owner-inject.js
