@@ -66,10 +66,36 @@ export function RegisterForm({
     }
     setLoading(true);
     setError(null);
+
+    // استبدل كود الدعوة بتذكرة مؤقتة أحادية الاستخدام قبل أي اتصال بـGoTrue.
+    // أي مفتاح يُرسَل في signUp.data ينتهي في استجابة GoTrue وفي الـJWT، فلا
+    // يجوز أن يصله الكود الخام إطلاقًا.
+    let ticket = "";
+    if (code.trim()) {
+      const res = await fetch("/api/invite/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code.trim() }),
+      });
+      if (res.status === 429) {
+        setError("محاولات كثيرة — انتظر قليلًا.");
+        setLoading(false);
+        return;
+      }
+      const j = (await res.json().catch(() => null)) as { ticket?: string } | null;
+      if (!res.ok || !j?.ticket) {
+        setError(t("inviteInvalid"));
+        setInviteOk(false);
+        setLoading(false);
+        return;
+      }
+      ticket = j.ticket;
+    }
+
     const supabase = createClient();
     // نرسل «وافق» فقط — رقم النسخة يختمه المُحفّز من platform_settings (لا يُوثق بالعميل)
     const meta: Record<string, string> = { display_name: displayName, terms_accepted: "true" };
-    if (code.trim()) meta.invite_code = code.trim();
+    if (ticket) meta.invite_ticket = ticket;
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
