@@ -55,25 +55,39 @@ async function newInvite({ maxUses = 1, expiresInDays = 30, label = "qa" } = {})
 const genCode = () => { const a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", b = randomBytes(16); let o = ""; for (let i = 0; i < 16; i++) o += a[b[i] % a.length]; return `${o.slice(0,4)}-${o.slice(4,8)}-${o.slice(8,12)}-${o.slice(12,16)}`; };
 
 /**
- * انحراف ساعة القاعدة عن ساعة الجهاز. حاسم لاختبار الانتهاء: الدالة تقارن
- * expires_at بـ now() في القاعدة، فلو حسبنا التاريخ بساعتنا المنحرفة لأنشأنا
- * دعوة «منتهية سلفًا» بحساب القاعدة، فيفشل claim ويمرّ فحص الانتهاء زائفًا.
+ * إدراج دعوة مباشرة بجلسة owner — سياسة invites_admin_all تسمح به للمشرف.
+ * نستخدمه للتجهيزات التي تحتاج تاريخ انتهاء دقيقًا (ثوانٍ أو ماضٍ)، وهو ما لم
+ * يعد ممكنًا عبر admin_create_invite بعد 0015 (تستقبل أيامًا بين 1 و365 فقط،
+ * وتحسب التاريخ بـ now() في القاعدة).
  */
-async function measureDbSkewMs() {
+async function insertInvite({ maxUses = 1, expiresAtIso = null, label = "qa-fixture" } = {}) {
   const code = genCode();
-  const t0 = Date.now();
-  const r = await oc.rpc("admin_create_invite", { p_code_hash: sha256(code), p_code_hint: "SKEW", p_label: "qa-skew", p_max_uses: 1, p_expires_at: new Date(Date.now() + 3600_000).toISOString() });
-  const t1 = Date.now();
-  madeInvites.push(r.data);
-  const row = await oc.from("beta_invites").select("created_at").eq("id", r.data).single();
-  return new Date(row.data.created_at).getTime() - (t0 + t1) / 2;
+  const r = await oc.from("beta_invites")
+    .insert({ code_hash: sha256(code), code_hint: code.slice(-4), label, max_uses: maxUses, expires_at: expiresAtIso })
+    .select("id, created_at").single();
+  if (r.data?.id) madeInvites.push(r.data.id);
+  return { id: r.data?.id, code, createdAt: r.data?.created_at, error: r.error };
 }
 
-/** دعوة تنتهي بعد ثوانٍ **بساعة القاعدة** — عبر RPC (المسار يفرض ≥ يوم) */
+/**
+ * انحراف ساعة القاعدة عن ساعة الجهاز. حاسم لتجهيزات الانتهاء: الإنفاذ يقارن
+ * expires_at بـ now() في القاعدة، فلو حسبنا التاريخ بساعتنا المنحرفة لأنشأنا
+ * دعوة «منتهية سلفًا» بحساب القاعدة، فيفشل claim ويمرّ فحص الانتهاء زائفًا.
+ * (قيس هنا 194 ثانية — ولهذا السبب نفسه وُجدت 0015.)
+ */
+async function measureDbSkewMs() {
+  const t0 = Date.now();
+  const r = await insertInvite({ label: "qa-skew", expiresAtIso: new Date(Date.now() + 3600_000).toISOString() });
+  const t1 = Date.now();
+  return new Date(r.createdAt).getTime() - (t0 + t1) / 2;
+}
+
+/** دعوة تنتهي بعد ثوانٍ **بساعة القاعدة** (ثوانٍ سالبة = منتهية سلفًا) */
 async function newInviteExpiringIn(seconds, maxUses = 1) {
-  const code = genCode();
-  const r = await oc.rpc("admin_create_invite", { p_code_hash: sha256(code), p_code_hint: code.slice(-4), p_label: "qa-expiring", p_max_uses: maxUses, p_expires_at: new Date(Date.now() + dbSkewMs + seconds * 1000).toISOString() });
-  madeInvites.push(r.data); return { id: r.data, code };
+  return insertInvite({
+    maxUses, label: "qa-expiring",
+    expiresAtIso: new Date(Date.now() + dbSkewMs + seconds * 1000).toISOString(),
+  });
 }
 /** الكود → تذكرة (عبر RPC مباشرة: مسار الـAPI مُختبَر في scrub-check، ونتجنّب حدّه) */
 async function claim(code) {

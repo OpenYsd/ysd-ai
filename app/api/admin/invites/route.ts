@@ -54,16 +54,16 @@ export async function POST(req: NextRequest) {
   const code = generateCode();
   const codeHash = sha256(code);
   const hint = code.slice(-4);
-  const expiresAt = expiresInDays
-    ? new Date(Date.now() + expiresInDays * 86400_000).toISOString()
-    : null;
 
+  // المدة بالأيام فقط — القاعدة تحسب expires_at بـ now() (migration 0015).
+  // لا Date.now() هنا: الإنفاذ يجري بساعة القاعدة، وحساب التاريخ بساعة التطبيق
+  // كان يُبقي ساعتين مختلفتين في مسار واحد.
   const { data: id, error } = await ctx.supabase.rpc("admin_create_invite", {
     p_code_hash: codeHash,
     p_code_hint: hint,
     p_label: label ?? "",
     p_max_uses: maxUses,
-    p_expires_at: expiresAt,
+    p_expires_in_days: expiresInDays ?? null,
   });
   if (error || !id) return json({ error: "تعذّر إنشاء الدعوة | Failed" }, 500);
 
