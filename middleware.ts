@@ -66,14 +66,18 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  // وضع الصيانة: يمنع المستخدم العادي، يسمح admin/owner (الصفحات فقط)
-  if (!isApi && !isPublic && !isStaff) {
+  // وضع الصيانة: يمنع المستخدم العادي من الصفحات **والـAPIs الخاصة**، ويسمح admin/owner.
+  // حجب الصفحات وحده لا يكفي: جافاسكربت في المتصفح يظل قادرًا على نداء /api/chat مباشرة.
+  // (/api/health عامة وقد رجعت قبل هنا، و/login تبقى متاحة ليدخل الطاقم أثناء الصيانة)
+  if (!isPublic && !isStaff) {
     const { data: mm } = await supabase
       .from("platform_settings")
       .select("value")
       .eq("key", "maintenance_mode")
       .maybeSingle();
-    if (mm?.value === true) return NextResponse.redirect(new URL("/maintenance", request.url));
+    if (mm?.value === true) {
+      return isApi ? json503() : NextResponse.redirect(new URL("/maintenance", request.url));
+    }
   }
 
   // لوحة الإدارة — حتى بكتابة الرابط يدويًا
@@ -88,6 +92,13 @@ function json403() {
   return new NextResponse(
     JSON.stringify({ error: "حسابك موقوف | Account suspended" }),
     { status: 403, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+function json503() {
+  return new NextResponse(
+    JSON.stringify({ error: "المنصة تحت الصيانة | Under maintenance" }),
+    { status: 503, headers: { "Content-Type": "application/json", "Retry-After": "300" } },
   );
 }
 

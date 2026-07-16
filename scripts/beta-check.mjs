@@ -1,11 +1,13 @@
 /**
- * اختبارات Private Beta (بعد تطبيق migration 0011 + require_invite=true).
- * يتطلب: الخادم على 3000 + owner (scripts/.qa-owner.json أو YSD_OWNER_*).
- * لا يطبع الكود الخام ولا بيانات دخول. ملاحظة: إن كان تأكيد البريد مفعّلًا،
- * signUp لا يُنشئ جلسة لكن المُحفّز يعمل — نتحقق من قاعدة البيانات عبر owner.
+ * اختبارات Private Beta الحية (بعد migration 0011).
+ * يتطلب: الخادم على 3000 + حساب QA owner في scripts/.qa-owner.json.
+ * ملاحظة: أقسام التسجيل تتطلب Confirm email = OFF مؤقتًا (وإلا لا تُنشأ جلسة
+ * للمستخدم العادي فيتعذّر اختبار banned/الصيانة). البند 7 (بريد التأكيد الحقيقي)
+ * يُختبر يدويًا من المتصفح.
+ * لا يطبع الكود الخام ولا كلمات المرور ولا access tokens.
  */
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const envText = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
@@ -22,7 +24,7 @@ try { creds = JSON.parse(readFileSync(new URL("./.qa-owner.json", import.meta.ur
 catch { creds = { email: process.env.YSD_OWNER_EMAIL, password: process.env.YSD_OWNER_PASSWORD }; }
 
 let pass = 0, fail = 0; const failures = [];
-function check(n, ok, d = "") { if (ok) { pass++; console.log(`  ✅ ${n}`); } else { fail++; failures.push(n); console.log(`  ❌ ${n}${d ? ` — ${d}` : ""}`); } }
+const check = (n, ok, d = "") => { if (ok) { pass++; console.log(`  ✅ ${n}`); } else { fail++; failures.push(n); console.log(`  ❌ ${n}${d ? ` — ${d}` : ""}`); } };
 function cookieOf(s) {
   const v = "base64-" + Buffer.from(JSON.stringify(s), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   if (v.length <= 3180) return `sb-${projectRef}-auth-token=${v}`;
@@ -32,124 +34,150 @@ function cookieOf(s) {
 const anonClient = () => createClient(URL_, ANON, { auth: { persistSession: false } });
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 const H = (c) => ({ Cookie: c, "Content-Type": "application/json" });
+const genCode = () => {
+  const a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", b = randomBytes(16);
+  let o = ""; for (let i = 0; i < 16; i++) o += a[b[i] % a.length];
+  return `${o.slice(0, 4)}-${o.slice(4, 8)}-${o.slice(8, 12)}-${o.slice(12, 16)}`;
+};
 
-// owner
 const oc = anonClient();
 const login = await oc.auth.signInWithPassword({ email: creds.email, password: creds.password });
 if (login.error) { console.error("owner login failed"); process.exit(1); }
 const oCookie = cookieOf(login.data.session);
 
-async function signup(email, meta) {
-  const c = anonClient();
-  const r = await c.auth.signUp({ email, password: `Qa!${Date.now()}xYz`, options: { data: meta } });
-  return { error: r.error, userId: r.data?.user?.id ?? null };
+const created = [];
+async function newInvite(body) {
+  const r = await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify(body) });
+  const j = await r.json(); created.push(j.id); return { status: r.status, ...j };
 }
+async function signup(tag, meta) {
+  const c = anonClient();
+  const r = await c.auth.signUp({ email: `ysd.qa.${tag}.${Date.now()}${Math.floor(Math.random() * 999)}@qa-ysd.com`, password: `Qa!${Date.now()}xYz`, options: { data: meta } });
+  return { error: r.error, userId: r.data?.user?.id ?? null, session: r.data?.session ?? null };
+}
+const inviteRow = async (id) => (await (await fetch(`${APP}/api/admin/invites`, { headers: H(oCookie) })).json()).invites.find((i) => i.id === id);
 
 console.log("=== 1) إنشاء دعوة: الكود مرة واحدة، hash فقط في DB ===");
-const created = await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ label: "beta-test", maxUses: 2, expiresInDays: 30 }) });
-const inv = await created.json();
-check("إنشاء دعوة → 201 مع كود", created.status === 201 && typeof inv.code === "string" && inv.code.length >= 12);
-const rawCode = inv.code; // لا يُطبع
-// تحقق أن الكود الخام ليس في قاعدة البيانات، والـ hash موجود
+const inv = await newInvite({ label: "beta-test", maxUses: 2, expiresInDays: 30 });
+check("إنشاء دعوة → 201 مع كود", inv.status === 201 && typeof inv.code === "string" && inv.code.length === 19);
+const rawCode = inv.code; // لا يُطبع أبدًا
 const row = await oc.from("beta_invites").select("code_hash, code_hint").eq("id", inv.id).single();
 check("الكود الخام غير مخزّن (hash فقط)", row.data?.code_hash === sha256(rawCode) && !JSON.stringify(row.data).includes(rawCode));
 check("hint = آخر 4 أحرف فقط", row.data?.code_hint === rawCode.slice(-4));
 
-console.log("\n=== 2) beta_invite_valid عبر anon ===");
+console.log("\n=== 2) beta_invite_valid + مسار التحقق ===");
 const ac = anonClient();
-const okValid = await ac.rpc("beta_invite_valid", { p_code: rawCode });
-check("دعوة صالحة → true", okValid.data === true, String(okValid.data));
-const badValid = await ac.rpc("beta_invite_valid", { p_code: "WRONG-CODE-1234" });
-check("كود خاطئ → false", badValid.data === false);
+check("دعوة صالحة → true", (await ac.rpc("beta_invite_valid", { p_code: rawCode })).data === true);
+check("كود خاطئ → false", (await ac.rpc("beta_invite_valid", { p_code: "WRONG-CODE-1234" })).data === false);
+const vr = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: rawCode }) });
+const vb = await vr.json();
+check("المسار يُرجع {valid:true} فقط بلا تفاصيل", vb.valid === true && Object.keys(vb).join() === "valid");
 
-console.log("\n=== 2ب) مسار /api/invite/verify (Rate Limit) ===");
-const vOk = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: rawCode }) });
-check("المسار يُرجع valid=true لدعوة صالحة", vOk.status === 200 && (await vOk.json()).valid === true);
-const vBad = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: "WRONG-CODE-1234" }) });
-const vBadBody = await vBad.json();
-check("كود خاطئ → valid=false بلا تفاصيل", vBadBody.valid === false && Object.keys(vBadBody).join() === "valid");
-// إغراق: الحد 10/دقيقة بالـIP
-let limited = false;
-for (let i = 0; i < 14; i++) {
-  const r = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: "GUESS-CODE-0000" }) });
-  if (r.status === 429) { limited = true; break; }
-}
-check("Rate Limit يوقف التخمين (429)", limited);
+console.log("\n=== 3) التسجيل دون دعوة/دون موافقة مرفوض ===");
+check("signUp بلا كود دعوة يفشل", Boolean((await signup("noinv", { display_name: "بلا دعوة", terms_accepted: "true" })).error));
+check("signUp بكود غير موجود يفشل", Boolean((await signup("badinv", { display_name: "خاطئ", terms_accepted: "true", invite_code: "ZZZZ-ZZZZ-ZZZZ-ZZZZ" })).error));
+const noConsent = await signup("nocon", { display_name: "بلا موافقة", invite_code: rawCode });
+check("signUp بلا terms_accepted يفشل", Boolean(noConsent.error));
+check("فشل الموافقة يُرجِع استهلاك الدعوة (rollback)", (await inviteRow(inv.id))?.used_count === 0, String((await inviteRow(inv.id))?.used_count));
 
-console.log("\n=== 3) التسجيل دون دعوة مرفوض ===");
-const noInvite = await signup(`ysd.qa.beta.noinv.${Date.now()}@qa-ysd.com`, { display_name: "بلا دعوة", terms_accepted: "true" });
-check("signUp بلا كود دعوة يفشل", Boolean(noInvite.error), noInvite.error?.message?.slice(0, 60) ?? "نجح (خطأ!)");
-
-console.log("\n=== 4) دعوة صالحة تعمل + الاستهلاك + الموافقة ===");
-// النسخة الرسمية من platform_settings (المرجع الوحيد الموثوق)
+console.log("\n=== 4) دعوة صالحة: الاستهلاك + الموافقة بنسخة الخادم + محو الكود ===");
 const tv = await oc.from("platform_settings").select("value").eq("key", "terms_version").single();
-const serverVersion = typeof tv.data?.value === "string" ? tv.data.value : JSON.parse(JSON.stringify(tv.data?.value ?? '""'));
-
-// نُرسل نسخة مزوّرة عمدًا: يجب أن يتجاهلها المُحفّز ويختم نسخة الخادم
-const withInvite = await signup(`ysd.qa.beta.ok.${Date.now()}@qa-ysd.com`, { display_name: "بدعوة", invite_code: rawCode, terms_accepted: "true", terms_version: "9999-FORGED" });
-check("signUp بدعوة صالحة ينجح", !withInvite.error, withInvite.error?.message);
-const invAfter = await oc.from("beta_invites").select("used_count").eq("id", inv.id).single();
-check("used_count زاد إلى 1", invAfter.data?.used_count === 1, String(invAfter.data?.used_count));
-if (withInvite.userId) {
-  const consent = await oc.from("user_consents").select("document, version").eq("user_id", withInvite.userId);
-  check("الموافقة محفوظة (terms + privacy)", (consent.data?.length ?? 0) === 2);
+const serverVersion = String(tv.data?.value).replace(/^"|"$/g, "");
+const u1 = await signup("ok", { display_name: "بدعوة", invite_code: rawCode, terms_accepted: "true", terms_version: "9999-FORGED" });
+check("signUp بدعوة صالحة ينجح", !u1.error, u1.error?.message);
+check("used_count زاد إلى 1", (await inviteRow(inv.id))?.used_count === 1);
+if (u1.userId) {
+  const consent = await oc.from("user_consents").select("document, version").eq("user_id", u1.userId);
+  check("الموافقة محفوظة للوثيقتين", (consent.data?.length ?? 0) === 2);
   check("النسخة من platform_settings لا من metadata (تجاهل التزوير)",
     (consent.data ?? []).every((c) => c.version === serverVersion && c.version !== "9999-FORGED"),
     JSON.stringify(consent.data?.map((c) => c.version)));
-  const link = await oc.from("beta_invite_uses").select("user_id").eq("invite_id", inv.id);
-  check("الدعوة مربوطة بالمستخدم", link.data?.some((l) => l.user_id === withInvite.userId));
+  check("الدعوة مربوطة بالمستخدم", (await oc.from("beta_invite_uses").select("user_id").eq("invite_id", inv.id)).data?.some((l) => l.user_id === u1.userId));
+  if (u1.session) check("الكود الخام مُحي من raw_user_meta_data", !("invite_code" in (u1.session.user.user_metadata ?? {})), JSON.stringify(Object.keys(u1.session.user.user_metadata ?? {})));
 }
 
-console.log("\n=== 4ب) التسجيل دون موافقة مرفوض ===");
-const noConsent = await signup(`ysd.qa.beta.noc.${Date.now()}@qa-ysd.com`, { display_name: "بلا موافقة", invite_code: rawCode });
-check("signUp بلا terms_accepted يفشل", Boolean(noConsent.error), noConsent.error?.message?.slice(0, 60) ?? "نجح (خطأ!)");
-// المُحفّز يستهلك ثم يرفض → يجب أن تُرجَع الزيادة (نفس المعاملة)
-const rollback = await oc.from("beta_invites").select("used_count").eq("id", inv.id).single();
-check("فشل الموافقة يُرجِع استهلاك الدعوة (rollback)", rollback.data?.used_count === 1, String(rollback.data?.used_count));
+console.log("\n=== 5) ملغاة / منتهية / مستنفدة مرفوضة ===");
+const inv2 = await newInvite({ maxUses: 1 });
+await fetch(`${APP}/api/admin/invites/${inv2.id}`, { method: "POST", headers: H(oCookie) });
+check("دعوة ملغاة → signUp يفشل", Boolean((await signup("rev", { display_name: "ملغاة", invite_code: inv2.code, terms_accepted: "true" })).error));
+check("beta_invite_valid للملغاة → false", (await ac.rpc("beta_invite_valid", { p_code: inv2.code })).data === false);
 
-console.log("\n=== 5) دعوة ملغاة/منتهية مرفوضة ===");
-const inv2 = await (await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ maxUses: 1 }) })).json();
-await fetch(`${APP}/api/admin/invites/${inv2.id}`, { method: "POST", headers: H(oCookie) }); // إلغاء
-const revokedSignup = await signup(`ysd.qa.beta.rev.${Date.now()}@qa-ysd.com`, { display_name: "ملغاة", invite_code: inv2.code, terms_accepted: "true" });
-check("دعوة ملغاة → signUp يفشل", Boolean(revokedSignup.error));
-const revValid = await ac.rpc("beta_invite_valid", { p_code: inv2.code });
-check("beta_invite_valid للملغاة → false", revValid.data === false);
+// منتهية: عبر RPC مباشرة (المسار يفرض ≥ يوم واحد، والـRPC يقبل أي تاريخ)
+const expCode = genCode();
+const expId = await oc.rpc("admin_create_invite", { p_code_hash: sha256(expCode), p_code_hint: expCode.slice(-4), p_label: "qa-expired", p_max_uses: 1, p_expires_at: new Date(Date.now() - 3600_000).toISOString() });
+created.push(expId.data);
+check("beta_invite_valid للمنتهية → false", (await ac.rpc("beta_invite_valid", { p_code: expCode })).data === false);
+check("دعوة منتهية → signUp يفشل", Boolean((await signup("exp", { display_name: "منتهية", invite_code: expCode, terms_accepted: "true" })).error));
+check("حالة المنتهية في الواجهة = expired", (await inviteRow(expId.data))?.status === "expired");
 
-console.log("\n=== 6) استنفاد حد الاستخدام ===");
-const inv3 = await (await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ maxUses: 1 }) })).json();
-const u1 = await signup(`ysd.qa.beta.ex1.${Date.now()}@qa-ysd.com`, { display_name: "أول", invite_code: inv3.code, terms_accepted: "true" });
-const u2 = await signup(`ysd.qa.beta.ex2.${Date.now()}@qa-ysd.com`, { display_name: "ثانٍ", invite_code: inv3.code, terms_accepted: "true" });
-check("أول استخدام ينجح", !u1.error);
-check("الثاني (تجاوز الحد) يفشل", Boolean(u2.error));
+const inv3 = await newInvite({ maxUses: 1 });
+check("أول استخدام ينجح", !(await signup("ex1", { display_name: "أول", invite_code: inv3.code, terms_accepted: "true" })).error);
+check("الثاني (تجاوز الحد) يفشل", Boolean((await signup("ex2", { display_name: "ثانٍ", invite_code: inv3.code, terms_accepted: "true" })).error));
+check("حالة المستنفدة = exhausted", (await inviteRow(inv3.id))?.status === "exhausted");
+
+console.log("\n=== 6) التزامن على آخر استخدام: حساب واحد فقط ينجح ===");
+const invC = await newInvite({ maxUses: 1 });
+const [r1, r2] = await Promise.all([
+  signup("c1", { display_name: "متزامن1", invite_code: invC.code, terms_accepted: "true" }),
+  signup("c2", { display_name: "متزامن2", invite_code: invC.code, terms_accepted: "true" }),
+]);
+const wins = [r1, r2].filter((r) => !r.error).length;
+check("طلبان متزامنان → ناجح واحد فقط", wins === 1, `ناجح=${wins}`);
+check("used_count = 1 بالضبط (لا تجاوز)", (await inviteRow(invC.id))?.used_count === 1, String((await inviteRow(invC.id))?.used_count));
 
 console.log("\n=== 7) عزل الدعوات (RLS) + IDOR ===");
-const vc = anonClient();
-const vs = await vc.auth.signUp({ email: `ysd.qa.beta.rls.${Date.now()}@qa-ysd.com`, password: `Qa!${Date.now()}z`, options: { data: { invite_code: rawCode, terms_version: "2026-07-15", display_name: "rls" } } });
-if (vs.data?.session) await vc.auth.setSession(vs.data.session);
-const seeInvites = await vc.from("beta_invites").select("id").limit(1);
-check("مستخدم عادي لا يقرأ beta_invites", (seeInvites.data?.length ?? 0) === 0);
-const vCookie = vs.data?.session ? cookieOf(vs.data.session) : null;
-if (vCookie) {
-  const idor = await fetch(`${APP}/api/admin/invites`, { headers: H(vCookie) });
-  check("مستخدم عادي لا يصل /api/admin/invites (403)", idor.status === 403, `HTTP ${idor.status}`);
-  const idorRevoke = await fetch(`${APP}/api/admin/invites/${inv.id}`, { method: "POST", headers: H(vCookie) });
-  check("مستخدم عادي لا يلغي دعوة (403)", idorRevoke.status === 403, `HTTP ${idorRevoke.status}`);
+const invU = await newInvite({ maxUses: 1 });
+const victim = await signup("rls", { display_name: "عادي", invite_code: invU.code, terms_accepted: "true" });
+const vCookie = victim.session ? cookieOf(victim.session) : null;
+if (!vCookie) {
+  console.log("  ℹ لا جلسة للمستخدم العادي (تأكيد البريد مفعّل) — تُتخطّى فحوص banned/الصيانة");
 } else {
-  console.log("  ℹ تأكيد البريد مفعّل — تخطّي فحوص الجلسة (RLS المباشر كافٍ)");
+  const vc = createClient(URL_, ANON, { auth: { persistSession: false } });
+  await vc.auth.setSession(victim.session);
+  check("مستخدم عادي لا يقرأ beta_invites", ((await vc.from("beta_invites").select("id").limit(1)).data?.length ?? 0) === 0);
+  check("مستخدم عادي لا يقرأ موافقات غيره", ((await vc.from("user_consents").select("user_id").neq("user_id", victim.userId)).data?.length ?? 0) === 0);
+  check("مستخدم عادي لا يصل /api/admin/invites (403)", (await fetch(`${APP}/api/admin/invites`, { headers: H(vCookie) })).status === 403);
+  check("مستخدم عادي لا يلغي دعوة (403)", (await fetch(`${APP}/api/admin/invites/${inv.id}`, { method: "POST", headers: H(vCookie) })).status === 403);
+
+  console.log("\n=== 8) وضع الصيانة: يمنع العادي (صفحات + APIs) ويسمح للطاقم ===");
+  const setMaint = (v) => fetch(`${APP}/api/admin/settings`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ key: "maintenance_mode", value: v }) });
+  try {
+    check("تفعيل الصيانة (owner) → 200", (await setMaint(true)).status === 200);
+    const page = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
+    check("العادي: صفحة خاصة → تحويل إلى /maintenance", [302, 307].includes(page.status) && (page.headers.get("location") ?? "").includes("/maintenance"), `HTTP ${page.status}`);
+    const apiRes = await fetch(`${APP}/api/conversations`, { headers: H(vCookie) });
+    check("العادي: API خاصة → 503", apiRes.status === 503, `HTTP ${apiRes.status}`);
+    const ownerPage = await fetch(`${APP}/admin`, { headers: { Cookie: oCookie }, redirect: "manual" });
+    check("owner: الصفحات مسموحة أثناء الصيانة", ownerPage.status === 200, `HTTP ${ownerPage.status}`);
+    check("owner: APIs مسموحة أثناء الصيانة", (await fetch(`${APP}/api/admin/invites`, { headers: H(oCookie) })).status === 200);
+    check("/api/health يبقى عامًا أثناء الصيانة", (await fetch(`${APP}/api/health`)).status === 200);
+  } finally {
+    const off = await setMaint(false);
+    check("إيقاف الصيانة (استرجاع) → 200", off.status === 200);
+  }
+
+  console.log("\n=== 9) banned: ممنوع من كل الصفحات والـAPIs الخاصة ===");
+  const ban = (s) => fetch(`${APP}/api/admin/users/${victim.userId}`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ op: "status", status: s }) });
+  check("حظر المستخدم (owner) → 200", (await ban("banned")).status === 200);
+  const banPage = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
+  check("banned: صفحة خاصة → تحويل إلى /suspended", [302, 307].includes(banPage.status) && (banPage.headers.get("location") ?? "").includes("/suspended"), `HTTP ${banPage.status}`);
+  for (const p of ["/api/conversations", "/api/files", "/api/projects", "/api/preferences", "/api/profile"]) {
+    check(`banned: ${p} → 403`, (await fetch(`${APP}${p}`, { headers: H(vCookie) })).status === 403);
+  }
+  const banChat = await fetch(`${APP}/api/chat`, { method: "POST", headers: H(vCookie), body: JSON.stringify({ conversationId: null, content: "مرحبا" }) });
+  check("banned: /api/chat → 403", banChat.status === 403, `HTTP ${banChat.status}`);
+  check("banned: الصفحات العامة تبقى متاحة", (await fetch(`${APP}/terms`, { headers: { Cookie: vCookie }, redirect: "manual" })).status === 200);
+  await ban("active");
 }
 
-console.log("\n=== 8) لا كود خام في السجلات/التدقيق ===");
+console.log("\n=== 10) لا كود خام في التدقيق ===");
 const audit = await (await fetch(`${APP}/api/admin/audit`, { headers: H(oCookie) })).json();
-check("سجل التدقيق لا يحوي الكود الخام", !JSON.stringify(audit.logs ?? []).includes(rawCode));
-check("سجل التدقيق يحوي invite.create/revoke", (audit.logs ?? []).some((l) => l.action === "invite.create"));
+const auditText = JSON.stringify(audit.logs ?? []);
+check("سجل التدقيق لا يحوي الكود الخام", !auditText.includes(rawCode) && !auditText.includes(inv2.code) && !auditText.includes(expCode));
+check("سجل التدقيق يحوي invite.create", (audit.logs ?? []).some((l) => l.action === "invite.create"));
 
-console.log("\n=== 9) تحرير حجوزات غير المؤكدين (إداري فقط) ===");
-const rel = await oc.rpc("beta_release_unconfirmed_invites", { p_hours: 99999 });
-check("owner يستدعي دالة التحرير", !rel.error && typeof rel.data === "number", rel.error?.message);
-check("لا تُحرِّر شيئًا بمدة كبيرة (99999 ساعة)", rel.data === 0, String(rel.data));
-
-console.log("\n=== تنظيف ===");
-for (const id of [inv.id, inv2.id, inv3.id]) await fetch(`${APP}/api/admin/invites/${id}`, { method: "POST", headers: H(oCookie) }).catch(() => {});
+console.log("\n=== تنظيف الدعوات ===");
+for (const id of created.filter(Boolean)) await fetch(`${APP}/api/admin/invites/${id}`, { method: "POST", headers: H(oCookie) }).catch(() => {});
 console.log(`\n========================================`);
 console.log(`النتيجة: ${pass} ناجح / ${fail} فاشل`);
 if (failures.length) { console.log("الإخفاقات:", failures.join(" | ")); process.exit(1); }

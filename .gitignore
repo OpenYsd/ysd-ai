@@ -10,3 +10,6 @@ scripts/.fixtures/
 /public/qa-*
 scripts/.qa-owner.json
 scripts/.qa-owner-inject.js
+scripts/.qa-invite.txt
+scripts/.qa-mail.json
+scripts/.tmp-*.mjs
