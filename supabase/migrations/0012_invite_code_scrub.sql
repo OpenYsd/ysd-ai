@@ -1,24 +1,25 @@
 -- ============================================================
 -- YSD AI — migration 0012 (إصلاح أمني عاجل، آمنة لإعادة التشغيل)
--- منع تخزين invite_code الخام في auth.users.raw_user_meta_data.
+-- منع تخزين invite_code الخام في auth.users و auth.identities.
 --
 -- السبب الجذري (مُثبت بالاختبار الحي، لا بقراءة الكود):
 --   GoTrue يُدخل المستخدم → مُحفّزنا after insert يعمل ويمحو الكود → ثم GoTrue
---   يُنشئ سجل الهوية ويدمج مطالباتها في نسخته **داخل الذاكرة** (وهي ما زالت
---   تحوي invite_code) ويعيد كتابة العمود كاملًا عبر UpdateOnly(raw_user_meta_data)
---   فيدهس المحو. الدليل: الحقل النهائي احتوى مفاتيحنا (display_name/terms_accepted/
---   invite_code) مدموجة مع مطالبات GoTrue (sub/email/email_verified/phone_verified).
+--   يُنشئ سجل الهوية ويعيد كتابة raw_user_meta_data كاملًا من نسخته **داخل
+--   الذاكرة** (وهي ما زالت تحوي invite_code) فيدهس المحو.
 --   لذلك المحو داخل مُحفّز after insert لا يمكن أن ينجح مبدئيًا — العلاج مُحفّز
 --   BEFORE يُجرّد المفتاح عند كل كتابة، فيشمل كتابة GoTrue اللاحقة.
 --
--- تنبيه معماري مهم:
+--   والاستعلام الحي أثبت أيضًا أن identity_has_code = true، أي أن GoTrue يخزّن
+--   بيانات التسجيل المخصّصة في identity_data كذلك — فلا يكفي تنظيف auth.users.
+--
+-- تنبيه معماري:
 --   بوابة الدعوة (handle_new_user) هي after insert وتقرأ الكود من الصف. ولأن
 --   مُحفّز before يعدّل الصف قبل أن تراه، فإن التجريد عند الإدخال يُعمي البوابة
 --   ويُفشل كل تسجيل. لذلك نمرّر الكود عبر متغيّر محلي بالمعاملة (is_local = true):
 --   لا يُكتب في أي جدول، ولا يتجاوز حدود المعاملة، ولا يظهر في أي سجل.
 -- ============================================================
 
--- ---------- 1) دالة التجريد: لا تلمس أي جدول ولا تسجّل أي قيمة ----------
+-- ---------- 1) دالة تجريد auth.users ----------
 create or replace function strip_invite_code() returns trigger
 language plpgsql
 set search_path = '' as $$
@@ -33,17 +34,30 @@ begin
   return new;
 end $$;
 
+-- ---------- 2) دالة تجريد auth.identities (هذا المفتاح فقط) ----------
+create or replace function strip_invite_code_identity() returns trigger
+language plpgsql
+set search_path = '' as $$
+begin
+  -- لا تُمسّ بقية identity_data (sub/email/email_verified/phone_verified…)
+  new.identity_data := coalesce(new.identity_data, '{}'::jsonb) - 'invite_code';
+  return new;
+end $$;
+
 revoke all on function strip_invite_code() from public;
+revoke all on function strip_invite_code_identity() from public;
 do $$ begin
   -- supabase_auth_admin هو الدور الذي يكتب به GoTrue
   if exists (select 1 from pg_roles where rolname = 'supabase_auth_admin') then
     execute 'grant execute on function strip_invite_code() to supabase_auth_admin';
+    execute 'grant execute on function strip_invite_code_identity() to supabase_auth_admin';
   end if;
 end $$;
 
--- ---------- 2) المُحفّزات: BEFORE فقط، وبشرط وجود المفتاح ----------
+-- ---------- 3) المُحفّزات: BEFORE فقط، وبشرط وجود المفتاح ----------
 -- شرط when يعني أن العمليات العادية (تسجيل الدخول، تحديث الجلسة) لا تُشغّل
--- الدالة إطلاقًا — فلا كلفة على مسار المصادقة.
+-- الدالة إطلاقًا بعد التنظيف — فلا كلفة على مسار المصادقة.
+-- وهو أيضًا شفاء ذاتي: أي صف يحمل المفتاح يُجرَّد عند أول كتابة عليه.
 drop trigger if exists trg_strip_invite_code_ins on auth.users;
 create trigger trg_strip_invite_code_ins
   before insert on auth.users
@@ -53,12 +67,26 @@ create trigger trg_strip_invite_code_ins
 
 drop trigger if exists trg_strip_invite_code_upd on auth.users;
 create trigger trg_strip_invite_code_upd
-  before update of raw_user_meta_data on auth.users
+  before update on auth.users
   for each row
   when (new.raw_user_meta_data ? 'invite_code')
   execute function strip_invite_code();
 
--- ---------- 3) البوابة: تقرأ الكود من متغيّر المعاملة ----------
+drop trigger if exists trg_strip_invite_code_identity_ins on auth.identities;
+create trigger trg_strip_invite_code_identity_ins
+  before insert on auth.identities
+  for each row
+  when (new.identity_data ? 'invite_code')
+  execute function strip_invite_code_identity();
+
+drop trigger if exists trg_strip_invite_code_identity_upd on auth.identities;
+create trigger trg_strip_invite_code_identity_upd
+  before update of identity_data on auth.identities
+  for each row
+  when (new.identity_data ? 'invite_code')
+  execute function strip_invite_code_identity();
+
+-- ---------- 4) البوابة: تقرأ الكود من متغيّر المعاملة ----------
 -- التغيير الوحيد عن 0011: مصدر v_code، وحذف محاولة المحو التي كان GoTrue يدهسها.
 -- الاستهلاك الذرّي والموافقة بنسخة الخادم كما هما بلا تغيير.
 create or replace function handle_new_user() returns trigger
@@ -72,7 +100,7 @@ declare
   v_accepted boolean;
 begin
   -- الكود من متغيّر المعاملة (يضعه strip_invite_code)، مع رجوع إلى الصف
-  -- إن كان مُحفّز التجريد غائبًا لأي سبب.
+  -- إن كان مُحفّز التجريد غائبًا لأي سبب. لا يُطبع ولا يُسجَّل إطلاقًا.
   v_code := nullif(coalesce(
     nullif(current_setting('ysd.invite_code', true), ''),
     new.raw_user_meta_data->>'invite_code'), '');
@@ -124,25 +152,22 @@ begin
   return new;
 end $$;
 
--- ---------- 4) تنظيف لمرة واحدة للمستخدمين الحاليين ----------
+-- ---------- 5) تنظيف لمرة واحدة للصفوف الحالية ----------
 update auth.users
   set raw_user_meta_data = raw_user_meta_data - 'invite_code'
   where raw_user_meta_data ? 'invite_code';
 
--- ---------- 5) تحقّق: يفشل بصوت عالٍ إن بقي أي كود ----------
+update auth.identities
+  set identity_data = identity_data - 'invite_code'
+  where identity_data ? 'invite_code';
+
+-- ---------- 6) تحقّق نهائي: يفشل بصوت عالٍ إن بقي أي كود ----------
 do $$
-declare n int;
+declare n_users int; n_ident int;
 begin
-  select count(*) into n from auth.users where raw_user_meta_data ? 'invite_code';
-  if n > 0 then
-    raise exception 'ما زال % مستخدمًا يحمل invite_code — التنظيف لم ينجح', n;
+  select count(*) into n_users from auth.users      where raw_user_meta_data ? 'invite_code';
+  select count(*) into n_ident from auth.identities where identity_data      ? 'invite_code';
+  if n_users > 0 or n_ident > 0 then
+    raise exception 'التنظيف لم ينجح — auth.users: % صفًا، auth.identities: % صفًا', n_users, n_ident;
   end if;
 end $$;
-
--- ============================================================
--- auth.identities: لم تُمسّ عمدًا.
--- مطالبات هوية مزوّد email في GoTrue هي {sub, email, email_verified,
--- phone_verified} ولا تشمل بيانات التسجيل المخصّصة، فالمتوقع ألا تحوي
--- invite_code. لا يُضاف تنظيف/مُحفّز هنا إلا إذا أثبت الاستعلام أن
--- identity_has_code = true.
--- ============================================================
