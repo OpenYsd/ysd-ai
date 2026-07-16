@@ -62,34 +62,63 @@ check("دعوة صالحة → true", okValid.data === true, String(okValid.data
 const badValid = await ac.rpc("beta_invite_valid", { p_code: "WRONG-CODE-1234" });
 check("كود خاطئ → false", badValid.data === false);
 
+console.log("\n=== 2ب) مسار /api/invite/verify (Rate Limit) ===");
+const vOk = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: rawCode }) });
+check("المسار يُرجع valid=true لدعوة صالحة", vOk.status === 200 && (await vOk.json()).valid === true);
+const vBad = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: "WRONG-CODE-1234" }) });
+const vBadBody = await vBad.json();
+check("كود خاطئ → valid=false بلا تفاصيل", vBadBody.valid === false && Object.keys(vBadBody).join() === "valid");
+// إغراق: الحد 10/دقيقة بالـIP
+let limited = false;
+for (let i = 0; i < 14; i++) {
+  const r = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: "GUESS-CODE-0000" }) });
+  if (r.status === 429) { limited = true; break; }
+}
+check("Rate Limit يوقف التخمين (429)", limited);
+
 console.log("\n=== 3) التسجيل دون دعوة مرفوض ===");
-const noInvite = await signup(`ysd.qa.beta.noinv.${Date.now()}@qa-ysd.com`, { display_name: "بلا دعوة", terms_version: "2026-07-15" });
+const noInvite = await signup(`ysd.qa.beta.noinv.${Date.now()}@qa-ysd.com`, { display_name: "بلا دعوة", terms_accepted: "true" });
 check("signUp بلا كود دعوة يفشل", Boolean(noInvite.error), noInvite.error?.message?.slice(0, 60) ?? "نجح (خطأ!)");
 
 console.log("\n=== 4) دعوة صالحة تعمل + الاستهلاك + الموافقة ===");
-const withInvite = await signup(`ysd.qa.beta.ok.${Date.now()}@qa-ysd.com`, { display_name: "بدعوة", invite_code: rawCode, terms_version: "2026-07-15" });
+// النسخة الرسمية من platform_settings (المرجع الوحيد الموثوق)
+const tv = await oc.from("platform_settings").select("value").eq("key", "terms_version").single();
+const serverVersion = typeof tv.data?.value === "string" ? tv.data.value : JSON.parse(JSON.stringify(tv.data?.value ?? '""'));
+
+// نُرسل نسخة مزوّرة عمدًا: يجب أن يتجاهلها المُحفّز ويختم نسخة الخادم
+const withInvite = await signup(`ysd.qa.beta.ok.${Date.now()}@qa-ysd.com`, { display_name: "بدعوة", invite_code: rawCode, terms_accepted: "true", terms_version: "9999-FORGED" });
 check("signUp بدعوة صالحة ينجح", !withInvite.error, withInvite.error?.message);
 const invAfter = await oc.from("beta_invites").select("used_count").eq("id", inv.id).single();
 check("used_count زاد إلى 1", invAfter.data?.used_count === 1, String(invAfter.data?.used_count));
 if (withInvite.userId) {
   const consent = await oc.from("user_consents").select("document, version").eq("user_id", withInvite.userId);
-  check("الموافقة محفوظة (terms + privacy)", (consent.data?.length ?? 0) === 2 && consent.data.every((c) => c.version === "2026-07-15"));
+  check("الموافقة محفوظة (terms + privacy)", (consent.data?.length ?? 0) === 2);
+  check("النسخة من platform_settings لا من metadata (تجاهل التزوير)",
+    (consent.data ?? []).every((c) => c.version === serverVersion && c.version !== "9999-FORGED"),
+    JSON.stringify(consent.data?.map((c) => c.version)));
   const link = await oc.from("beta_invite_uses").select("user_id").eq("invite_id", inv.id);
   check("الدعوة مربوطة بالمستخدم", link.data?.some((l) => l.user_id === withInvite.userId));
 }
 
+console.log("\n=== 4ب) التسجيل دون موافقة مرفوض ===");
+const noConsent = await signup(`ysd.qa.beta.noc.${Date.now()}@qa-ysd.com`, { display_name: "بلا موافقة", invite_code: rawCode });
+check("signUp بلا terms_accepted يفشل", Boolean(noConsent.error), noConsent.error?.message?.slice(0, 60) ?? "نجح (خطأ!)");
+// المُحفّز يستهلك ثم يرفض → يجب أن تُرجَع الزيادة (نفس المعاملة)
+const rollback = await oc.from("beta_invites").select("used_count").eq("id", inv.id).single();
+check("فشل الموافقة يُرجِع استهلاك الدعوة (rollback)", rollback.data?.used_count === 1, String(rollback.data?.used_count));
+
 console.log("\n=== 5) دعوة ملغاة/منتهية مرفوضة ===");
 const inv2 = await (await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ maxUses: 1 }) })).json();
 await fetch(`${APP}/api/admin/invites/${inv2.id}`, { method: "POST", headers: H(oCookie) }); // إلغاء
-const revokedSignup = await signup(`ysd.qa.beta.rev.${Date.now()}@qa-ysd.com`, { display_name: "ملغاة", invite_code: inv2.code, terms_version: "2026-07-15" });
+const revokedSignup = await signup(`ysd.qa.beta.rev.${Date.now()}@qa-ysd.com`, { display_name: "ملغاة", invite_code: inv2.code, terms_accepted: "true" });
 check("دعوة ملغاة → signUp يفشل", Boolean(revokedSignup.error));
 const revValid = await ac.rpc("beta_invite_valid", { p_code: inv2.code });
 check("beta_invite_valid للملغاة → false", revValid.data === false);
 
 console.log("\n=== 6) استنفاد حد الاستخدام ===");
 const inv3 = await (await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ maxUses: 1 }) })).json();
-const u1 = await signup(`ysd.qa.beta.ex1.${Date.now()}@qa-ysd.com`, { display_name: "أول", invite_code: inv3.code, terms_version: "2026-07-15" });
-const u2 = await signup(`ysd.qa.beta.ex2.${Date.now()}@qa-ysd.com`, { display_name: "ثانٍ", invite_code: inv3.code, terms_version: "2026-07-15" });
+const u1 = await signup(`ysd.qa.beta.ex1.${Date.now()}@qa-ysd.com`, { display_name: "أول", invite_code: inv3.code, terms_accepted: "true" });
+const u2 = await signup(`ysd.qa.beta.ex2.${Date.now()}@qa-ysd.com`, { display_name: "ثانٍ", invite_code: inv3.code, terms_accepted: "true" });
 check("أول استخدام ينجح", !u1.error);
 check("الثاني (تجاوز الحد) يفشل", Boolean(u2.error));
 
@@ -113,6 +142,11 @@ console.log("\n=== 8) لا كود خام في السجلات/التدقيق ==="
 const audit = await (await fetch(`${APP}/api/admin/audit`, { headers: H(oCookie) })).json();
 check("سجل التدقيق لا يحوي الكود الخام", !JSON.stringify(audit.logs ?? []).includes(rawCode));
 check("سجل التدقيق يحوي invite.create/revoke", (audit.logs ?? []).some((l) => l.action === "invite.create"));
+
+console.log("\n=== 9) تحرير حجوزات غير المؤكدين (إداري فقط) ===");
+const rel = await oc.rpc("beta_release_unconfirmed_invites", { p_hours: 99999 });
+check("owner يستدعي دالة التحرير", !rel.error && typeof rel.data === "number", rel.error?.message);
+check("لا تُحرِّر شيئًا بمدة كبيرة (99999 ساعة)", rel.data === 0, String(rel.data));
 
 console.log("\n=== تنظيف ===");
 for (const id of [inv.id, inv2.id, inv3.id]) await fetch(`${APP}/api/admin/invites/${id}`, { method: "POST", headers: H(oCookie) }).catch(() => {});

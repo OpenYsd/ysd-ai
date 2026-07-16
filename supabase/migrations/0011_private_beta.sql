@@ -3,6 +3,16 @@
 -- Private Beta: دعوات (hash فقط)، موافقة الشروط، تعطيل التسجيل العام.
 -- ============================================================
 
+-- 0) فحص مسبق: digest() (pgcrypto) يجب أن تُحلّ بنفس search_path المستخدم في
+-- الدوال أدناه. إن فشل هذا، يتوقف التطبيق هنا بدل أن ينكسر التسجيل لاحقًا.
+do $$
+begin
+  perform set_config('search_path', 'public, extensions, pg_temp', true);
+  perform encode(digest('probe', 'sha256'), 'hex');
+exception when undefined_function then
+  raise exception 'pgcrypto/digest غير متاحة. نفّذ: create extension if not exists pgcrypto with schema extensions;';
+end $$;
+
 -- 1) تعطيل التسجيل العام افتراضيًا (يبقى إن غُيّر يدويًا لاحقًا)
 update platform_settings set value = 'false' where key = 'allow_registration';
 -- إعداد جديد: هل يتطلب التسجيل دعوة؟ (افتراضيًا نعم في Beta)
@@ -17,7 +27,8 @@ on conflict (key) do nothing;
 -- 2) جدول دعوات Beta — نُخزّن hash فقط، لا الكود الخام أبدًا
 create table if not exists beta_invites (
   id uuid primary key default gen_random_uuid(),
-  code_hash text not null unique,          -- sha256(code) hex — لا الكود الخام
+  -- sha256(code) hex — لا الكود الخام. unique يمنع تكرار نفس الكود ويوفّر الفهرس.
+  code_hash text not null unique,
   code_hint text,                          -- آخر 4 أحرف فقط للتعرّف الإداري
   label text,                              -- ملاحظة إدارية اختيارية
   max_uses int not null default 1 check (max_uses >= 1),
@@ -27,7 +38,7 @@ create table if not exists beta_invites (
   created_by uuid references profiles(id) on delete set null,
   created_at timestamptz not null default now()
 );
-create index if not exists idx_beta_invites_hash on beta_invites(code_hash);
+-- (لا حاجة لفهرس إضافي على code_hash — قيد unique أعلاه ينشئ فهرسًا فريدًا)
 
 -- ربط الدعوة بمن استخدمها (سجل الاستخدامات)
 create table if not exists beta_invite_uses (
@@ -77,18 +88,24 @@ end $$;
 
 -- تحقق أولي (قبل التسجيل، للواجهة): هل الدعوة صالحة؟ (بلا استهلاك)
 -- يُرجع boolean فقط — لا يكشف تفاصيل الدعوة ولا الكود.
+-- ملاحظة: extensions مُدرَجة في search_path لأن pgcrypto (digest) يُثبَّت هناك في
+-- Supabase وليس في public — بدونها يفشل الحل ويتعطّل التسجيل. وهي مخطط نظام
+-- مملوك لـ supabase_admin وغير قابل للكتابة من المستخدمين، فلا يُضعف التثبيت.
 create or replace function beta_invite_valid(p_code text)
 returns boolean
-language plpgsql security definer set search_path = public, pg_temp stable as $$
-declare v beta_invites%rowtype;
+language plpgsql stable security definer set search_path = public, extensions, pg_temp as $$
+declare v_ok boolean;
 begin
   if p_code is null or length(p_code) < 8 then return false; end if;
-  select * into v from beta_invites where code_hash = encode(digest(p_code, 'sha256'), 'hex');
-  if not found then return false; end if;
-  if v.revoked_at is not null then return false; end if;
-  if v.expires_at is not null and v.expires_at < now() then return false; end if;
-  if v.used_count >= v.max_uses then return false; end if;
-  return true;
+  -- لا نُحمّل الصف كاملًا: تقييم داخل SQL فيُرجع boolean فقط (بلا تسريب تفاصيل)
+  select exists (
+    select 1 from beta_invites
+    where code_hash = encode(digest(p_code, 'sha256'), 'hex')
+      and revoked_at is null
+      and (expires_at is null or expires_at > now())
+      and used_count < max_uses
+  ) into v_ok;
+  return v_ok;
 end $$;
 
 -- ============================================================
@@ -97,62 +114,102 @@ end $$;
 -- ويُستهلك ويُربط الكود، ثم يُمحى الكود الخام من بيانات المصادقة (لا يُخزَّن).
 -- ============================================================
 create or replace function handle_new_user() returns trigger
-language plpgsql security definer set search_path = public, pg_temp as $$
+language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare
   v_require boolean;
   v_code text;
-  v_invite beta_invites%rowtype;
+  v_hash text;
+  v_invite_id uuid;
+  v_terms_version text;
+  v_accepted boolean;
 begin
   v_code := nullif(new.raw_user_meta_data->>'invite_code', '');
-  select (value)::boolean into v_require from platform_settings where key = 'require_invite';
+  select (value #>> '{}')::boolean into v_require
+    from platform_settings where key = 'require_invite';
 
-  -- بوابة الدعوة (إنفاذ خادمي)
-  if coalesce(v_require, true) then
-    if v_code is null then
-      raise exception 'invite_required';
-    end if;
-    select * into v_invite from beta_invites
-      where code_hash = encode(digest(v_code, 'sha256'), 'hex') for update;
-    if not found
-       or v_invite.revoked_at is not null
-       or (v_invite.expires_at is not null and v_invite.expires_at < now())
-       or v_invite.used_count >= v_invite.max_uses then
-      raise exception 'invite_invalid';
-    end if;
+  -- ===== استهلاك ذري: UPDATE مشروط واحد + RETURNING =====
+  -- كل الشروط داخل WHERE؛ لا select-ثم-update. طلبان متزامنان: الأول يقفل الصف،
+  -- والثاني يُعاد تقييمه بعد الالتزام فلا يتجاوز max_uses أبدًا.
+  if v_code is not null then
+    v_hash := encode(digest(v_code, 'sha256'), 'hex');
+    update beta_invites
+      set used_count = used_count + 1
+      where code_hash = v_hash
+        and revoked_at is null
+        and (expires_at is null or expires_at > now())
+        and used_count < max_uses
+      returning id into v_invite_id;
   end if;
 
-  -- إنشاء الملف والاشتراك (كما في 0001)
+  -- بوابة الدعوة (إنفاذ خادمي — لا يمكن تجاوزه من العميل)
+  if coalesce(v_require, true) and v_invite_id is null then
+    raise exception 'invite_required_or_invalid';
+  end if;
+
+  -- ===== الموافقة: النسخة من platform_settings لا من metadata =====
+  -- من العميل نقبل «أنه وافق» فقط؛ رقم النسخة يُختم خادميًا.
+  v_accepted := coalesce((new.raw_user_meta_data->>'terms_accepted')::boolean, false);
+  if not v_accepted then
+    raise exception 'consent_required';
+  end if;
+  select value #>> '{}' into v_terms_version
+    from platform_settings where key = 'terms_version';
+
+  -- إنشاء الملف والاشتراك — أي فشل هنا يُرجِع استهلاك الدعوة (نفس المعاملة)
   insert into profiles (id, display_name)
     values (new.id, coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)));
   insert into subscriptions (user_id, tier) values (new.id, 'free');
 
-  -- استهلاك الدعوة وربطها بالمستخدم الجديد (ذري داخل نفس المعاملة)
-  if v_code is not null then
-    if v_invite.id is null then
-      select * into v_invite from beta_invites
-        where code_hash = encode(digest(v_code, 'sha256'), 'hex') for update;
-    end if;
-    if v_invite.id is not null
-       and not exists (select 1 from beta_invite_uses where invite_id = v_invite.id and user_id = new.id) then
-      insert into beta_invite_uses (invite_id, user_id) values (v_invite.id, new.id);
-      update beta_invites set used_count = used_count + 1 where id = v_invite.id;
-    end if;
+  -- ربط الدعوة بالمستخدم — unique(invite_id,user_id) يمنع الربط المكرر
+  if v_invite_id is not null then
+    insert into beta_invite_uses (invite_id, user_id) values (v_invite_id, new.id)
+      on conflict (invite_id, user_id) do nothing;
   end if;
 
-  -- حفظ موافقة الشروط/الخصوصية (النسخة من بيانات التسجيل)
-  if new.raw_user_meta_data ? 'terms_version' then
-    insert into user_consents (user_id, document, version)
-      values (new.id, 'terms', new.raw_user_meta_data->>'terms_version'),
-             (new.id, 'privacy', new.raw_user_meta_data->>'terms_version')
-      on conflict do nothing;
-  end if;
+  -- حفظ الموافقة على الوثيقتين بنسخة الخادم
+  insert into user_consents (user_id, document, version)
+    values (new.id, 'terms',   coalesce(v_terms_version, 'unversioned')),
+           (new.id, 'privacy', coalesce(v_terms_version, 'unversioned'))
+    on conflict do nothing;
 
-  -- امحُ الكود الخام من بيانات المصادقة حتى لا يُخزَّن
+  -- امحُ الكود الخام من بيانات المصادقة — داخل نفس المعاملة، فلا يُخزَّن أبدًا
   update auth.users
     set raw_user_meta_data = (raw_user_meta_data - 'invite_code')
     where id = new.id and raw_user_meta_data ? 'invite_code';
 
   return new;
+end $$;
+
+-- ============================================================
+-- سلوك الدعوة مع تأكيد البريد (قرار موثّق):
+-- المُحفّز يعمل عند INSERT في auth.users أي **عند التسجيل قبل تأكيد البريد**،
+-- فالدعوة تُحجَز فورًا. هذا ضروري لفرض max_uses ذريًا عند البوابة (لا يمكن
+-- الحجز بعد التأكيد دون السماح بتجاوز الحد).
+-- الخطر: استنزاف كود متعدد الاستخدامات بحسابات لا تؤكد بريدها.
+-- المعالجة: دالة تنظيف تُحرِّر الحجوزات غير المؤكدة بعد مدة (تُجدوَل عبر cron).
+-- ============================================================
+create or replace function beta_release_unconfirmed_invites(p_hours int default 48)
+returns int
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_count int := 0; r record;
+begin
+  -- للمشرف أو لعملية خدمة/cron (auth.uid() is null)
+  if auth.uid() is not null and not is_admin() then return 0; end if;
+
+  for r in
+    select u.id as use_id, u.invite_id
+    from beta_invite_uses u
+    join auth.users au on au.id = u.user_id
+    where au.email_confirmed_at is null
+      and u.used_at < now() - make_interval(hours => p_hours)
+  loop
+    delete from beta_invite_uses where id = r.use_id;
+    update beta_invites
+      set used_count = greatest(0, used_count - 1)
+      where id = r.invite_id;
+    v_count := v_count + 1;
+  end loop;
+  return v_count;
 end $$;
 
 -- إنشاء دعوة (إداري): يستقبل hash محسوبًا في الخادم (Node)، لا الكود الخام
@@ -190,7 +247,8 @@ begin
   -- الإدارية: للمصادَقين فقط (تتحقق is_admin داخليًا)
   for fn in select unnest(array[
     'admin_create_invite(text,text,text,int,timestamptz)',
-    'admin_revoke_invite(uuid)'
+    'admin_revoke_invite(uuid)',
+    'beta_release_unconfirmed_invites(int)'
   ]) loop
     execute format('revoke all on function %s from public, anon', fn);
     execute format('grant execute on function %s to authenticated', fn);

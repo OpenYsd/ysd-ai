@@ -35,12 +35,23 @@ export function RegisterForm({
     return <AuthNotice>{t("registrationClosed")}</AuthNotice>;
   }
 
+  /** التحقق عبر مسارنا (Rate Limit بالـIP) لا عبر RPC مباشرة */
   async function verifyInvite() {
     setChecking(true);
     setInviteOk(null);
-    const supabase = createClient();
-    const { data } = await supabase.rpc("beta_invite_valid", { p_code: code.trim() });
-    setInviteOk(data === true);
+    setError(null);
+    const res = await fetch("/api/invite/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code.trim() }),
+    });
+    if (res.status === 429) {
+      setError("محاولات كثيرة — انتظر قليلًا.");
+      setChecking(false);
+      return;
+    }
+    const j = (await res.json().catch(() => null)) as { valid?: boolean } | null;
+    setInviteOk(j?.valid === true);
     setChecking(false);
   }
 
@@ -56,7 +67,8 @@ export function RegisterForm({
     setLoading(true);
     setError(null);
     const supabase = createClient();
-    const meta: Record<string, string> = { display_name: displayName, terms_version: termsVersion };
+    // نرسل «وافق» فقط — رقم النسخة يختمه المُحفّز من platform_settings (لا يُوثق بالعميل)
+    const meta: Record<string, string> = { display_name: displayName, terms_accepted: "true" };
     if (code.trim()) meta.invite_code = code.trim();
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -131,7 +143,7 @@ export function RegisterForm({
           <Link href="/terms" target="_blank" className="text-primary-glow hover:underline">{t("termsLink")}</Link>
           {" · "}
           <Link href="/privacy" target="_blank" className="text-primary-glow hover:underline">{t("privacyLink")}</Link>
-          )
+          ){termsVersion && <span className="text-ink-faint"> — {termsVersion}</span>}
         </span>
       </label>
 
