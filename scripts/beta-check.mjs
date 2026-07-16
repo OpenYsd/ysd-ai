@@ -139,12 +139,30 @@ const expRes = tExp ? await signupTicket("exp", tExp) : null;
 check("★ دعوة منتهية بعد إصدار التذكرة → signUp يفشل",
   Boolean(tExp) && Boolean(expRes?.error),
   tExp ? "" : "الفحص باطل: لم تُصدَر تذكرة قبل الانتهاء");
-// الشارة تُحسب بساعة خادم التطبيق بينما الإنفاذ بساعة القاعدة. نختبرها بدعوة
-// منتهية منذ ساعة كاملة، فتتفق الساعتان مهما كان الانحراف الطبيعي بينهما.
 const invLongExp = await newInviteExpiringIn(-3600);
 check("حالة دعوة منتهية منذ ساعة = expired", (await inviteRow(invLongExp.id))?.status === "expired", (await inviteRow(invLongExp.id))?.status);
 check("beta_invite_valid للمنتهية → false", (await anonClient().rpc("beta_invite_valid", { p_code: invLongExp.code })).data === false);
 check("claim لدعوة منتهية مرفوض", (await claim(invLongExp.code)) === null);
+
+// ★ 0014: الشارة تُحسب بساعة القاعدة. هذه الدعوة منتهية بساعة القاعدة لكنها
+// ما زالت «مستقبلية» بساعة جهازي (انحراف ~194ث) — قبل 0014 كانت تظهر active.
+const invSkew = await newInviteExpiringIn(-30);
+const skewRow = await inviteRow(invSkew.id);
+check("★ منتهية بساعة القاعدة لا بساعة التطبيق → expired",
+  skewRow?.status === "expired",
+  `الحالة=${skewRow?.status} | expires_at أمام ساعة الجهاز بـ${((new Date(skewRow?.expires_at).getTime() - Date.now()) / 1000).toFixed(0)}ث`);
+check("الإنفاذ يوافق الشارة (claim مرفوض)", (await claim(invSkew.code)) === null);
+
+// ترتيب 0014: revoked → exhausted → expired → active
+const invOrd = await newInviteExpiringIn(-3600, 1);   // منتهية…
+const tOrd = null;                                     // …ولا يمكن استهلاكها (منتهية)
+const invOrd2 = await newInvite({ maxUses: 1, label: "qa-order" });
+const tOrd2 = await claim(invOrd2.code);
+await signupTicket("ord", tOrd2);                      // مستنفدة الآن
+await fetch(`${APP}/api/admin/invites/${invOrd2.id}`, { method: "POST", headers: H(oCookie) }); // وملغاة
+check("★ الترتيب: ملغاة + مستنفدة → revoked (الإلغاء أولًا)", (await inviteRow(invOrd2.id))?.status === "revoked", (await inviteRow(invOrd2.id))?.status);
+check("★ الترتيب: منتهية غير مستنفدة → expired", (await inviteRow(invOrd.id))?.status === "expired", (await inviteRow(invOrd.id))?.status);
+void tOrd;
 
 const invEx = await newInvite({ maxUses: 1, label: "qa-exh" });
 const [tEx1, tEx2] = [await claim(invEx.code), await claim(invEx.code)];

@@ -16,28 +16,24 @@ function generateCode(): string {
 }
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
-/** قائمة الدعوات (بلا الكود الخام — hash فقط + آخر 4 أحرف) */
+/**
+ * قائمة الدعوات (بلا الكود الخام — hash فقط + آخر 4 أحرف).
+ *
+ * الحالة تأتي محسوبة من القاعدة عبر الحقل المحسوب invite_status (migration 0014).
+ * لا تُحسب هنا بـ Date.now(): الإنفاذ يجري بـ now() داخل SQL، وأي انحراف بين
+ * ساعة خادم التطبيق وساعة القاعدة كان يجعل اللوحة تعرض «active» لدعوة ترفضها
+ * القاعدة فعلًا. مصدر واحد للوقت.
+ */
 export async function GET() {
   const ctx = await getAdminContext();
   if (!ctx) return forbidden();
-  const { data } = await ctx.supabase
+  const { data, error } = await ctx.supabase
     .from("beta_invites")
-    .select("id, code_hint, label, max_uses, used_count, expires_at, revoked_at, created_at")
+    .select("id, code_hint, label, max_uses, used_count, expires_at, revoked_at, created_at, status:invite_status")
     .order("created_at", { ascending: false })
     .limit(200);
-  // حالة محسوبة
-  const now = Date.now();
-  const invites = (data ?? []).map((i) => ({
-    ...i,
-    status: i.revoked_at
-      ? "revoked"
-      : i.expires_at && new Date(i.expires_at).getTime() < now
-        ? "expired"
-        : i.used_count >= i.max_uses
-          ? "exhausted"
-          : "active",
-  }));
-  return json({ invites }, 200);
+  if (error) return json({ error: "تعذّر جلب الدعوات | Failed" }, 500);
+  return json({ invites: data ?? [] }, 200);
 }
 
 const createSchema = z.object({
