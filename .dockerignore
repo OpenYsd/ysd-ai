@@ -1,0 +1,56 @@
+# ============================================================
+# YSD AI — ما لا يدخل سياق البناء إطلاقًا
+# القاعدة: كل ما هنا لا يصل daemon البناء أصلًا، فلا يمكن أن يتسرّب إلى أي طبقة
+# ولو بـ COPY . . — وهذا خط الدفاع الأول عن الأسرار.
+# ============================================================
+
+# ---------- أسرار ----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------- ملفات QA السرّية/المؤقتة ----------
+scripts/.qa-*
+scripts/.tmp-*
+scripts/.fixtures/
+public/qa-*
+
+# ---------- اعتماديات ومخرجات تُبنى داخل الصورة ----------
+node_modules
+.next
+out
+build
+dist
+tsconfig.tsbuildinfo
+
+# ---------- git والتطوير ----------
+.git
+.gitignore
+.github
+.vscode
+.idea
+.claude
+
+# ---------- اختبارات وأدوات لا يحتاجها الإنتاج ----------
+tests
+playwright-report
+test-results
+playwright.config.*
+vitest.config.*
+coverage
+
+# ---------- توثيق ----------
+docs
+*.md
+!README.md
+
+# ---------- سجلات ومخلفات ----------
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.cache
+Dockerfile
+.dockerignore
