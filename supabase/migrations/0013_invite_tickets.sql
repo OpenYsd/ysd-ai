@@ -25,6 +25,9 @@ create table if not exists invite_tickets (
   created_at timestamptz not null default now()
 );
 create index if not exists invite_tickets_expires_idx on invite_tickets (expires_at);
+-- يخدم العدّ والتنظيف لكل دعوة داخل beta_claim_invite (تحت قفل الصف)
+create index if not exists invite_tickets_invite_created_idx
+  on invite_tickets (invite_id, created_at);
 
 -- RLS مفعّلة **بلا أي سياسة**: لا وصول مباشر لأي دور (anon/authenticated).
 -- الوصول حصرًا عبر دوال security definer أدناه.
@@ -36,21 +39,54 @@ revoke all on table invite_tickets from anon, authenticated;
 -- ---------- 2) استبدال الكود بتذكرة (قبل التسجيل) ----------
 -- يستقبل hash التذكرة محسوبًا في الخادم (Node) — لا التذكرة الخام ولا تُخزَّن.
 -- لا يستهلك الدعوة: الاستهلاك يبقى ذريًا عند البوابة وحدها.
+--
+-- إغلاق الإغراق عند المصدر (لا في الواجهة): الـRate Limit في /api/invite/claim
+-- طبقة إضافية فقط — الدالة مُصرَّحة لـanon فيمكن نداؤها مباشرة عبر PostgREST
+-- بالمفتاح العلني متجاوزةً مسارنا. لذلك القفل والعدّ والإدراج هنا، في استدعاء
+-- واحد ومعاملة واحدة.
 create or replace function beta_claim_invite(
   p_code text, p_ticket_hash text, p_ttl_seconds int default 600
 ) returns boolean
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
-declare v_id uuid;
+declare
+  v_id uuid;
+  v_active int;
+  v_recent int;
+  c_max_active constant int := 3;    -- تذاكر نشطة متزامنة لكل دعوة
+  c_max_hourly constant int := 20;   -- تذاكر مُصدَرة لكل دعوة خلال ساعة
 begin
   if p_code is null or length(p_code) < 8 then return false; end if;
   if p_ticket_hash is null or p_ticket_hash !~ '^[0-9a-f]{64}$' then return false; end if;
 
+  -- (1) اقفل صف الدعوة أولًا — قبل أي عدّ أو إدراج. الطلبات المتزامنة تتسلسل
+  -- على هذا القفل، فلا يمكن لطلبين أن يعدّا نفس الحالة ثم يتجاوزا الحد معًا.
   select id into v_id from beta_invites
     where code_hash = encode(digest(p_code, 'sha256'), 'hex')
       and revoked_at is null
       and (expires_at is null or expires_at > now())
-      and used_count < max_uses;
+      and used_count < max_uses
+    for update;
   if v_id is null then return false; end if;
+
+  -- (2) نظّف تذاكر هذه الدعوة **الأقدم من ساعة** فقط (منتهية أو مستهلَكة).
+  -- مهم: لا نحذف داخل نافذة الساعة إطلاقًا، وإلا لأمكن تصفير الحدّ الزمني
+  -- في (4) بمجرد انتظار انتهاء التذاكر. لا يمسّ هذا beta_invites ولا
+  -- beta_invite_uses — التذاكر فقط.
+  delete from invite_tickets
+    where invite_id = v_id
+      and created_at <= now() - interval '1 hour'
+      and (expires_at <= now() or used_at is not null);
+
+  -- (3) حد التذاكر النشطة
+  select count(*) into v_active from invite_tickets
+    where invite_id = v_id and used_at is null and expires_at > now();
+  if v_active >= c_max_active then return false; end if;
+
+  -- (4) حد الإصدار الزمني: يعدّ كل ما أُصدر خلال ساعة (نشطًا كان أو منتهيًا
+  -- أو مستهلَكًا) — دقيق لأن (2) لا تحذف شيئًا داخل النافذة.
+  select count(*) into v_recent from invite_tickets
+    where invite_id = v_id and created_at > now() - interval '1 hour';
+  if v_recent >= c_max_hourly then return false; end if;
 
   insert into invite_tickets (ticket_hash, invite_id, expires_at)
     values (p_ticket_hash, v_id,
