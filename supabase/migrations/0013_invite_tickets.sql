@@ -29,6 +29,9 @@ create index if not exists invite_tickets_expires_idx on invite_tickets (expires
 -- RLS مفعّلة **بلا أي سياسة**: لا وصول مباشر لأي دور (anon/authenticated).
 -- الوصول حصرًا عبر دوال security definer أدناه.
 alter table invite_tickets enable row level security;
+-- دفاع في العمق: RLS بلا سياسات تُرجع صفرًا من الصفوف، لكن سحب الامتيازات
+-- يجعلها «permission denied» فلا تظهر كجدول فارغ عبر PostgREST أصلًا.
+revoke all on table invite_tickets from anon, authenticated;
 
 -- ---------- 2) استبدال الكود بتذكرة (قبل التسجيل) ----------
 -- يستقبل hash التذكرة محسوبًا في الخادم (Node) — لا التذكرة الخام ولا تُخزَّن.
@@ -214,7 +217,18 @@ do $$ begin
   end if;
 end $$;
 
--- ---------- 7) تحقّق نهائي ----------
+-- ---------- 7) تنظيف لمرة واحدة (مفتاحا التسجيل معًا) ----------
+-- يجب أن يسبق التحقّق: التحقّق يفحص invite_ticket أيضًا، فلو فحصنا ما لا ننظّفه
+-- لفشلت المهاجرة بلا أي مخرج. ويجعلها مكتفية بذاتها عند إعادة التشغيل.
+update auth.users
+  set raw_user_meta_data = raw_user_meta_data - 'invite_code' - 'invite_ticket'
+  where raw_user_meta_data ?| array['invite_code', 'invite_ticket'];
+
+update auth.identities
+  set identity_data = identity_data - 'invite_code' - 'invite_ticket'
+  where identity_data ?| array['invite_code', 'invite_ticket'];
+
+-- ---------- 8) تحقّق نهائي ----------
 do $$
 declare n_users int; n_ident int;
 begin
