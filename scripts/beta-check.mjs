@@ -154,15 +154,22 @@ check("★ منتهية بساعة القاعدة لا بساعة التطبيق
 check("الإنفاذ يوافق الشارة (claim مرفوض)", (await claim(invSkew.code)) === null);
 
 // ترتيب 0014: revoked → exhausted → expired → active
-const invOrd = await newInviteExpiringIn(-3600, 1);   // منتهية…
-const tOrd = null;                                     // …ولا يمكن استهلاكها (منتهية)
-const invOrd2 = await newInvite({ maxUses: 1, label: "qa-order" });
-const tOrd2 = await claim(invOrd2.code);
-await signupTicket("ord", tOrd2);                      // مستنفدة الآن
-await fetch(`${APP}/api/admin/invites/${invOrd2.id}`, { method: "POST", headers: H(oCookie) }); // وملغاة
-check("★ الترتيب: ملغاة + مستنفدة → revoked (الإلغاء أولًا)", (await inviteRow(invOrd2.id))?.status === "revoked", (await inviteRow(invOrd2.id))?.status);
-check("★ الترتيب: منتهية غير مستنفدة → expired", (await inviteRow(invOrd.id))?.status === "expired", (await inviteRow(invOrd.id))?.status);
-void tOrd;
+// دعوة واحدة تمرّ بالحالات تباعًا: active → exhausted → (منتهية أيضًا) → revoked
+console.log("   … دعوة ترتيب: تنتهي بعد 25ث بساعة القاعدة");
+const invOrd = await newInviteExpiringIn(25, 1);
+const tOrd = await claim(invOrd.code);
+check("claim قبل الانتهاء نجح (شرط صحة فحوص الترتيب)", Boolean(tOrd));
+const sOrd = tOrd ? await signupTicket("ord", tOrd) : null;
+check("التسجيل استنفد الدعوة", Boolean(tOrd) && !sOrd?.error, sOrd?.error?.message?.slice(0, 50));
+check("مستنفدة وغير منتهية → exhausted", (await inviteRow(invOrd.id))?.status === "exhausted", (await inviteRow(invOrd.id))?.status);
+await sleep(30_000);   // تجاوز نافذة الـ25ث فتصبح منتهية أيضًا
+const bothRow = await inviteRow(invOrd.id);
+check("★ مستنفدة ومنتهية معًا → exhausted (exhausted يسبق expired)",
+  bothRow?.status === "exhausted",
+  `الحالة=${bothRow?.status} | used=${bothRow?.used_count}/${bothRow?.max_uses} | انتهت قبل ${((Date.now() - new Date(bothRow?.expires_at).getTime()) / 1000).toFixed(0)}ث بساعة الجهاز`);
+await fetch(`${APP}/api/admin/invites/${invOrd.id}`, { method: "POST", headers: H(oCookie) });
+check("★ ملغاة + مستنفدة + منتهية → revoked (revoked يتغلب على الجميع)",
+  (await inviteRow(invOrd.id))?.status === "revoked", (await inviteRow(invOrd.id))?.status);
 
 const invEx = await newInvite({ maxUses: 1, label: "qa-exh" });
 const [tEx1, tEx2] = [await claim(invEx.code), await claim(invEx.code)];
