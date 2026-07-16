@@ -42,6 +42,15 @@ const validNow = async () => (await anon().rpc("beta_invite_valid", { p_code: co
 console.log("=== 1) 20 طلب claim متوازيًا لنفس الدعوة (RPC مباشر) ===");
 const before = await validNow();
 check("الدعوة صالحة قبل البدء", before);
+if (!before) {
+  // حاسم: beta_claim_invite تشترط used_count < max_uses لتقفل الصف، فدعوة
+  // مستنفدة/ملغاة/منتهية تُرجع false لكل طلب — فتبدو الحدود وكأنها عملت وهي لم
+  // تُختبر إطلاقًا. لا نُكمل: نتيجة كهذه أسوأ من لا نتيجة.
+  console.error("\n❌ الدعوة غير صالحة (مستنفدة أو ملغاة أو منتهية) — الاختبار باطل.");
+  console.error("   كل رفض سيكون بسبب حالة الدعوة لا بسبب الحدود. أنشئ دعوة جديدة");
+  console.error("   بـ max_uses ≥ 5 واحفظ كودها في scripts/.qa-invite.txt ثم أعد التشغيل.");
+  process.exit(2);
+}
 const results = await Promise.all(Array.from({ length: 20 }, () => claimDirect()));
 const granted = results.filter((r) => r.granted);
 const errored = results.filter((r) => r.error);
@@ -86,16 +95,25 @@ if (process.argv.includes("--hourly")) {
   // TTL الأدنى 60ث (مثبَّت داخل الدالة). كل دورة: 3 تذاكر ثم ننتظر انتهاءها.
   let total = granted.length;
   let blocked = false;
+  let stillValid = true;
   for (let round = 0; round < 8 && !blocked; round++) {
     await sleep(65_000); // انتظر انتهاء التذاكر النشطة
     const batch = await Promise.all([claimDirect(60), claimDirect(60), claimDirect(60), claimDirect(60)]);
     const g = batch.filter((b) => b.granted).length;
     total += g;
     console.log(`  دورة ${round + 1}: مُنحت ${g} (الإجمالي ${total})`);
-    if (g === 0) blocked = true;
+    if (g === 0) {
+      // فرّق بين «الحد الزمني أوقفني» و«الدعوة لم تعد صالحة»: الرفض عام في
+      // الحالتين، فبدون هذا الفحص يمرّ الاختبار زائفًا.
+      stillValid = await validNow();
+      blocked = true;
+    }
   }
-  check("★ الحد الزمني يوقف الإصدار عند 20/ساعة", blocked && total <= 20, `الإجمالي=${total}`);
-  check("التنظيف لا يُصفّر الحدّ الزمني (لا حذف داخل النافذة)", total <= 20, `الإجمالي=${total}`);
+  check("الدعوة ما زالت صالحة عند التوقف (وإلا فالسبب ليس الحد)", stillValid,
+    "الدعوة استُنفدت أثناء الاختبار — النتيجة باطلة، أعد بدعوة أوسع");
+  check("★ الحد الزمني يوقف الإصدار عند 20/ساعة", blocked && stillValid && total >= 20 && total <= 20,
+    `الإجمالي=${total} (المتوقع 20 بالضبط)`);
+  check("التنظيف لا يُصفّر الحدّ الزمني (لا حذف داخل النافذة)", stillValid && total <= 20, `الإجمالي=${total}`);
 } else {
   console.log("\n=== 6) حد 20/ساعة — تُخطّى (شغّل بـ --hourly لاختبارها حيًا) ===");
 }
