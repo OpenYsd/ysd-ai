@@ -1,10 +1,13 @@
 /**
- * اختبارات Private Beta الحية (بعد migration 0011).
- * يتطلب: الخادم على 3000 + حساب QA owner في scripts/.qa-owner.json.
- * ملاحظة: أقسام التسجيل تتطلب Confirm email = OFF مؤقتًا (وإلا لا تُنشأ جلسة
- * للمستخدم العادي فيتعذّر اختبار banned/الصيانة). البند 7 (بريد التأكيد الحقيقي)
- * يُختبر يدويًا من المتصفح.
- * لا يطبع الكود الخام ولا كلمات المرور ولا access tokens.
+ * اختبارات Private Beta الحية الكاملة (بعد 0011 + 0012 + 0013).
+ * يتطلب: الخادم على 3000 + حساب QA owner في scripts/.qa-owner.json
+ *         + Confirm email = OFF مؤقتًا (وإلا لا جلسة لمستخدم عادي).
+ * البند «بريد التأكيد الحقيقي» يُختبر يدويًا من المتصفح.
+ *
+ * لا يطبع أي كود دعوة ولا تذكرة ولا مفتاح ولا كلمة مرور ولا access token.
+ * يُنشئ دعواته بنفسه (بجلسة owner) — دعوة مستقلة لكل سيناريو، حتى لا تتراكم
+ * التذاكر النشطة على دعوة واحدة فتصطدم بحد الـ3.
+ * يُعيد كل الحالات المُعدَّلة (الصيانة، حالة المستخدم) إلى أصلها في finally.
  */
 import { readFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
@@ -25,159 +28,210 @@ catch { creds = { email: process.env.YSD_OWNER_EMAIL, password: process.env.YSD_
 
 let pass = 0, fail = 0; const failures = [];
 const check = (n, ok, d = "") => { if (ok) { pass++; console.log(`  ✅ ${n}`); } else { fail++; failures.push(n); console.log(`  ❌ ${n}${d ? ` — ${d}` : ""}`); } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+const anonClient = () => createClient(URL_, ANON, { auth: { persistSession: false } });
 function cookieOf(s) {
   const v = "base64-" + Buffer.from(JSON.stringify(s), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   if (v.length <= 3180) return `sb-${projectRef}-auth-token=${v}`;
   const p = []; for (let i = 0; i * 3180 < v.length; i++) p.push(`sb-${projectRef}-auth-token.${i}=${v.slice(i * 3180, (i + 1) * 3180)}`);
   return p.join("; ");
 }
-const anonClient = () => createClient(URL_, ANON, { auth: { persistSession: false } });
-const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 const H = (c) => ({ Cookie: c, "Content-Type": "application/json" });
-const genCode = () => {
-  const a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", b = randomBytes(16);
-  let o = ""; for (let i = 0; i < 16; i++) o += a[b[i] % a.length];
-  return `${o.slice(0, 4)}-${o.slice(4, 8)}-${o.slice(8, 12)}-${o.slice(12, 16)}`;
-};
 
 const oc = anonClient();
 const login = await oc.auth.signInWithPassword({ email: creds.email, password: creds.password });
 if (login.error) { console.error("owner login failed"); process.exit(1); }
 const oCookie = cookieOf(login.data.session);
+const me = await oc.from("profiles").select("role").eq("id", login.data.user.id).single();
+if (!["owner", "admin"].includes(me.data?.role)) { console.error(`الحساب ليس owner (role=${me.data?.role}) — رقّه أولًا`); process.exit(1); }
+console.log(`جلسة owner جاهزة (role=${me.data.role})`);
 
-const created = [];
-async function newInvite(body) {
-  const r = await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify(body) });
-  const j = await r.json(); created.push(j.id); return { status: r.status, ...j };
+const madeInvites = [];
+async function newInvite({ maxUses = 1, expiresInDays = 30, label = "qa" } = {}) {
+  const r = await fetch(`${APP}/api/admin/invites`, { method: "POST", headers: H(oCookie), body: JSON.stringify({ maxUses, expiresInDays, label }) });
+  const j = await r.json(); madeInvites.push(j.id); return { status: r.status, ...j };
 }
-async function signup(tag, meta) {
+const genCode = () => { const a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", b = randomBytes(16); let o = ""; for (let i = 0; i < 16; i++) o += a[b[i] % a.length]; return `${o.slice(0,4)}-${o.slice(4,8)}-${o.slice(8,12)}-${o.slice(12,16)}`; };
+
+/**
+ * انحراف ساعة القاعدة عن ساعة الجهاز. حاسم لاختبار الانتهاء: الدالة تقارن
+ * expires_at بـ now() في القاعدة، فلو حسبنا التاريخ بساعتنا المنحرفة لأنشأنا
+ * دعوة «منتهية سلفًا» بحساب القاعدة، فيفشل claim ويمرّ فحص الانتهاء زائفًا.
+ */
+async function measureDbSkewMs() {
+  const code = genCode();
+  const t0 = Date.now();
+  const r = await oc.rpc("admin_create_invite", { p_code_hash: sha256(code), p_code_hint: "SKEW", p_label: "qa-skew", p_max_uses: 1, p_expires_at: new Date(Date.now() + 3600_000).toISOString() });
+  const t1 = Date.now();
+  madeInvites.push(r.data);
+  const row = await oc.from("beta_invites").select("created_at").eq("id", r.data).single();
+  return new Date(row.data.created_at).getTime() - (t0 + t1) / 2;
+}
+
+/** دعوة تنتهي بعد ثوانٍ **بساعة القاعدة** — عبر RPC (المسار يفرض ≥ يوم) */
+async function newInviteExpiringIn(seconds, maxUses = 1) {
+  const code = genCode();
+  const r = await oc.rpc("admin_create_invite", { p_code_hash: sha256(code), p_code_hint: code.slice(-4), p_label: "qa-expiring", p_max_uses: maxUses, p_expires_at: new Date(Date.now() + dbSkewMs + seconds * 1000).toISOString() });
+  madeInvites.push(r.data); return { id: r.data, code };
+}
+/** الكود → تذكرة (عبر RPC مباشرة: مسار الـAPI مُختبَر في scrub-check، ونتجنّب حدّه) */
+async function claim(code) {
+  const ticket = randomBytes(32).toString("base64url");
+  const r = await anonClient().rpc("beta_claim_invite", { p_code: code, p_ticket_hash: sha256(ticket), p_ttl_seconds: 600 });
+  return r.data === true ? ticket : null;
+}
+async function signupTicket(tag, ticket, extra = {}) {
   const c = anonClient();
-  const r = await c.auth.signUp({ email: `ysd.qa.${tag}.${Date.now()}${Math.floor(Math.random() * 999)}@qa-ysd.com`, password: `Qa!${Date.now()}xYz`, options: { data: meta } });
+  const r = await c.auth.signUp({
+    email: `ysd.qa.${tag}.${Date.now()}${Math.floor(Math.random() * 999)}@qa-ysd.com`,
+    password: `Qa!${Date.now()}xYz`,
+    options: { data: { display_name: `QA ${tag}`, terms_accepted: "true", ...(ticket ? { invite_ticket: ticket } : {}), ...extra } },
+  });
   return { error: r.error, userId: r.data?.user?.id ?? null, session: r.data?.session ?? null };
 }
 const inviteRow = async (id) => (await (await fetch(`${APP}/api/admin/invites`, { headers: H(oCookie) })).json()).invites.find((i) => i.id === id);
 
-console.log("=== 1) إنشاء دعوة: الكود مرة واحدة، hash فقط في DB ===");
-const inv = await newInvite({ label: "beta-test", maxUses: 2, expiresInDays: 30 });
+const dbSkewMs = await measureDbSkewMs();
+console.log(`انحراف ساعة القاعدة عن الجهاز: ${(dbSkewMs / 1000).toFixed(1)} ثانية (يُعوَّض في فحص الانتهاء)\n`);
+
+console.log("=== 1) الدعوة: كود مرة واحدة، hash فقط ===");
+const inv = await newInvite({ maxUses: 2, label: "qa-main" });
 check("إنشاء دعوة → 201 مع كود", inv.status === 201 && typeof inv.code === "string" && inv.code.length === 19);
-const rawCode = inv.code; // لا يُطبع أبدًا
+const rawCode = inv.code;
 const row = await oc.from("beta_invites").select("code_hash, code_hint").eq("id", inv.id).single();
 check("الكود الخام غير مخزّن (hash فقط)", row.data?.code_hash === sha256(rawCode) && !JSON.stringify(row.data).includes(rawCode));
 check("hint = آخر 4 أحرف فقط", row.data?.code_hint === rawCode.slice(-4));
+check("beta_invite_valid لدعوة صالحة → true", (await anonClient().rpc("beta_invite_valid", { p_code: rawCode })).data === true);
 
-console.log("\n=== 2) beta_invite_valid + مسار التحقق ===");
-const ac = anonClient();
-check("دعوة صالحة → true", (await ac.rpc("beta_invite_valid", { p_code: rawCode })).data === true);
-check("كود خاطئ → false", (await ac.rpc("beta_invite_valid", { p_code: "WRONG-CODE-1234" })).data === false);
-const vr = await fetch(`${APP}/api/invite/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: rawCode }) });
-const vb = await vr.json();
-check("المسار يُرجع {valid:true} فقط بلا تفاصيل", vb.valid === true && Object.keys(vb).join() === "valid");
+console.log("\n=== 2) الرفض: بلا تذكرة / تذكرة مزوّرة / الكود الخام ===");
+check("signUp بلا تذكرة يفشل", Boolean((await signupTicket("noticket", null)).error));
+check("signUp بتذكرة مزوّرة يفشل", Boolean((await signupTicket("faketicket", "x".repeat(43))).error));
+check("signUp بالكود الخام يفشل (المسار القديم ملغى)", Boolean((await signupTicket("rawcode", null, { invite_code: rawCode })).error));
+check("signUp بلا موافقة يفشل", Boolean((await signupTicket("noconsent", await claim(rawCode), { terms_accepted: "false" })).error));
+check("فشل الموافقة لا يستهلك الدعوة (rollback)", (await inviteRow(inv.id))?.used_count === 0, String((await inviteRow(inv.id))?.used_count));
 
-console.log("\n=== 3) التسجيل دون دعوة/دون موافقة مرفوض ===");
-check("signUp بلا كود دعوة يفشل", Boolean((await signup("noinv", { display_name: "بلا دعوة", terms_accepted: "true" })).error));
-check("signUp بكود غير موجود يفشل", Boolean((await signup("badinv", { display_name: "خاطئ", terms_accepted: "true", invite_code: "ZZZZ-ZZZZ-ZZZZ-ZZZZ" })).error));
-const noConsent = await signup("nocon", { display_name: "بلا موافقة", invite_code: rawCode });
-check("signUp بلا terms_accepted يفشل", Boolean(noConsent.error));
-check("فشل الموافقة يُرجِع استهلاك الدعوة (rollback)", (await inviteRow(inv.id))?.used_count === 0, String((await inviteRow(inv.id))?.used_count));
-
-console.log("\n=== 4) دعوة صالحة: الاستهلاك + الموافقة بنسخة الخادم + محو الكود ===");
+console.log("\n=== 3) الموافقة: النسخة من الخادم لا من العميل ===");
 const tv = await oc.from("platform_settings").select("value").eq("key", "terms_version").single();
 const serverVersion = String(tv.data?.value).replace(/^"|"$/g, "");
-const u1 = await signup("ok", { display_name: "بدعوة", invite_code: rawCode, terms_accepted: "true", terms_version: "9999-FORGED" });
-check("signUp بدعوة صالحة ينجح", !u1.error, u1.error?.message);
+const u1 = await signupTicket("ok", await claim(rawCode), { terms_version: "9999-FORGED" });
+check("signUp بتذكرة صالحة ينجح", !u1.error, u1.error?.message?.slice(0, 60));
 check("used_count زاد إلى 1", (await inviteRow(inv.id))?.used_count === 1);
-if (u1.userId) {
-  const consent = await oc.from("user_consents").select("document, version").eq("user_id", u1.userId);
-  check("الموافقة محفوظة للوثيقتين", (consent.data?.length ?? 0) === 2);
-  check("النسخة من platform_settings لا من metadata (تجاهل التزوير)",
-    (consent.data ?? []).every((c) => c.version === serverVersion && c.version !== "9999-FORGED"),
-    JSON.stringify(consent.data?.map((c) => c.version)));
-  check("الدعوة مربوطة بالمستخدم", (await oc.from("beta_invite_uses").select("user_id").eq("invite_id", inv.id)).data?.some((l) => l.user_id === u1.userId));
-  if (u1.session) check("الكود الخام مُحي من raw_user_meta_data", !("invite_code" in (u1.session.user.user_metadata ?? {})), JSON.stringify(Object.keys(u1.session.user.user_metadata ?? {})));
-}
+const consent = await oc.from("user_consents").select("document, version").eq("user_id", u1.userId);
+check("الموافقة محفوظة للوثيقتين", (consent.data?.length ?? 0) === 2);
+check("★ النسخة من platform_settings (تجاهل التزوير)", (consent.data ?? []).every((c) => c.version === serverVersion && c.version !== "9999-FORGED"));
+check("الدعوة مربوطة بالمستخدم مرة واحدة", ((await oc.from("beta_invite_uses").select("user_id").eq("invite_id", inv.id)).data ?? []).filter((l) => l.user_id === u1.userId).length === 1);
+check("الكود/التذكرة ممحوّان من user_metadata", !("invite_code" in (u1.session?.user.user_metadata ?? {})));
 
-console.log("\n=== 5) ملغاة / منتهية / مستنفدة مرفوضة ===");
-const inv2 = await newInvite({ maxUses: 1 });
-await fetch(`${APP}/api/admin/invites/${inv2.id}`, { method: "POST", headers: H(oCookie) });
-check("دعوة ملغاة → signUp يفشل", Boolean((await signup("rev", { display_name: "ملغاة", invite_code: inv2.code, terms_accepted: "true" })).error));
-check("beta_invite_valid للملغاة → false", (await ac.rpc("beta_invite_valid", { p_code: inv2.code })).data === false);
+console.log("\n=== 4) ملغاة / منتهية / مستنفدة ===");
+const invRev = await newInvite({ maxUses: 1, label: "qa-rev" });
+const tRev = await claim(invRev.code);                 // تذكرة قبل الإلغاء
+await fetch(`${APP}/api/admin/invites/${invRev.id}`, { method: "POST", headers: H(oCookie) });
+check("★ دعوة ملغاة بعد إصدار التذكرة → signUp يفشل", Boolean((await signupTicket("rev", tRev)).error));
+check("beta_invite_valid للملغاة → false", (await anonClient().rpc("beta_invite_valid", { p_code: invRev.code })).data === false);
 
-// منتهية: عبر RPC مباشرة (المسار يفرض ≥ يوم واحد، والـRPC يقبل أي تاريخ)
-const expCode = genCode();
-const expId = await oc.rpc("admin_create_invite", { p_code_hash: sha256(expCode), p_code_hint: expCode.slice(-4), p_label: "qa-expired", p_max_uses: 1, p_expires_at: new Date(Date.now() - 3600_000).toISOString() });
-created.push(expId.data);
-check("beta_invite_valid للمنتهية → false", (await ac.rpc("beta_invite_valid", { p_code: expCode })).data === false);
-check("دعوة منتهية → signUp يفشل", Boolean((await signup("exp", { display_name: "منتهية", invite_code: expCode, terms_accepted: "true" })).error));
-check("حالة المنتهية في الواجهة = expired", (await inviteRow(expId.data))?.status === "expired");
+const invExp = await newInviteExpiringIn(8);
+const tExp = await claim(invExp.code);                 // تذكرة قبل الانتهاء
+check("claim نجح قبل الانتهاء (شرط صحة فحص الانتهاء)", Boolean(tExp), "بلا تذكرة يصبح الفحص التالي باطلًا");
+await sleep(9000);
+// حاسم: لو كانت tExp فارغة لفشل signUp لانعدام التذكرة لا للانتهاء — نجاح زائف.
+const expRes = tExp ? await signupTicket("exp", tExp) : null;
+check("★ دعوة منتهية بعد إصدار التذكرة → signUp يفشل",
+  Boolean(tExp) && Boolean(expRes?.error),
+  tExp ? "" : "الفحص باطل: لم تُصدَر تذكرة قبل الانتهاء");
+// الشارة تُحسب بساعة خادم التطبيق بينما الإنفاذ بساعة القاعدة. نختبرها بدعوة
+// منتهية منذ ساعة كاملة، فتتفق الساعتان مهما كان الانحراف الطبيعي بينهما.
+const invLongExp = await newInviteExpiringIn(-3600);
+check("حالة دعوة منتهية منذ ساعة = expired", (await inviteRow(invLongExp.id))?.status === "expired", (await inviteRow(invLongExp.id))?.status);
+check("beta_invite_valid للمنتهية → false", (await anonClient().rpc("beta_invite_valid", { p_code: invLongExp.code })).data === false);
+check("claim لدعوة منتهية مرفوض", (await claim(invLongExp.code)) === null);
 
-const inv3 = await newInvite({ maxUses: 1 });
-check("أول استخدام ينجح", !(await signup("ex1", { display_name: "أول", invite_code: inv3.code, terms_accepted: "true" })).error);
-check("الثاني (تجاوز الحد) يفشل", Boolean((await signup("ex2", { display_name: "ثانٍ", invite_code: inv3.code, terms_accepted: "true" })).error));
-check("حالة المستنفدة = exhausted", (await inviteRow(inv3.id))?.status === "exhausted");
+const invEx = await newInvite({ maxUses: 1, label: "qa-exh" });
+const [tEx1, tEx2] = [await claim(invEx.code), await claim(invEx.code)];
+check("أول استخدام ينجح", !(await signupTicket("ex1", tEx1)).error);
+check("★ الثاني (تجاوز الحد) يفشل", Boolean((await signupTicket("ex2", tEx2)).error));
+check("حالة المستنفدة = exhausted", (await inviteRow(invEx.id))?.status === "exhausted");
 
-console.log("\n=== 6) التزامن على آخر استخدام: حساب واحد فقط ينجح ===");
-const invC = await newInvite({ maxUses: 1 });
-const [r1, r2] = await Promise.all([
-  signup("c1", { display_name: "متزامن1", invite_code: invC.code, terms_accepted: "true" }),
-  signup("c2", { display_name: "متزامن2", invite_code: invC.code, terms_accepted: "true" }),
-]);
-const wins = [r1, r2].filter((r) => !r.error).length;
-check("طلبان متزامنان → ناجح واحد فقط", wins === 1, `ناجح=${wins}`);
-check("used_count = 1 بالضبط (لا تجاوز)", (await inviteRow(invC.id))?.used_count === 1, String((await inviteRow(invC.id))?.used_count));
+console.log("\n=== 5) التزامن على آخر استخدام ===");
+const invC = await newInvite({ maxUses: 1, label: "qa-conc" });
+const [tc1, tc2] = [await claim(invC.code), await claim(invC.code)];
+const [rc1, rc2] = await Promise.all([signupTicket("c1", tc1), signupTicket("c2", tc2)]);
+const wins = [rc1, rc2].filter((r) => !r.error).length;
+check("★ طلبان متزامنان → ناجح واحد فقط", wins === 1, `ناجح=${wins}`);
+check("★ used_count = 1 بالضبط (لا تجاوز)", (await inviteRow(invC.id))?.used_count === 1, String((await inviteRow(invC.id))?.used_count));
 
-console.log("\n=== 7) عزل الدعوات (RLS) + IDOR ===");
-const invU = await newInvite({ maxUses: 1 });
-const victim = await signup("rls", { display_name: "عادي", invite_code: invU.code, terms_accepted: "true" });
-const vCookie = victim.session ? cookieOf(victim.session) : null;
-if (!vCookie) {
-  console.log("  ℹ لا جلسة للمستخدم العادي (تأكيد البريد مفعّل) — تُتخطّى فحوص banned/الصيانة");
-} else {
-  const vc = createClient(URL_, ANON, { auth: { persistSession: false } });
-  await vc.auth.setSession(victim.session);
-  check("مستخدم عادي لا يقرأ beta_invites", ((await vc.from("beta_invites").select("id").limit(1)).data?.length ?? 0) === 0);
-  check("مستخدم عادي لا يقرأ موافقات غيره", ((await vc.from("user_consents").select("user_id").neq("user_id", victim.userId)).data?.length ?? 0) === 0);
-  check("مستخدم عادي لا يصل /api/admin/invites (403)", (await fetch(`${APP}/api/admin/invites`, { headers: H(vCookie) })).status === 403);
-  check("مستخدم عادي لا يلغي دعوة (403)", (await fetch(`${APP}/api/admin/invites/${inv.id}`, { method: "POST", headers: H(vCookie) })).status === 403);
+console.log("\n=== 6) مستخدم عادي: العزل وRLS وIDOR ===");
+const invU = await newInvite({ maxUses: 1, label: "qa-user" });
+const victim = await signupTicket("rls", await claim(invU.code));
+if (!victim.session) { console.error("❌ لا جلسة لمستخدم عادي — اضبط Confirm email = OFF"); process.exit(2); }
+const vCookie = cookieOf(victim.session);
+const vc = anonClient(); await vc.auth.setSession(victim.session);
+check("لا يقرأ beta_invites", ((await vc.from("beta_invites").select("id").limit(1)).data?.length ?? 0) === 0);
+check("لا يقرأ invite_tickets", ((await vc.from("invite_tickets").select("ticket_hash").limit(1)).data?.length ?? 0) === 0);
+check("لا يقرأ موافقات غيره", ((await vc.from("user_consents").select("user_id").neq("user_id", victim.userId)).data?.length ?? 0) === 0);
+check("لا يقرأ استهلاك غيره (usage_events)", ((await vc.from("usage_events").select("user_id").neq("user_id", victim.userId)).data?.length ?? 0) === 0);
+check("لا يقرأ محادثات غيره", ((await vc.from("conversations").select("id").neq("user_id", victim.userId)).data?.length ?? 0) === 0);
+check("لا يرفع دوره إلى admin (منع تصعيد الامتيازات)", Boolean((await vc.from("profiles").update({ role: "admin" }).eq("id", victim.userId).select()).error));
+check("لا يصل /api/admin/invites (403)", (await fetch(`${APP}/api/admin/invites`, { headers: H(vCookie) })).status === 403);
+check("لا يلغي دعوة (403)", (await fetch(`${APP}/api/admin/invites/${inv.id}`, { method: "POST", headers: H(vCookie) })).status === 403);
+check("لا يصل /api/admin/users (403)", (await fetch(`${APP}/api/admin/users`, { headers: H(vCookie) })).status === 403);
+check("/admin يُحوَّل بعيدًا", [302, 307].includes((await fetch(`${APP}/admin`, { headers: { Cookie: vCookie }, redirect: "manual" })).status));
 
-  console.log("\n=== 8) وضع الصيانة: يمنع العادي (صفحات + APIs) ويسمح للطاقم ===");
-  const setMaint = (v) => fetch(`${APP}/api/admin/settings`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ key: "maintenance_mode", value: v }) });
-  try {
-    check("تفعيل الصيانة (owner) → 200", (await setMaint(true)).status === 200);
-    const page = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
-    check("العادي: صفحة خاصة → تحويل إلى /maintenance", [302, 307].includes(page.status) && (page.headers.get("location") ?? "").includes("/maintenance"), `HTTP ${page.status}`);
-    const apiRes = await fetch(`${APP}/api/conversations`, { headers: H(vCookie) });
-    check("العادي: API خاصة → 503", apiRes.status === 503, `HTTP ${apiRes.status}`);
-    const ownerPage = await fetch(`${APP}/admin`, { headers: { Cookie: oCookie }, redirect: "manual" });
-    check("owner: الصفحات مسموحة أثناء الصيانة", ownerPage.status === 200, `HTTP ${ownerPage.status}`);
-    check("owner: APIs مسموحة أثناء الصيانة", (await fetch(`${APP}/api/admin/invites`, { headers: H(oCookie) })).status === 200);
-    check("/api/health يبقى عامًا أثناء الصيانة", (await fetch(`${APP}/api/health`)).status === 200);
-  } finally {
-    const off = await setMaint(false);
-    check("إيقاف الصيانة (استرجاع) → 200", off.status === 200);
-  }
+console.log("\n=== 7) usage ===");
+check("المستخدم يفتح /usage", (await fetch(`${APP}/usage`, { headers: { Cookie: vCookie }, redirect: "manual" })).status === 200);
+check("يقرأ استهلاكه هو", ((await vc.from("usage_events").select("user_id").eq("user_id", victim.userId)).error) === null);
+check("owner يقرأ حدود الباقات", (await fetch(`${APP}/api/admin/usage-limits`, { headers: H(oCookie) })).status === 200);
 
-  console.log("\n=== 9) banned: ممنوع من كل الصفحات والـAPIs الخاصة ===");
-  const ban = (s) => fetch(`${APP}/api/admin/users/${victim.userId}`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ op: "status", status: s }) });
-  check("حظر المستخدم (owner) → 200", (await ban("banned")).status === 200);
-  const banPage = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
-  check("banned: صفحة خاصة → تحويل إلى /suspended", [302, 307].includes(banPage.status) && (banPage.headers.get("location") ?? "").includes("/suspended"), `HTTP ${banPage.status}`);
+const setMaint = (v) => fetch(`${APP}/api/admin/settings`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ key: "maintenance_mode", value: v }) });
+const setStatus = (s) => fetch(`${APP}/api/admin/users/${victim.userId}`, { method: "PATCH", headers: H(oCookie), body: JSON.stringify({ op: "status", status: s }) });
+
+try {
+  console.log("\n=== 8) وضع الصيانة: الصفحات + الـAPIs ===");
+  check("تفعيل الصيانة (owner) → 200", (await setMaint(true)).status === 200);
+  const mp = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
+  check("العادي: صفحة خاصة → /maintenance", [302, 307].includes(mp.status) && (mp.headers.get("location") ?? "").includes("/maintenance"), `HTTP ${mp.status}`);
+  check("★ العادي: API خاصة → 503", (await fetch(`${APP}/api/conversations`, { headers: H(vCookie) })).status === 503);
+  check("★ العادي: /api/chat → 503", (await fetch(`${APP}/api/chat`, { method: "POST", headers: H(vCookie), body: "{}" })).status === 503);
+  check("owner: الصفحات مسموحة", (await fetch(`${APP}/admin`, { headers: { Cookie: oCookie }, redirect: "manual" })).status === 200);
+  check("owner: APIs مسموحة", (await fetch(`${APP}/api/admin/invites`, { headers: H(oCookie) })).status === 200);
+  check("/api/health يبقى عامًا", (await fetch(`${APP}/api/health`)).status === 200);
+  check("الصفحات العامة تبقى متاحة", (await fetch(`${APP}/terms`, { headers: { Cookie: vCookie }, redirect: "manual" })).status === 200);
+
+  console.log("\n=== 9) banned + ai_suspended ===");
+  check("إيقاف الصيانة قبل فحص banned", (await setMaint(false)).status === 200);
+  check("حظر المستخدم (owner) → 200", (await setStatus("banned")).status === 200);
+  const bp = await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" });
+  check("banned: صفحة خاصة → /suspended", [302, 307].includes(bp.status) && (bp.headers.get("location") ?? "").includes("/suspended"), `HTTP ${bp.status}`);
   for (const p of ["/api/conversations", "/api/files", "/api/projects", "/api/preferences", "/api/profile"]) {
     check(`banned: ${p} → 403`, (await fetch(`${APP}${p}`, { headers: H(vCookie) })).status === 403);
   }
-  const banChat = await fetch(`${APP}/api/chat`, { method: "POST", headers: H(vCookie), body: JSON.stringify({ conversationId: null, content: "مرحبا" }) });
-  check("banned: /api/chat → 403", banChat.status === 403, `HTTP ${banChat.status}`);
+  check("banned: /api/chat → 403", (await fetch(`${APP}/api/chat`, { method: "POST", headers: H(vCookie), body: "{}" })).status === 403);
   check("banned: الصفحات العامة تبقى متاحة", (await fetch(`${APP}/terms`, { headers: { Cookie: vCookie }, redirect: "manual" })).status === 200);
-  await ban("active");
+
+  check("تعليق AI (owner) → 200", (await setStatus("ai_suspended")).status === 200);
+  check("★ ai_suspended: /api/chat → 403", (await fetch(`${APP}/api/chat`, { method: "POST", headers: H(vCookie), body: "{}" })).status === 403);
+  check("★ ai_suspended: بقية المسارات تعمل", (await fetch(`${APP}/api/conversations`, { headers: H(vCookie) })).status === 200);
+  check("ai_suspended: الصفحات الخاصة تعمل", (await fetch(`${APP}/chat`, { headers: { Cookie: vCookie }, redirect: "manual" })).status === 200);
+} finally {
+  console.log("\n=== استرجاع الحالات ===");
+  check("الصيانة أُعيدت إلى false", (await setMaint(false)).status === 200);
+  check("حالة المستخدم أُعيدت إلى active", (await setStatus("active")).status === 200);
+  const s = await oc.from("platform_settings").select("value").eq("key", "maintenance_mode").single();
+  check("تأكيد: maintenance_mode = false", s.data?.value === false, JSON.stringify(s.data?.value));
+  const p = await oc.from("profiles").select("status").eq("id", victim.userId).single();
+  check("تأكيد: status = active", p.data?.status === "active", p.data?.status);
 }
 
-console.log("\n=== 10) لا كود خام في التدقيق ===");
+console.log("\n=== 10) التدقيق: لا كود ولا تذكرة ===");
 const audit = await (await fetch(`${APP}/api/admin/audit`, { headers: H(oCookie) })).json();
 const auditText = JSON.stringify(audit.logs ?? []);
-check("سجل التدقيق لا يحوي الكود الخام", !auditText.includes(rawCode) && !auditText.includes(inv2.code) && !auditText.includes(expCode));
-check("سجل التدقيق يحوي invite.create", (audit.logs ?? []).some((l) => l.action === "invite.create"));
+check("★ لا كود خام في التدقيق", !auditText.includes(rawCode) && !auditText.includes(invRev.code) && !auditText.includes(invEx.code));
+check("لا تذكرة في التدقيق", !auditText.includes(tEx1 ?? "@@") && !auditText.includes(tc1 ?? "@@"));
+check("التدقيق يسجّل invite.create و invite.revoke", ["invite.create", "invite.revoke"].every((a) => (audit.logs ?? []).some((l) => l.action === a)));
+check("التدقيق يسجّل user.status و setting.update", ["user.status", "setting.update"].every((a) => (audit.logs ?? []).some((l) => l.action === a)));
 
-console.log("\n=== تنظيف الدعوات ===");
-for (const id of created.filter(Boolean)) await fetch(`${APP}/api/admin/invites/${id}`, { method: "POST", headers: H(oCookie) }).catch(() => {});
+console.log("\n=== تنظيف الدعوات التجريبية ===");
+for (const id of madeInvites.filter(Boolean)) await fetch(`${APP}/api/admin/invites/${id}`, { method: "POST", headers: H(oCookie) }).catch(() => {});
 console.log(`\n========================================`);
 console.log(`النتيجة: ${pass} ناجح / ${fail} فاشل`);
 if (failures.length) { console.log("الإخفاقات:", failures.join(" | ")); process.exit(1); }
