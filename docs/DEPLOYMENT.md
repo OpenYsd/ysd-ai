@@ -43,8 +43,10 @@ docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
   -t ysd-ai:0.6.1 .
 
-# التشغيل — الأسرار الخادمية وقت التشغيل فقط
+# التشغيل — NEXT_PUBLIC_* تلزم هنا أيضًا (انظر الجدول)، والأسرار الخادمية runtime فقط
 docker run -d --name ysd-ai -p 3000:3000 \
+  -e NEXT_PUBLIC_SUPABASE_URL=... \
+  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
   -e OPENROUTER_API_KEY=... \
   -e YSD_STRICT_ENV=1 \
   ysd-ai:0.6.1
@@ -54,7 +56,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
 
 | النوع | متى | لماذا |
 |---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` · `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **build arg** | تُحقَن في حزمة المتصفح وقت البناء. **عامة بطبيعتها**: تصل كل زائر أصلًا، والمفتاح anon محكوم بـRLS. تمريرها وقت التشغيل **لا يعمل** — الحزمة تكون قد بُنيت. |
+| `NEXT_PUBLIC_SUPABASE_URL` · `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **build arg + runtime** | مرّتان. **build**: تُحقَن في حزمة المتصفح. **runtime**: `lib/env.ts` يقرأ `process.env[name]` **ديناميكيًا**، وNext.js لا يحقن إلا الوصول الساكن — فبدونها يفشل `checkEnv`، ومع `YSD_STRICT_ENV=1` يُرفض الإقلاع وترد كل المسارات **500**. **عامة بطبيعتها**: تصل كل زائر أصلًا، والمفتاح anon محكوم بـRLS. |
 | `OPENROUTER_API_KEY` · `ANTHROPIC_API_KEY` | **runtime فقط** (`-e` أو secrets المنصة) | أسرار خادمية. **لا تمرّرها كـbuild-arg إطلاقًا**: تبقى في تاريخ الطبقات ويكشفها `docker history`. |
 | `SUPABASE_SERVICE_ROLE_KEY` | **لا يُمرَّر** | لعامل RAG المستقل فقط (غير مُفعّل). المعالجة request-driven لا تحتاجه. |
 
