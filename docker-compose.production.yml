@@ -1,0 +1,92 @@
+# ============================================================
+# YSD AI — تشغيل إنتاجي بالحاويات
+#
+#   docker compose -f docker-compose.production.yml --env-file <ملفك> up -d
+#
+# الصورة المعتمدة: ysd-ai:0.6.1-standalone (1.01GB) — خادم Node دائم، غير root،
+# RAG مُختبَر حيًا داخلها (رفع → استخراج → embeddings → بحث دلالي).
+#
+# ⚠️ ملف البيئة يبقى **خارج** المستودع وخارج الصورة. .dockerignore يُخرج .env*
+#    من سياق البناء نفسه، فلا يمكن أن يتسرّب ولو بـ COPY . .
+# ============================================================
+
+services:
+  ysd-ai:
+    image: ysd-ai:0.6.1-standalone
+    container_name: ysd-ai
+
+    # لا build هنا عمدًا: الصورة تُبنى بـ build args (NEXT_PUBLIC_* تُحقَن في حزمة
+    # المتصفح وقت البناء). راجع docs/DEPLOYMENT.md — أمر البناء موثّق هناك.
+    #
+    # never: الصورة مبنيّة محليًا ولا وجود لها في أي سجل، فبدون هذا يحاول compose
+    # سحبها ويفشل بـ"pull access denied" (تحقّق حي — و`config` لا يكشفه لأنه
+    # يتحقق من الصيغة لا من حلّ الصورة).
+    # ⚠️ عند الانتقال إلى سجل (registry): غيّرها إلى missing وضع اسم الصورة كاملًا.
+    pull_policy: never
+
+    restart: unless-stopped
+
+    ports:
+      # منفذ المضيف قابل للضبط (YSD_PORT) — يتيح التشغيل خلف عاكس عكسي أو
+      # بجوار خدمة أخرى تشغل 3000. منفذ الحاوية يبقى 3000 دائمًا.
+      - "${YSD_PORT:-3000}:3000"
+
+    environment:
+      # --- تلزم في الوقتين: build arg (لحزمة المتصفح) + هنا (لقراءات الخادم
+      #     الديناميكية في lib/env.ts). بدونها يُرفض الإقلاع مع YSD_STRICT_ENV=1
+      #     وترد كل المسارات 500 — تحقّق حي. عامة بطبيعتها (تصل كل زائر).
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?مطلوب}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?مطلوب}
+      # --- أسرار خادمية: من ملف البيئة أو secrets المنصة. لا تُخبز في الصورة.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?مطلوب}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # --- تشغيلية
+      YSD_STRICT_ENV: "1"     # ارفض الإقلاع إن نقص متغير إلزامي بدل العمل معطوبًا
+      YSD_LOW_MEMORY: "1"     # يقلّل بصمة نموذج Embeddings المحلي
+      YSD_APP_URL: ${YSD_APP_URL:-}
+
+    # فحص الحاوية = liveness فقط: أي رد HTTP يعني أن الخادم حيّ.
+    # لا يشترط 200 عمدًا: /api/health يرد 503 حين تتعثّر خدمة خارجية (رُصد انقطاع
+    # Supabase ثلاث مرات أثناء التطوير). ربط صحة الحاوية بذلك يُعيد تشغيل خادم
+    # سليم بلا فائدة. جسم /api/health (readiness) للمراقبة لا لإعادة التشغيل.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    deploy:
+      resources:
+        limits:
+          # 1.5GB لا 1GB: القياس الفعلي أثناء RAG بلغ 677MB (نموذج Embeddings
+          # المحلي يُحمَّل داخل العملية: rss 153MB → 654MB عند أول توليد).
+          # حدّ 1GB يترك ~320MB فقط لذروة التحميل والتزامن — أول ملف كبير أو
+          # طلبان متوازيان يعنيان OOM-kill ومقتل الحاوية. 1.5GB هامش معقول.
+          memory: 1536M
+        reservations:
+          memory: 512M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # الحاوية تعمل بمستخدم node (uid 1000) — مُتحقَّق داخلها، والكتابة في /etc مرفوضة.
+    security_opt:
+      - no-new-privileges:true
+
+    # لا read_only عمدًا — جُرِّب وأُسقط:
+    #   lib/rag/embeddings.ts يضبط env.cacheDir = ${process.cwd()}/.cache/transformers،
+    #   أي أن نموذج Embeddings المحلي يُنزَّل ويُكتب في /app/.cache وقت التشغيل.
+    #   مع نظام ملفات للقراءة فقط تفشل تلك الكتابة و**ينهار RAG عند أول توليد**،
+    #   بينما تبدو الحاوية healthy و/login يعمل و/api/health يقول embeddings: ok
+    #   (لأنه يفحص الإعداد لا التحميل) — عطب يظهر بعد النشر لا قبله.
+    #   وtmpfs بديلًا يعني إعادة تنزيل النموذج عند كل إعادة تشغيل.
+    #   لإعادة تفعيله لاحقًا: أنشئ /app/.cache في الصورة بملكية node ثم اربطه
+    #   بـnamed volume (يتطلب إعادة بناء — الصورة الحالية معتمدة كما هي).
+    #
+    # ملاحظة تشغيلية: النموذج يُنزَّل مرة واحدة في الطبقة القابلة للكتابة للحاوية.
+    # `docker compose restart` يحتفظ به؛ `down` ثم `up` يُعيد إنشاء الحاوية فيُنزَّل
+    # من جديد (~30 ثانية عند أول طلب RAG).

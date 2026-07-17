@@ -80,6 +80,57 @@ docker run -d --name ysd-ai -p 3000:3000 \
 - **البناء يفشل مبكرًا** برسالة واضحة إن نقص أي `NEXT_PUBLIC_*` — بدل صورة تُبنى بنجاح
   ثم تنكسر في متصفح المستخدم.
 
+### التشغيل بـcompose (الطريقة المعتمدة)
+
+الصورة الرسمية: **`ysd-ai:0.6.1-standalone`** (1.01GB). ملف البيئة يبقى **خارج المستودع**.
+
+```bash
+# 1) جهّز ملف البيئة (أسماء فقط في القالب — املأه خارج git)
+cp env.production.example /مسار/آمن/ysd.env
+
+# 2) ابنِ الصورة (NEXT_PUBLIC_* تُحقَن في حزمة المتصفح وقت البناء)
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
+  -t ysd-ai:0.6.1-standalone .
+
+# 3) شغّل
+docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
+
+# 4) السجلات (مباشر / آخر 100 سطر)
+docker compose -f docker-compose.production.yml logs -f
+docker compose -f docker-compose.production.yml logs --tail 100
+
+# 5) الحالة والصحة
+docker compose -f docker-compose.production.yml ps
+docker inspect ysd-ai --format '{{.State.Health.Status}}'
+
+# 6) الإيقاف (يبقى محذوفًا حتى تشغيل يدوي) / الإزالة الكاملة
+docker compose -f docker-compose.production.yml stop
+docker compose -f docker-compose.production.yml down
+
+# 7) التحديث إلى نسخة أحدث
+docker build --build-arg ... -t ysd-ai:0.6.2-standalone .
+#    ثم عدّل image: في docker-compose.production.yml
+docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
+
+# 8) الرجوع إلى نسخة سابقة — الصور القديمة لا تُحذف
+docker images ysd-ai                      # اعرض المتاح
+#    أعِد image: إلى الوسم السابق ثم:
+docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
+```
+
+| الإعداد | القيمة | لماذا |
+|---|---|---|
+| `restart` | `unless-stopped` | يعود بعد إعادة تشغيل الخادم، ولا يعود إن أوقفته يدويًا |
+| حد الذاكرة | **1536M** | القياس الفعلي أثناء RAG: **694MB** (النموذج داخل العملية: rss 150→643MB). حدّ 1GB يترك ~300MB لذروة التحميل والتزامن — أول تزامن يعني OOM-kill |
+| حجز الذاكرة | 512M | البصمة الخاملة ~150MB |
+| `YSD_PORT` | 3000 افتراضيًا | لتشغيله خلف عاكس عكسي أو بجوار خدمة تشغل 3000 |
+| `pull_policy` | `never` | الصورة محلية ولا وجود لها في سجل. **عند الانتقال إلى registry: غيّرها إلى `missing`** |
+| السجلات | 10m × 3 | يمنع امتلاء القرص |
+
+**لا `read_only`** — جُرِّب وأُسقط: `lib/rag/embeddings.ts` يكتب النموذج في `/app/.cache/transformers` وقت التشغيل، فنظام ملفات للقراءة فقط **يكسر RAG** بينما تبدو الحاوية سليمة. التفصيل داخل ملف compose.
+
 ### HEALTHCHECK — liveness لا readiness
 
 `HEALTHCHECK` يعتبر **أي** رد HTTP دليلًا على أن الخادم حيّ؛ فشل الاتصال وحده يعني موته.
