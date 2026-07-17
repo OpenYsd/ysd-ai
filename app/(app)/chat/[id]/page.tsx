@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { getRequestContext } from "@/lib/auth/request-context";
 import { listModelOptions } from "@/lib/ai/registry";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 
@@ -13,44 +15,46 @@ export default async function ConversationPage({
   if (!z.string().uuid().safeParse(id).success) redirect("/chat");
 
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  // الهوية من سياق الوسيط — يُسقط رحلة getUser (fallback شبكي آمن لو غاب السياق)
+  const ctx = await getRequestContext(await headers(), supabase);
+  if (!ctx) redirect("/login");
+  const userId = ctx.userId;
 
-  // RLS يضمن الملكية، وشرط user_id دفاع إضافي
-  const { data: conv } = await supabase
-    .from("conversations")
-    .select("id, title, model_id")
-    .eq("id", id)
-    .eq("user_id", user.id)
-    .is("deleted_at", null)
-    .maybeSingle();
-  if (!conv) redirect("/chat");
-
-  const [{ data: rows }, { data: prefs }, { data: profile }, { data: convFiles }] =
+  // كل الاستعلامات مقيّدة بـuserId + RLS، فتُنفَّذ بالتوازي بأمان — بما فيها فحص
+  // ملكية المحادثة. لو لم يملكها المستخدم، RLS يُرجع الكل فارغًا ثم redirect.
+  const [{ data: conv }, { data: rows }, { data: prefs }, { data: profile }, { data: convFiles }] =
     await Promise.all([
-    supabase
-      .from("messages")
-      .select("id, role, content, metadata")
-      .eq("conversation_id", id)
-      .is("deleted_at", null)
-      .order("created_at", { ascending: true })
-      .limit(200),
-    supabase
-      .from("user_preferences")
-      .select("default_model_id")
-      .eq("user_id", user.id)
-      .maybeSingle(),
-    supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
-    supabase
-      .from("files")
-      // mime_type لازم: الواجهة تُفرّق به الصور (لا تدخل RAG) عن المستندات
-      .select("id, original_name, mime_type, status, rag_total_chunks, rag_done_chunks, rag_error")
-      .eq("conversation_id", id)
-      .eq("user_id", user.id)
-      .is("deleted_at", null)
-      .order("created_at", { ascending: true })
-      .limit(20),
-  ]);
+      supabase
+        .from("conversations")
+        .select("id, title, model_id")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .maybeSingle(),
+      supabase
+        .from("messages")
+        .select("id, role, content, metadata")
+        .eq("conversation_id", id)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: true })
+        .limit(200),
+      supabase
+        .from("user_preferences")
+        .select("default_model_id")
+        .eq("user_id", userId)
+        .maybeSingle(),
+      supabase.from("profiles").select("display_name").eq("id", userId).maybeSingle(),
+      supabase
+        .from("files")
+        // mime_type لازم: الواجهة تُفرّق به الصور (لا تدخل RAG) عن المستندات
+        .select("id, original_name, mime_type, status, rag_total_chunks, rag_done_chunks, rag_error")
+        .eq("conversation_id", id)
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("created_at", { ascending: true })
+        .limit(20),
+    ]);
+  if (!conv) redirect("/chat");
 
   const models: ChatModel[] = listModelOptions();
 

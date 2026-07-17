@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { getRequestContext } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import type { ChatMessage } from "@/lib/ai/types";
@@ -39,21 +41,25 @@ function rateLimit(userId: string, limit = 20, windowMs = 60_000): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  const tStart = Date.now();
+  // request_id من الوسيط (أو مولّد احتياطيًا) — للربط في السجلات، بلا أي بيانات شخصية
+  const requestId = req.headers.get("x-ysd-request-id") ?? crypto.randomUUID();
   const supabase = await createClient();
 
-  // 1) المصادقة — على الخادم دائمًا
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return json({ error: "غير مصرح" }, 401);
+  // 1) المصادقة والحالة — من سياق الوسيط المُتحقَّق (ترويسات x-ysd-* المختومة).
+  //    يُسقط رحلتَي getUser + profiles؛ ولو غاب السياق يسقط getRequestContext إلى
+  //    تحقّق شبكي كامل (fallback آمن — لا ثقة بترويسة ناقصة).
+  const ctx = await getRequestContext(await headers(), supabase);
+  if (!ctx) return json({ error: "غير مصرح" }, 401);
+  const userId = ctx.userId;
 
   // 2) Rate limiting
-  if (!rateLimit(user.id)) return json({ error: "تجاوزت حد الطلبات، حاول بعد قليل." }, 429);
+  if (!rateLimit(userId)) return json({ error: "تجاوزت حد الطلبات، حاول بعد قليل." }, 429);
 
-  // 2ب) حالة الحساب — حظر/تعليق AI من لوحة الإدارة (تحقق خادمي)
-  const { data: prof } = await supabase
-    .from("profiles").select("status").eq("id", user.id).maybeSingle();
-  if (prof?.status === "banned")
+  // 2ب) حالة الحساب — نفس الفحص والرسائل (banned يمنعه الوسيط أيضًا؛ دفاع مزدوج)
+  if (ctx.status === "banned")
     return json({ error: "حسابك موقوف. تواصل مع إدارة المنصة." }, 403);
-  if (prof?.status === "ai_suspended")
+  if (ctx.status === "ai_suspended")
     return json({ error: "استخدام الذكاء الاصطناعي معلّق لحسابك. تواصل مع إدارة المنصة." }, 403);
 
   // 3) التحقق من المدخلات
@@ -61,15 +67,20 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
   const { conversationId, modelId, message, editMessageId, regenerate } = parsed.data;
 
-  // 4) التحقق من ملكية المحادثة (RLS يحمي أيضًا — دفاع مزدوج ضد IDOR)
-  const { data: conv } = await supabase
-    .from("conversations")
-    .select("id, title, project_id")
-    .eq("id", conversationId)
-    .eq("user_id", user.id)
-    .is("deleted_at", null)
-    .single();
+  // 4+5) التحقّق: الملكية وحدّ الاستهلاك — مستقلان، فيُنفَّذان بالتوازي.
+  //      الترتيب الأمني ونفس رسائل الخطأ محفوظان: الملكية (404) تُفحص قبل الحد (403).
+  const [{ data: conv }, { data: allowed }] = await Promise.all([
+    supabase
+      .from("conversations")
+      .select("id, title, project_id")
+      .eq("id", conversationId)
+      .eq("user_id", userId)
+      .is("deleted_at", null)
+      .single(),
+    supabase.rpc("check_usage_allowed", { p_user_id: userId }),
+  ]);
   if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
+  if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
 
   // تعليمات المشروع الخاصة تُضاف إلى موجه النظام
   let systemPrompt = SYSTEM_PROMPT;
@@ -78,17 +89,13 @@ export async function POST(req: NextRequest) {
       .from("projects")
       .select("custom_instructions")
       .eq("id", conv.project_id)
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .is("deleted_at", null)
       .maybeSingle();
     if (proj?.custom_instructions) {
       systemPrompt = `${SYSTEM_PROMPT}\n\nتعليمات خاصة من صاحب المشروع:\n${proj.custom_instructions}`;
     }
   }
-
-  // 5) التحقق من حدود الاستهلاك
-  const { data: allowed } = await supabase.rpc("check_usage_allowed", { p_user_id: user.id });
-  if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
 
   // 6) اختيار الموفر عبر الطبقة الموحدة
   const provider = resolveProviderForModel(modelId);
@@ -168,7 +175,7 @@ export async function POST(req: NextRequest) {
       .from("projects")
       .update({ last_activity_at: new Date().toISOString() })
       .eq("id", conv.project_id)
-      .eq("user_id", user.id);
+      .eq("user_id", userId);
   }
 
   // 8) جلب سياق المحادثة (آخر 30 رسالة)
@@ -194,7 +201,7 @@ export async function POST(req: NextRequest) {
     try {
       const contextFileIds = await getContextFileIds(
         supabase,
-        user.id,
+        userId,
         conversationId,
         conv.project_id,
       );
@@ -265,7 +272,7 @@ export async function POST(req: NextRequest) {
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
             await supabase.from("usage_events").insert({
-              user_id: user.id,
+              user_id: userId,
               conversation_id: conversationId,
               model_id: actualModelId ?? modelId,
               input_tokens: chunk.usage.inputTokens,
@@ -317,11 +324,19 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // زمن التطبيق قبل نداء المزوّد (auth+conv+usage+insert+history+RAG) — قياس آمن،
+  // بلا محتوى الرسالة ولا بيانات شخصية. يُسجَّل لأن ترويسة Server-Timing يطغى عليها
+  // الوسيط على استجابة SSE، فالسجل هو السبيل الوحيد لرصد هذه المرحلة.
+  const appBeforeProviderMs = Date.now() - tStart;
+  console.log(`[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs}`);
+
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "x-ysd-request-id": requestId,
+      "Server-Timing": `app;dur=${appBeforeProviderMs}`,
     },
   });
 }

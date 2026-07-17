@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAdminContext, forbidden, writeAudit } from "@/lib/admin/guard";
 import { adminRpc, mapRpcResult, adminJson as json } from "@/lib/admin/rpc";
 import { settingSchema } from "@/lib/validation/admin";
+import { invalidateSettingsCache } from "@/lib/settings";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,9 @@ export async function PATCH(req: NextRequest) {
   });
   const mapped = mapRpcResult(result);
   if (mapped.status !== 200) return json({ error: mapped.error }, mapped.status);
+
+  // أبطِل الكاش فورًا — الإعداد الجديد يظهر في الطلب التالي بلا انتظار TTL
+  invalidateSettingsCache();
 
   await writeAudit(
     ctx,

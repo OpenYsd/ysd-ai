@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
+import { getRequestContext } from "@/lib/auth/request-context";
 import { createConversationSchema } from "@/lib/validation/chat";
 
 export const runtime = "nodejs";
@@ -7,13 +9,15 @@ export const runtime = "nodejs";
 /** قائمة محادثات المستخدم الحالي */
 export async function GET() {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return json({ error: "غير مصرح" }, 401);
+  // الهوية من سياق الوسيط المُتحقَّق — يُسقط رحلة getUser (fallback شبكي آمن لو غاب).
+  // RLS يبقى نافذًا على conversations، فالعزل مضمون على الخادم لا في الترويسة وحدها.
+  const ctx = await getRequestContext(await headers(), supabase);
+  if (!ctx) return json({ error: "غير مصرح" }, 401);
 
   const { data, error } = await supabase
     .from("conversations")
     .select("id, title, updated_at, project_id")
-    .eq("user_id", user.id)
+    .eq("user_id", ctx.userId)
     .is("deleted_at", null)
     .order("updated_at", { ascending: false })
     .limit(100);
@@ -25,8 +29,8 @@ export async function GET() {
 /** إنشاء محادثة جديدة */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return json({ error: "غير مصرح" }, 401);
+  const ctx = await getRequestContext(await headers(), supabase);
+  if (!ctx) return json({ error: "غير مصرح" }, 401);
 
   const parsed = createConversationSchema.safeParse(
     await req.json().catch(() => ({})),
@@ -40,7 +44,7 @@ export async function POST(req: NextRequest) {
       .from("projects")
       .select("id, model_settings")
       .eq("id", parsed.data.projectId)
-      .eq("user_id", user.id)
+      .eq("user_id", ctx.userId)
       .is("deleted_at", null)
       .maybeSingle();
     if (!proj) return json({ error: "المشروع غير موجود." }, 404);
@@ -51,7 +55,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabase
     .from("conversations")
     .insert({
-      user_id: user.id,
+      user_id: ctx.userId,
       title: parsed.data.title ?? "محادثة جديدة",
       project_id: parsed.data.projectId ?? null,
       model_id: projectModelId,
