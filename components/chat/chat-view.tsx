@@ -15,10 +15,12 @@ import {
   ChevronDown,
   Copy,
   FileText,
+  Image as ImageIcon,
   Loader2,
   Paperclip,
   Pencil,
   RefreshCw,
+  RotateCw,
   Square,
   X,
 } from "lucide-react";
@@ -60,6 +62,12 @@ export interface Attachment {
   id: string;
   name: string;
   status: string;
+  /**
+   * لازم للتفريق: الصور تنتهي عند status="ready" ولا تدخل RAG (بلا OCR).
+   * بدونه كانت الشارة تقول «تم استخراج النص» لصورة، والرسالة تَعِد بمرحلة RAG
+   * لا تأتي أبدًا — لأن anyReady يشترط ready_for_rag الذي لا تبلغه الصورة.
+   */
+  mime?: string | null;
   ragTotal?: number | null;
   ragDone?: number | null;
   ragError?: string | null;
@@ -306,6 +314,28 @@ export function ChatView({
     }
   }, []);
 
+  /**
+   * إعادة تجهيز ملف فشل — آمنة ضد chunks المكررة:
+   * المسار idempotent عبر rag_content_hash، والـpipeline يحذف chunks الملف
+   * قبل أي إدراج (lib/rag/pipeline.ts)، والوظيفة محمية بفهرس فريد جزئي.
+   */
+  const retryRag = useCallback(
+    async (fileId: string) => {
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === fileId ? { ...a, status: "chunking", ragError: null } : a)),
+      );
+      const res = await fetch(`/api/files/${fileId}/rag`, { method: "POST" });
+      if (!res.ok) {
+        setAttachments((prev) =>
+          prev.map((a) => (a.id === fileId ? { ...a, status: "rag_failed" } : a)),
+        );
+        return;
+      }
+      void pollRagStatus(fileId);
+    },
+    [pollRagStatus],
+  );
+
   /** إرفاق ملف: رفع + ربط بالمحادثة + تجهيز تلقائي للذكاء الاصطناعي (RAG) */
   const attachFile = useCallback(
     async (file: File) => {
@@ -329,7 +359,12 @@ export function ChatView({
         // المرفقات تبقى في حالة العميل وتُحمّل من الخادم عند التحديث/التنقل
         setAttachments((prev) => [
           ...prev,
-          { id: uploaded.id, name: uploaded.original_name, status: uploaded.status },
+          {
+            id: uploaded.id,
+            name: uploaded.original_name,
+            status: uploaded.status,
+            mime: uploaded.mime_type,
+          },
         ]);
         // المستندات الجاهزة النص: ابدأ التجهيز للذكاء الاصطناعي تلقائيًا
         if (!uploaded.mime_type.startsWith("image/") && uploaded.status === "ready") {
@@ -503,6 +538,7 @@ export function ChatView({
               attachments={attachments}
               progress={attachProgress}
               onUnlink={(id) => void unlinkAttachment(id)}
+              onRetry={(id) => void retryRag(id)}
             />
             <Composer
               input={input}
@@ -666,6 +702,7 @@ export function ChatView({
                 attachments={attachments}
                 progress={attachProgress}
                 onUnlink={(id) => void unlinkAttachment(id)}
+                onRetry={(id) => void retryRag(id)}
               />
               <Composer
                 input={input}
@@ -722,19 +759,26 @@ function AttachmentBar({
   attachments,
   progress,
   onUnlink,
+  onRetry,
 }: {
   attachments: Attachment[];
   progress: number | null;
   onUnlink: (fileId: string) => void;
+  onRetry?: (fileId: string) => void;
 }) {
   const { t } = useI18n();
   if (attachments.length === 0 && progress === null) return null;
 
+  const isImage = (a: Attachment) => Boolean(a.mime?.startsWith("image/"));
+
   const badge = (a: Attachment) => {
+    // ① جاهز للسؤال
     if (a.status === "ready_for_rag")
       return { label: t("ragReady"), cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" };
+    // ④ فشل — مع زر إعادة المحاولة أدناه
     if (a.status === "rag_failed" || a.status === "failed")
       return { label: t("ragFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" };
+    // ② تجهيز الذكاء الاصطناعي (مع النسبة)
     if (a.status === "chunking" || a.status === "embedding") {
       const pct =
         a.ragTotal && a.ragTotal > 0
@@ -746,12 +790,24 @@ function AttachmentBar({
         spinning: true,
       };
     }
-    if (a.status === "ready")
-      return { label: t("textExtracted"), cls: "bg-raised text-ink-dim border-line" };
+    // ③ استخراج النص جارٍ
+    if (a.status === "processing" || a.status === "extracting")
+      return { label: t("statusProcessing"), cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", spinning: true };
+    if (a.status === "ready") {
+      // الصورة تنتهي هنا — لا نص ولا RAG. قول «تم استخراج النص» لها كذب صريح.
+      return isImage(a)
+        ? { label: t("imageNoAiContext"), cls: "bg-raised text-ink-faint border-line" }
+        : { label: t("textExtracted"), cls: "bg-raised text-ink-dim border-line" };
+    }
     return { label: t("statusUploaded"), cls: "bg-raised text-ink-faint border-line" };
   };
 
   const anyReady = attachments.some((a) => a.status === "ready_for_rag");
+  // الصور لا تبلغ ready_for_rag أبدًا (بلا OCR)، فوعدها بمرحلة RAG وعدٌ لا يُنجَز.
+  const allImages = attachments.length > 0 && attachments.every(isImage);
+  const anyPending = attachments.some(
+    (a) => !isImage(a) && !["ready_for_rag", "rag_failed", "failed"].includes(a.status),
+  );
 
   return (
     <div className="mb-2 space-y-1.5">
@@ -764,6 +820,8 @@ function AttachmentBar({
           >
             {b.spinning ? (
               <Loader2 size={13} className="animate-spin text-amber-400 shrink-0" />
+            ) : isImage(a) ? (
+              <ImageIcon size={13} className="text-ink-faint shrink-0" />
             ) : (
               <FileText size={13} className="text-primary-glow shrink-0" />
             )}
@@ -773,6 +831,17 @@ function AttachmentBar({
             <span className={`text-[10px] px-1.5 py-0.5 rounded-md border shrink-0 ${b.cls}`}>
               {b.label}
             </span>
+            {/* ④ إعادة المحاولة عند الفشل — آمنة: المسار idempotent عبر rag_content_hash
+                والـpipeline يحذف chunks الملف قبل الإدراج، فلا تكرار. الصور مستثناة. */}
+            {!isImage(a) && (a.status === "rag_failed" || a.status === "failed") && onRetry && (
+              <button
+                onClick={() => onRetry(a.id)}
+                title={a.ragError ?? t("ragRetry")}
+                className="p-1 rounded text-ink-faint hover:text-primary-glow shrink-0 transition-colors"
+              >
+                <RotateCw size={12} />
+              </button>
+            )}
             <button
               onClick={() => onUnlink(a.id)}
               title={t("removeFromContext")}
@@ -802,7 +871,11 @@ function AttachmentBar({
       )}
       {attachments.length > 0 && (
         <p className="text-[10.5px] text-ink-faint leading-relaxed px-1">
-          {anyReady ? t("ragAttachmentReady") : t("attachmentNotice")}
+          {allImages
+            ? t("imageAttachmentNotice")
+            : anyReady && !anyPending
+              ? t("ragAttachmentReady")
+              : t("attachmentNotice")}
         </p>
       )}
     </div>

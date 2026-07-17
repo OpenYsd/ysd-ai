@@ -187,6 +187,15 @@ const dict = {
     ar: "الملف رُفع وعولج وربُط بالمحادثة، لكنه لا يدخل سياق الذكاء الاصطناعي بعد (حتى تكتمل مرحلة RAG).",
     en: "File uploaded, processed, and linked to this chat — it won't enter the AI context until the RAG stage is complete.",
   },
+  /**
+   * الصور تنتهي عند status="ready" ولا تدخل RAG (بلا OCR) — فلا يجوز وعدها
+   * بمرحلة تجهيز لن تأتي. راجع lib/rag/pipeline.ts و lib/files/service.ts.
+   */
+  imageNoAiContext: { ar: "صورة — بلا سياق AI", en: "Image — no AI context" },
+  imageAttachmentNotice: {
+    ar: "الصور تُحفظ وتُعرض فقط ولا تدخل سياق الذكاء الاصطناعي (قراءة النص من الصور غير مدعومة بعد). أرفق ملف PDF أو DOCX أو TXT لتسأل عن محتواه.",
+    en: "Images are stored and displayed only — they don't enter the AI context (reading text from images isn't supported yet). Attach a PDF, DOCX, or TXT to ask about its content.",
+  },
   providerLimitNote: {
     ar: "الحد الأقصى الحالي للملف 50 ميجابايت بسبب قيود مزود التخزين.",
     en: "Current maximum file size is 50MB due to storage provider constraints.",
