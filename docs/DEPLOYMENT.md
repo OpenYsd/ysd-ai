@@ -41,7 +41,7 @@
 docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
-  -t ysd-ai:0.6.2 .
+  -t ysd-ai:0.6.3 .
 
 # التشغيل — NEXT_PUBLIC_* تلزم هنا أيضًا (انظر الجدول)، والأسرار الخادمية runtime فقط
 docker run -d --name ysd-ai -p 3000:3000 \
@@ -49,7 +49,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
   -e NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
   -e OPENROUTER_API_KEY=... \
   -e YSD_STRICT_ENV=1 \
-  ysd-ai:0.6.2
+  ysd-ai:0.6.3
 ```
 
 ### قاعدة الأسرار
@@ -82,7 +82,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
 
 ### التشغيل بـcompose (الطريقة المعتمدة)
 
-الصورة الرسمية: **`ysd-ai:0.6.2`** (1.01GB). ملف البيئة يبقى **خارج المستودع**.
+الصورة الرسمية: **`ysd-ai:0.6.3`** (1.01GB). ملف البيئة يبقى **خارج المستودع**.
 
 ```bash
 # 1) جهّز ملف البيئة (أسماء فقط في القالب — املأه خارج git)
@@ -92,7 +92,7 @@ cp env.production.example /مسار/آمن/ysd.env
 docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
-  -t ysd-ai:0.6.2 .
+  -t ysd-ai:0.6.3 .
 
 # 3) شغّل
 docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
@@ -110,7 +110,7 @@ docker compose -f docker-compose.production.yml stop
 docker compose -f docker-compose.production.yml down
 
 # 7) التحديث إلى نسخة أحدث
-docker build --build-arg ... -t ysd-ai:0.6.3 .
+docker build --build-arg ... -t ysd-ai:0.6.4 .
 #    ثم عدّل image: في docker-compose.production.yml
 docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
 

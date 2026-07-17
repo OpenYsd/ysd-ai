@@ -310,7 +310,11 @@ export function ChatView({
             : a,
         ),
       );
-      if (["ready_for_rag", "rag_failed", "ready", "failed"].includes(f.status)) return;
+      // حالات نهائية فقط. "ready" **ليست** نهائية هنا: هي حالة المستند **قبل**
+      // بدء التجهيز — وإدراجها كان يوقف الاستطلاع عند أول دورة (بعد 1.5ث) قبل
+      // أن يبلغ الملف chunking، فتبقى الشارة عالقة على «تم استخراج النص»
+      // ورسالة انتظار RAG ظاهرة إلى الأبد رغم اكتمال التجهيز في القاعدة.
+      if (["ready_for_rag", "rag_failed", "failed"].includes(f.status)) return;
     }
   }, []);
 
@@ -366,9 +370,20 @@ export function ChatView({
             mime: uploaded.mime_type,
           },
         ]);
-        // المستندات الجاهزة النص: ابدأ التجهيز للذكاء الاصطناعي تلقائيًا
+        // المستندات الجاهزة النص: ابدأ التجهيز للذكاء الاصطناعي تلقائيًا.
+        // الصور مستثناة — تنتهي عند ready ولا تدخل RAG (بلا OCR).
         if (!uploaded.mime_type.startsWith("image/") && uploaded.status === "ready") {
-          void fetch(`/api/files/${uploaded.id}/rag`, { method: "POST" });
+          // لو فشل إدراج الوظيفة، أعلن الفشل بدل ترك الاستطلاع يدور بلا طائل
+          void (async () => {
+            const res = await fetch(`/api/files/${uploaded.id}/rag`, { method: "POST" }).catch(
+              () => null,
+            );
+            if (!res || !res.ok) {
+              setAttachments((prev) =>
+                prev.map((a) => (a.id === uploaded.id ? { ...a, status: "rag_failed" } : a)),
+              );
+            }
+          })();
           void pollRagStatus(uploaded.id);
         }
       } else if (res.error && res.error !== "aborted") {
