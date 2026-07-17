@@ -1,6 +1,13 @@
 import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk, UsageReport } from "./types";
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "./free-models";
 import {
+  type CooldownReason,
+  cooldownRemainingMs,
+  isCoolingDown,
+  markCooldown,
+  parseRetryAfterMs,
+} from "./model-cooldown";
+import {
   GUARD_FAILURE_MESSAGE,
   GUARD_WINDOW_CHARS,
   STRICT_LANGUAGE_SUFFIX,
@@ -47,7 +54,15 @@ export function mapOpenRouterError(status: number | null, raw: string): {
       userMessage: "الخدمة المجانية مضغوطة حاليًا. انتظر قليلًا ثم أعد المحاولة.",
     };
   }
-  if (status === 404 || lower.includes("no endpoints") || lower.includes("not found")) {
+  if (
+    status === 404 ||
+    lower.includes("no endpoints") ||
+    lower.includes("not found") ||
+    // رسالة OpenRouter الصريحة حين يغيب المزوّد المجاني (رُصدت حيًا):
+    // "This model is unavailable for free"
+    lower.includes("unavailable for free") ||
+    lower.includes("unavailable_for_free")
+  ) {
     return {
       kind: "no_free_model",
       userMessage:
@@ -78,6 +93,19 @@ interface AttemptResult {
   status: "ok" | "guard_violation" | "http_error" | "network_error" | "aborted";
   httpStatus?: number;
   errorRaw?: string;
+  /** من ترويسة Retry-After إن أرسلها الموفر — تتقدّم على مدة 429 الافتراضية */
+  retryAfterMs?: number | null;
+}
+
+/** يُحوّل نوع الخطأ إلى سبب تهدئة، أو null لما لا يستحق تهدئة */
+function cooldownReasonFor(kind: string): CooldownReason | null {
+  if (kind === "rate_limit") return "rate_limit";
+  if (kind === "no_free_model") return "no_free_model";
+  // 5xx أو مهلة/شبكة — عطل مزوّد عابر
+  if (kind === "overloaded" || kind === "network") return "provider_error";
+  // auth / insufficient_credit / api_error: مشكلة إعداد أو حساب لا تخصّ نموذجًا
+  // بعينه — تهدئته تحجب نموذجًا سليمًا بلا سبب.
+  return null;
 }
 
 export class OpenRouterProvider implements AIProviderAdapter {
@@ -112,8 +140,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let guardRetryUsed = false;
     let lastError: { kind: string; userMessage: string } | null = null;
 
-    for (let i = 0; i < chain.length; i++) {
-      const model = chain[i];
+    // تخطٍّ **قبل** أي طلب: نموذج مهدّأ لا يُرسَل إليه أصلًا.
+    const usable = chain.filter((m) => !isCoolingDown(m));
+    if (usable.length === 0) {
+      // الجميع مهدّأ — لا ننتظر ولا نكرر المحاولات. نُبلغ المستخدم بمدة صادقة.
+      const soonestMs = Math.min(...chain.map((m) => cooldownRemainingMs(m)));
+      const minutes = Math.max(1, Math.ceil(soonestMs / 60_000));
+      console.error(
+        `[openrouter] all models cooling down: count=${chain.length} soonest_ms=${soonestMs}`,
+      );
+      yield {
+        type: "error",
+        error: `جميع النماذج المجانية مضغوطة حاليًا. أعد المحاولة بعد نحو ${minutes} دقيقة — رسالتك محفوظة.`,
+      };
+      return;
+    }
+
+    for (let i = 0; i < usable.length; i++) {
+      const model = usable[i];
       if (!model) continue;
       const strict = guardRetryUsed;
       const result: AttemptResult = yield* this.attempt(req, model, strict, userText, expected);
@@ -121,8 +165,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (result.status === "ok" || result.status === "aborted") return;
 
       if (result.status === "guard_violation") {
+        // حارس اللغة لا يُهدّئ النموذج: هذه جودة رد لا عطل توفّر.
         console.error(`[openrouter] language guard tripped: model=${model} expected=${expected}`);
-        if (!guardRetryUsed && i + 1 < chain.length) {
+        if (!guardRetryUsed && i + 1 < usable.length) {
           // إعادة محاولة واحدة بالنموذج الاحتياطي وبموجه أكثر صرامة
           guardRetryUsed = true;
           continue;
@@ -131,7 +176,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         return;
       }
 
-      // فشل تقني (429/5xx/شبكة) — جرّب التالي في السلسلة
+      // فشل تقني (429/5xx/شبكة) — هدّئ النموذج ثم جرّب التالي في السلسلة
       lastError =
         result.status === "network_error"
           ? {
@@ -139,8 +184,16 @@ export class OpenRouterProvider implements AIProviderAdapter {
               userMessage: "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
             }
           : mapOpenRouterError(result.httpStatus ?? null, result.errorRaw ?? "");
+
+      const reason: CooldownReason | null = cooldownReasonFor(lastError.kind);
+      let cooledMs = 0;
+      if (reason) cooledMs = markCooldown(model, reason, result.retryAfterMs ?? null);
+
+      // سجل آمن: معرّف النموذج ونوع الخطأ ومدة التهدئة فقط —
+      // لا مفاتيح ولا نص المستخدم ولا جسم رد الموفر.
       console.error(
-        `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} kind=${lastError.kind}`,
+        `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} ` +
+          `kind=${lastError.kind}${reason ? ` cooldown=${reason} cooldown_ms=${cooledMs}` : " cooldown=none"}`,
       );
     }
 
@@ -210,7 +263,12 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
     if (!res.ok || !res.body) {
       const raw = await res.text().catch(() => "");
-      return { status: "http_error", httpStatus: res.status, errorRaw: raw };
+      return {
+        status: "http_error",
+        httpStatus: res.status,
+        errorRaw: raw,
+        retryAfterMs: parseRetryAfterMs(res.headers.get("retry-after")),
+      };
     }
 
     const reader = res.body.getReader();
