@@ -143,9 +143,10 @@ describe("سلسلة الإنتاج", () => {
     expect(FREE_MODEL_CANDIDATES.some((c) => c.id.includes("openrouter/"))).toBe(false);
   });
 
-  it("المُختبَران عربيًا أولًا، وgpt-oss-120b باقٍ في النهاية", () => {
+  it("الترتيب: المُختبَران أولًا، ثم gpt-oss-20b، وgpt-oss-120b في النهاية", () => {
     expect(FREE_MODEL_CHAIN[0]).toBe("google/gemma-4-31b-it:free");
     expect(FREE_MODEL_CHAIN[1]).toBe("nvidia/nemotron-3-super-120b-a12b:free");
+    expect(FREE_MODEL_CHAIN[2]).toBe("openai/gpt-oss-20b:free");
     expect(FREE_MODEL_CHAIN.at(-1)).toBe("openai/gpt-oss-120b:free");
   });
 
@@ -153,8 +154,14 @@ describe("سلسلة الإنتاج", () => {
     expect(FREE_MODEL_CHAIN.every((m) => m.endsWith(":free"))).toBe(true);
   });
 
-  it("gpt-oss-20b مرشح معطّل — خارج الإنتاج حتى يُختبر عربيًا", () => {
-    expect(FREE_MODEL_CANDIDATES.some((c) => c.id === "openai/gpt-oss-20b:free")).toBe(true);
-    expect(FREE_MODEL_CHAIN).not.toContain("openai/gpt-oss-20b:free");
+  it("gpt-oss-20b مُفعّل بعد اجتياز اختبار العربية (2026-07-17)", () => {
+    expect(FREE_MODEL_CHAIN).toContain("openai/gpt-oss-20b:free");
+    // لم يعد مرشحًا معطّلًا
+    expect(FREE_MODEL_CANDIDATES.some((c) => c.id === "openai/gpt-oss-20b:free")).toBe(false);
+  });
+
+  it("★ ثلاثة مزوّدين مختلفين في السلسلة — لا تركّز على مزوّد واحد", () => {
+    // Google AI Studio · Nvidia · Darkbloom — حجب مزوّد لا يُسقط الخدمة
+    expect(FREE_MODEL_CHAIN.length).toBeGreaterThanOrEqual(3);
   });
 });
