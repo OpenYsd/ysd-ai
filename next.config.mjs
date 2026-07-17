@@ -6,6 +6,9 @@ const securityHeaders = [
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
 const nextConfig = {
+  // خرج مستقل: يتتبّع الاعتماديات المستخدَمة فعلًا وينسخها مع server.js، بدل شحن
+  // node_modules كاملة في الصورة. لا أثر على dev ولا على npm start محليًا.
+  output: "standalone",
   // يوجد package-lock.json آخر في مجلد أعلى — نثبّت جذر المشروع هنا
   outputFileTracingRoot: import.meta.dirname,
   // نموذج Embeddings المحلي — لا يُحزَّم مع webpack (native/onnx)

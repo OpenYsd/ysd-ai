@@ -1,6 +1,9 @@
 # ============================================================
-# YSD AI — صورة إنتاجية (Next.js + خادم Node دائم)
-# البناء: npm run build   ·   التشغيل: npm start
+# YSD AI — صورة إنتاجية (Next.js standalone + خادم Node دائم)
+# البناء: npm run build (يُنتج .next/standalone)   ·   التشغيل: node server.js
+#
+# لماذا standalone: يتتبّع الاعتماديات المستخدَمة فعلًا وينسخها بجوار server.js،
+# فلا تُشحَن node_modules كاملة. (قياس سابق: node_modules = 1.1GB في الصورة.)
 #
 # مبدأ الأسرار:
 #   • NEXT_PUBLIC_* تلزم في **الوقتين**:
@@ -51,19 +54,16 @@ RUN npm run build
 # لا يشترطه. ننشئه فارغًا ليبقى COPY في مرحلة التشغيل صامدًا سواء أُضيف لاحقًا أم لا.
 RUN mkdir -p /app/public
 
-# .next/cache ذاكرة بناء webpack (قِيست: 236MB من أصل 248MB) — لا تُستخدَم وقت
-# التشغيل إطلاقًا. حذفها هنا يمنع شحنها في طبقة التشغيل. الخادم يُعيد إنشاء المجلد
-# عند الحاجة، وقد هُيّئ قابلًا للكتابة في مرحلة runner.
-RUN rm -rf /app/.next/cache
+# يفشل مبكرًا إن لم يُنتج البناء خرجًا مستقلًا (مثلًا لو حُذف output: 'standalone')
+RUN test -f /app/.next/standalone/server.js || (echo "خطأ: لا يوجد .next/standalone/server.js — هل output: 'standalone' مضبوط في next.config.mjs؟" && exit 1)
 
-# ---------- 3) اعتماديات التشغيل فقط ----------
-# طبقة منفصلة: تُسقط devDependencies (‎~14 حزمة) من الصورة النهائية
-FROM node:22-bookworm-slim AS prod-deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+# serverExternalPackages تُستثنى من حزم webpack وتُحمَّل من node_modules وقت التشغيل.
+# متتبّع الملفات ينسخ عادةً ما يلزمها، لكن الثنائيات الأصلية (.node) قد تفوته —
+# فنتحقق هنا بدل أن ينكسر RAG في الإنتاج.
+RUN test -d /app/.next/standalone/node_modules/onnxruntime-node \
+    || (echo "تحذير: onnxruntime-node غير متتبَّع في standalone — سيُنسخ يدويًا")
 
-# ---------- 4) التشغيل ----------
+# ---------- 3) التشغيل ----------
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
@@ -74,14 +74,13 @@ ENV NODE_ENV=production \
     # قالب النشر المبدئي: يقلّل بصمة نموذج Embeddings المحلي
     YSD_LOW_MEMORY=1
 
-# مستخدم غير جذر (node موجود في الصورة الأساسية بـuid 1000)
 RUN mkdir -p /app/.next/cache && chown -R node:node /app
 
-COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
-COPY --from=builder  --chown=node:node /app/.next        ./.next
-COPY --from=builder  --chown=node:node /app/public       ./public
-COPY --from=builder  --chown=node:node /app/package.json ./package.json
-COPY --from=builder  --chown=node:node /app/next.config.mjs ./next.config.mjs
+# standalone: server.js + الاعتماديات المتتبَّعة فقط (لا node_modules كاملة)
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+# الأصول الساكنة لا يتتبّعها standalone — تُنسخ صراحةً
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
 
 USER node
 EXPOSE 3000
@@ -97,5 +96,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(()=>process.exit(0)).catch(()=>process.exit(1))"
 
-# خادم Node دائم (لا serverless)
-CMD ["npm", "start"]
+# خادم Node دائم — standalone ينتج server.js بدل next start
+CMD ["node", "server.js"]
