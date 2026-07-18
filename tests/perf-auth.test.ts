@@ -44,6 +44,13 @@ describe("stripInternalHeaders — الحماية ضد الانتحال", () => 
     expect(INTERNAL_HEADER_NAMES).toContain("x-ysd-user-id");
     expect(INTERNAL_HEADER_NAMES).toContain("x-ysd-role");
     expect(INTERNAL_HEADER_NAMES).toContain("x-ysd-status");
+    // ترويسة التوقيت داخلية أيضًا — لا يجوز أن يزوّرها العميل
+    expect(INTERNAL_HEADER_NAMES).toContain("x-ysd-timing");
+  });
+
+  it("★ ينزع x-ysd-timing المزوّرة أيضًا (منع حقن قياسات كاذبة)", () => {
+    const incoming = new Headers({ "x-ysd-timing": "auth;dur=0" });
+    expect(stripInternalHeaders(incoming).get("x-ysd-timing")).toBeNull();
   });
 });
 

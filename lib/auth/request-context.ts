@@ -23,12 +23,16 @@ export const INTERNAL_HEADERS = {
   status: "x-ysd-status",
 } as const;
 
+/** ترويسة يمرّر بها الوسيط قياساته إلى المسار ليدمجها في Server-Timing واحدة */
+export const TIMING_HEADER = "x-ysd-timing";
+
 /** كل الترويسات الداخلية التي يختمها الوسيط — تُنزع من أي طلب وارد قبل أي ثقة */
 export const INTERNAL_HEADER_NAMES = [
   INTERNAL_HEADERS.userId,
   INTERNAL_HEADERS.role,
   INTERNAL_HEADERS.status,
   "x-ysd-request-id",
+  TIMING_HEADER,
 ] as const;
 
 /**

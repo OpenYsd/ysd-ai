@@ -1,17 +1,17 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
-import { getRequestContext } from "@/lib/auth/request-context";
+import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
-import type { ChatMessage } from "@/lib/ai/types";
+import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import {
   buildSourcesContext,
-  getContextFileIds,
   NO_MATCH_HINT,
   retrieveSnippets,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
+import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -103,6 +103,8 @@ export async function POST(req: NextRequest) {
 
   // 7) تجهيز الرسائل حسب نوع العملية
   let userMessageId: string | null = null;
+  // عنوان تلقائي مؤجَّل — يُدمج في تحديث المحادثة المتوازي بدل استعلام منفصل
+  let newTitle: string | null = null;
 
   if (editMessageId) {
     // تعديل رسالة مستخدم سابقة: حدّث النص واحذف (ناعمًا) كل ما بعدها
@@ -158,59 +160,44 @@ export async function POST(req: NextRequest) {
     if (insertErr || !inserted) return json({ error: "تعذّر حفظ الرسالة." }, 500);
     userMessageId = inserted.id;
 
-    // عنوان تلقائي من أول رسالة
+    // عنوان تلقائي من أول رسالة — يُدمج في تحديث المحادثة المتوازي أدناه
     if (conv.title === DEFAULT_TITLE && message) {
-      const title = message.length > 60 ? `${message.slice(0, 60)}…` : message;
-      await supabase.from("conversations").update({ title }).eq("id", conversationId);
+      newTitle = message.length > 60 ? `${message.slice(0, 60)}…` : message;
     }
   }
 
-  // تحديث آخر نشاط للمحادثة والمشروع المرتبط
-  await supabase
-    .from("conversations")
-    .update({ updated_at: new Date().toISOString(), model_id: modelId })
-    .eq("id", conversationId);
-  if (conv.project_id) {
-    await supabase
-      .from("projects")
-      .update({ last_activity_at: new Date().toISOString() })
-      .eq("id", conv.project_id)
-      .eq("user_id", userId);
-  }
+  // ===== الموازاة: بعد ضمان حفظ رسالة المستخدم (أعلاه)، ننفّذ الاستعلامات
+  // المستقلة معًا بدل تسلسلها. لا نبدأ المزوّد قبل هذه النقطة. Promise.allSettled
+  // حتى لا يُسقط فشلُ عملية غير حرجة العملياتِ الحرجة. =====
+  //   (أ) سياق المحادثة (حرج — سلوك حالي: فشل ⇒ سياق فارغ)
+  //   (ب) معرّفات ملفات السياق (حرج — سلوك حالي: فشل ⇒ لا RAG)
+  //   (ج) تحديث المحادثة (updated_at/model_id/title) — **غير حرج**
+  //   (د) تحديث نشاط المشروع — **غير حرج**
+  const convUpdate: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    model_id: modelId,
+  };
+  if (newTitle) convUpdate.title = newTitle;
 
-  // 8) جلب سياق المحادثة (آخر 30 رسالة)
-  const { data: historyRows } = await supabase
-    .from("messages")
-    .select("role, content")
-    .eq("conversation_id", conversationId)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: true })
-    .limit(30);
+  const { history, contextFileIds, dbMs } = await gatherChatContext(supabase, {
+    conversationId,
+    userId,
+    projectId: conv.project_id,
+    convUpdate,
+    requestId,
+  });
 
-  const history: ChatMessage[] = (historyRows ?? []).map((m) => ({
-    role: m.role as ChatMessage["role"],
-    content: m.content,
-  }));
-
-  // RAG: استرجاع مقاطع الملفات المرتبطة بالمحادثة/المشروع (الجاهزة فقط)
+  // RAG: استرجاع مقاطع الملفات (بعد توفّر السياق ومعرّفات الملفات معًا)
   let ragSnippets: RetrievedSnippet[] = [];
   let ragSearchedNoMatch = false;
   const queryText =
     message ?? [...history].reverse().find((m) => m.role === "user")?.content ?? "";
-  if (queryText) {
+  if (queryText && contextFileIds.length > 0) {
     try {
-      const contextFileIds = await getContextFileIds(
-        supabase,
-        userId,
-        conversationId,
-        conv.project_id,
-      );
-      if (contextFileIds.length > 0) {
-        const outcome = await retrieveSnippets(supabase, queryText, contextFileIds);
-        ragSnippets = outcome.snippets;
-        // بُحث في ملفات جاهزة لكن بلا تطابق واثق → نلمّح للنموذج بالتصريح
-        ragSearchedNoMatch = outcome.searched && outcome.snippets.length === 0;
-      }
+      const outcome = await retrieveSnippets(supabase, queryText, contextFileIds);
+      ragSnippets = outcome.snippets;
+      // بُحث في ملفات جاهزة لكن بلا تطابق واثق → نلمّح للنموذج بالتصريح
+      ragSearchedNoMatch = outcome.searched && outcome.snippets.length === 0;
     } catch (err) {
       // فشل الاسترجاع لا يمنع المحادثة — تُكمل بدون مصادر
       console.error(`[rag] retrieval failed: ${(err as Error).message?.slice(0, 80)}`);
@@ -256,6 +243,11 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      // قياس المزوّد داخل نفس الطلب — أرقام فقط، بلا محتوى ولا مفاتيح
+      const tProvider = Date.now();
+      let providerFirstByteMs = -1;
+      let totalFirstTokenMs = -1;
+
       try {
         for await (const chunk of provider.streamChat({
           modelId,
@@ -264,6 +256,10 @@ export async function POST(req: NextRequest) {
           signal: req.signal,
         })) {
           if (chunk.type === "text" && chunk.text) {
+            if (providerFirstByteMs < 0) {
+              providerFirstByteMs = Date.now() - tProvider;
+              totalFirstTokenMs = Date.now() - tStart;
+            }
             assistantText += chunk.text;
             send({ type: "text", text: chunk.text });
           } else if (chunk.type === "meta" && chunk.model) {
@@ -311,6 +307,15 @@ export async function POST(req: NextRequest) {
           assistantMessageId = saved?.id ?? null;
         }
         send({ type: "done", userMessageId, assistantMessageId });
+
+        // سجل آمن مرتبط بـrequest_id فقط — أرقام ومعرّف نموذج، بلا محتوى/بريد/توكن.
+        // fallback_count = ترتيب النموذج الفعلي في السلسلة (كم نموذجًا سبقه فشلًا/تخطيًا).
+        const idx = FREE_MODEL_CHAIN.indexOf(actualModelId ?? "");
+        const fallbackCount = idx > 0 ? idx : 0;
+        console.log(
+          `[chat] rid=${requestId} model=${actualModelId ?? modelId} fallback_count=${fallbackCount} ` +
+            `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
+        );
       } catch (err) {
         console.error("[chat] stream failed:", err);
         send({ type: "error", error: "حدث خطأ أثناء توليد الرد." });
@@ -324,11 +329,17 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // زمن التطبيق قبل نداء المزوّد (auth+conv+usage+insert+history+RAG) — قياس آمن،
-  // بلا محتوى الرسالة ولا بيانات شخصية. يُسجَّل لأن ترويسة Server-Timing يطغى عليها
-  // الوسيط على استجابة SSE، فالسجل هو السبيل الوحيد لرصد هذه المرحلة.
+  // زمن التطبيق قبل نداء المزوّد (auth+conv+usage+insert+db+RAG) — قياس آمن.
   const appBeforeProviderMs = Date.now() - tStart;
   console.log(`[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs}`);
+
+  // Server-Timing مدموجة: قياسات الوسيط (auth/profile/settings) + database +
+  // app_before_provider. ملاحظة فيزيائية: provider_first_byte و total_first_token
+  // يُعرفان بعد إرسال هذه الترويسة (أثناء البث)، فمكانهما السجل الآمن لا الترويسة.
+  const serverTiming = mergeServerTiming(req.headers.get(TIMING_HEADER) ?? "", [
+    `database;dur=${dbMs}`,
+    `app_before_provider;dur=${appBeforeProviderMs}`,
+  ]);
 
   return new Response(stream, {
     headers: {
@@ -336,7 +347,7 @@ export async function POST(req: NextRequest) {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "x-ysd-request-id": requestId,
-      "Server-Timing": `app;dur=${appBeforeProviderMs}`,
+      "Server-Timing": serverTiming,
     },
   });
 }

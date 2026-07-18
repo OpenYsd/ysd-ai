@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { INTERNAL_HEADERS, stripInternalHeaders } from "@/lib/auth/request-context";
+import { INTERNAL_HEADERS, TIMING_HEADER, stripInternalHeaders } from "@/lib/auth/request-context";
 import { getCachedSettings } from "@/lib/settings";
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
@@ -51,13 +51,18 @@ export async function middleware(request: NextRequest) {
   const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
   const isApi = path.startsWith("/api");
 
-  // يبني الاستجابة النهائية: يطبّق الكوكيز المحدَّثة والترويسات الداخلية وServer-Timing
+  // يبني الاستجابة النهائية. مهم: نضع قياسات الوسيط في **ترويسة طلب داخلية**
+  // (x-ysd-timing) ليقرأها المسار ويدمجها في Server-Timing واحدة بدل أن يطمس
+  // أحدهما الآخر. ونضعها أيضًا على استجابة الوسيط نفسها لتظهر للصفحات (HTML)
+  // التي لا تُصدر Server-Timing خاصًا بها.
   const finalize = (res?: NextResponse) => {
+    mark("total", Date.now() - startedAt);
+    const timingStr = timings.join(", ");
+    requestHeaders.set(TIMING_HEADER, timingStr);
     const r = res ?? NextResponse.next({ request: { headers: requestHeaders } });
     for (const { name, value, options } of cookiesToSet) r.cookies.set(name, value, options);
     r.headers.set("x-ysd-request-id", requestId);
-    mark("total", Date.now() - startedAt);
-    r.headers.set("Server-Timing", timings.join(", "));
+    r.headers.set("Server-Timing", timingStr);
     return r;
   };
 
