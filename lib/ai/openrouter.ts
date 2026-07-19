@@ -9,10 +9,21 @@ import {
 } from "./model-cooldown";
 import {
   GUARD_FAILURE_MESSAGE,
-  GUARD_WINDOW_CHARS,
   STRICT_LANGUAGE_SUFFIX,
   detectExpectedLanguage,
   violatesLanguage,
+} from "./language-guard";
+import {
+  STRICT_UNCERTAINTY_SUFFIX,
+  UNCERTAINTY_FALLBACK_MESSAGE,
+  VERIFYING_STATUS_MESSAGE,
+  needsVerifiedMode,
+  violatesUncertainty,
+} from "./uncertainty-guard";
+import {
+  GUARD_OVERLAP_CHARS,
+  GUARD_TAIL_CHARS,
+  GUARD_WINDOW_CHARS,
 } from "./language-guard";
 
 /**
@@ -20,8 +31,9 @@ import {
  *
  * النموذج المنطقي "ysd/free" يُحل إلى سلسلة نماذج مجانية معتمدة
  * (lib/ai/free-models.ts) بدلًا من الموجّه العشوائي openrouter/free.
- * حارس اللغة يخزّن أول نافذة من الرد ويوقف النموذج قبل عرض خليط لغات،
- * ثم يعيد المحاولة مرة واحدة بالنموذج الاحتياطي وبموجه أكثر صرامة.
+ * v0.6.5 RC2: يُجمَّع الرد كاملًا ثم يُفحص بحارسَين قبل تسليمه:
+ *   - حارس اللغة: خليط لغات/كلمة دخيلة → إعادة محاولة واحدة بنموذج احتياطي وموجّه أصرم.
+ *   - حارس عدم اليقين: تخمين متحفّظ لتفاصيل دقيقة → إعادة توليد صارمة واحدة، ثم رسالة آمنة.
  * المفتاح يُقرأ من البيئة على الخادم فقط — لا يصل للمتصفح أو السجلات أبدًا.
  */
 
@@ -88,13 +100,21 @@ interface SSEDelta {
   error?: { message?: string };
 }
 
-/** نتيجة محاولة واحدة مع نموذج واحد */
+/** نتيجة محاولة واحدة مع نموذج واحد — الرد الكامل يُرجَّع للفحص في streamChat */
 interface AttemptResult {
   status: "ok" | "guard_violation" | "http_error" | "network_error" | "aborted";
+  /** سبب سقوط حارس اللغة في وضع البثّ (قبل عرض أي شيء) */
+  guardReason?: string;
   httpStatus?: number;
   errorRaw?: string;
   /** من ترويسة Retry-After إن أرسلها الموفر — تتقدّم على مدة 429 الافتراضية */
   retryAfterMs?: number | null;
+  /** الرد الكامل عند النجاح (يُفحص بالحارسَين قبل التسليم) */
+  text?: string;
+  /** معرّف النموذج الفعلي الذي أجاب */
+  model?: string;
+  /** استهلاك التوكنات إن أرسله الموفر */
+  usage?: UsageReport | null;
 }
 
 /** يُحوّل نوع الخطأ إلى سبب تهدئة، أو null لما لا يستحق تهدئة */
@@ -137,8 +157,13 @@ export class OpenRouterProvider implements AIProviderAdapter {
     const userText = lastUser?.content ?? "";
     const expected = detectExpectedLanguage(userText);
 
-    let guardRetryUsed = false;
+    let langRetryUsed = false;
+    let uncRetryUsed = false;
     let lastError: { kind: string; userMessage: string } | null = null;
+
+    // اختيار الوضع: المحمي (تجميع + فحص قبل العرض) للأسئلة المتخصصة فقط،
+    // والبثّ الفوري لكل ما عداها — فلا تدفع المحادثة العامة ثمن التحقق.
+    const verified = needsVerifiedMode(userText);
 
     // تخطٍّ **قبل** أي طلب: نموذج مهدّأ لا يُرسَل إليه أصلًا.
     const usable = chain.filter((m) => !isCoolingDown(m));
@@ -156,23 +181,77 @@ export class OpenRouterProvider implements AIProviderAdapter {
       return;
     }
 
+    // الوضع المحمي: حالة قصيرة تصل فورًا قبل نداء المزوّد — لا شاشة انتظار فارغة.
+    if (verified) yield { type: "status", text: VERIFYING_STATUS_MESSAGE };
+
     for (let i = 0; i < usable.length; i++) {
       const model = usable[i];
       if (!model) continue;
-      const strict = guardRetryUsed;
-      const result: AttemptResult = yield* this.attempt(req, model, strict, userText, expected);
+      const result: AttemptResult = yield* this.attempt(
+        req,
+        model,
+        { strictLang: langRetryUsed, strictUnc: uncRetryUsed, buffered: verified },
+        userText,
+        expected,
+      );
 
-      if (result.status === "ok" || result.status === "aborted") return;
+      if (result.status === "aborted") return;
 
+      // مخالفة لغة أثناء البثّ العام قبل عرض أي شيء — احتياط بنموذج آخر
       if (result.status === "guard_violation") {
-        // حارس اللغة لا يُهدّئ النموذج: هذه جودة رد لا عطل توفّر.
-        console.error(`[openrouter] language guard tripped: model=${model} expected=${expected}`);
-        if (!guardRetryUsed && i + 1 < usable.length) {
-          // إعادة محاولة واحدة بالنموذج الاحتياطي وبموجه أكثر صرامة
-          guardRetryUsed = true;
+        console.error(
+          `[openrouter] language guard tripped: model=${model} reason=${result.guardReason ?? "?"}`,
+        );
+        if (!langRetryUsed && i + 1 < usable.length) {
+          langRetryUsed = true;
           continue;
         }
         yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+        return;
+      }
+
+      if (result.status === "ok") {
+        // البثّ العام: المحاولة عرضت الرد بنفسها بعد فحص كل مقطع — انتهى.
+        if (!verified) return;
+
+        const text = result.text ?? "";
+        const actualModel = result.model ?? model;
+
+        // حارس اللغة على الرد الكامل — خليط لغات/كلمة دخيلة يُرفض
+        const lang = violatesLanguage(text, expected, userText);
+        if (lang.violated) {
+          // حارس اللغة لا يُهدّئ النموذج: جودة رد لا عطل توفّر.
+          console.error(
+            `[openrouter] language guard tripped: model=${model} reason=${lang.reason ?? "?"}`,
+          );
+          if (!langRetryUsed && i + 1 < usable.length) {
+            langRetryUsed = true; // إعادة محاولة واحدة بنموذج احتياطي وموجّه أصرم
+            continue;
+          }
+          yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+          return;
+        }
+
+        // حارس عدم اليقين — تخمين متحفّظ لتفاصيل دقيقة → إعادة توليد صارمة واحدة
+        if (violatesUncertainty(userText, text).violated) {
+          console.error(`[openrouter] uncertainty guard tripped: model=${model}`);
+          if (!uncRetryUsed) {
+            uncRetryUsed = true;
+            yield* this.regenerateStrict(req, model, expected, userText);
+            return;
+          }
+          // سبق أن أُعيد التوليد بصرامة وما زال يخمّن → رسالة عدم تأكّد آمنة
+          yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+          yield { type: "text", text: UNCERTAINTY_FALLBACK_MESSAGE };
+          yield { type: "done" };
+          return;
+        }
+
+        // رد نظيف → سلّمه
+        yield { type: "meta", model: actualModel, mode: "protected", regenerations: 0 };
+        if (text) yield { type: "text", text };
+        if (result.usage) yield { type: "usage", usage: result.usage };
+        yield { type: "done" };
         return;
       }
 
@@ -204,17 +283,70 @@ export class OpenRouterProvider implements AIProviderAdapter {
   }
 
   /**
-   * محاولة واحدة مع نموذج محدد: بث + نافذة حارس اللغة.
-   * لا تُصدر usage إلا عند نجاح المحاولة — فلا يُسجل استهلاك لمحاولة فاشلة.
+   * إعادة توليد صارمة واحدة على نفس النموذج بعد سقوط حارس عدم اليقين.
+   * إن جاء الرد نظيفًا (بلا تخمين متحفّظ ولا خلل لغة) سُلّم؛ وإلا عُرضت رسالة
+   * عدم التأكد الآمنة بدل التخمين. لا تُدخل حلقة تكرار — محاولة واحدة فقط.
+   */
+  private async *regenerateStrict(
+    req: ChatRequest,
+    model: string,
+    expected: ReturnType<typeof detectExpectedLanguage>,
+    userText: string,
+  ): AsyncGenerator<StreamChunk> {
+    const retry: AttemptResult = yield* this.attempt(
+      req,
+      model,
+      { strictLang: false, strictUnc: true, buffered: true },
+      userText,
+      expected,
+    );
+
+    if (retry.status === "ok") {
+      const text = retry.text ?? "";
+      const actualModel = retry.model ?? model;
+      const clean =
+        !violatesLanguage(text, expected, userText).violated &&
+        !violatesUncertainty(userText, text).violated;
+      if (clean && text) {
+        yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+        yield { type: "text", text };
+        if (retry.usage) yield { type: "usage", usage: retry.usage };
+        yield { type: "done" };
+        return;
+      }
+      // ما زال يخمّن (أو كسر اللغة) بعد الصرامة → رسالة آمنة
+      yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+      yield { type: "text", text: UNCERTAINTY_FALLBACK_MESSAGE };
+      yield { type: "done" };
+      return;
+    }
+
+    if (retry.status === "aborted") return;
+
+    // فشل تقني في إعادة التوليد — لا نكرر، نعرض الرسالة الآمنة
+    yield { type: "meta", model, mode: "protected", regenerations: 1 };
+    yield { type: "text", text: UNCERTAINTY_FALLBACK_MESSAGE };
+    yield { type: "done" };
+  }
+
+  /**
+   * محاولة واحدة مع نموذج محدد، بوضعين:
+   * - buffered=false (البثّ العام): يُفحص كل مقطع بحارس اللغة **قبل** عرضه ثم يُبثّ
+   *   فورًا. زمن أول token كما هو (نافذة الحارس نفسها) بلا أي تجميع كامل.
+   * - buffered=true (الوضع المحمي): يُجمَّع الرد كاملًا ويُرجَّع بلا عرض، ليفحصه
+   *   الحارسان في streamChat قبل التسليم.
    */
   private async *attempt(
     req: ChatRequest,
     model: string,
-    strictPrompt: boolean,
+    opts: { strictLang: boolean; strictUnc: boolean; buffered: boolean },
     userText: string,
     expected: ReturnType<typeof detectExpectedLanguage>,
   ): AsyncGenerator<StreamChunk, AttemptResult> {
-    const system = (req.systemPrompt ?? "") + (strictPrompt ? STRICT_LANGUAGE_SUFFIX : "");
+    const system =
+      (req.systemPrompt ?? "") +
+      (opts.strictLang ? STRICT_LANGUAGE_SUFFIX : "") +
+      (opts.strictUnc ? STRICT_UNCERTAINTY_SUFFIX : "");
     const messages: { role: string; content: string }[] = [];
     if (system) messages.push({ role: "system", content: system });
     for (const m of req.messages) {
@@ -251,10 +383,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     } catch {
       clearTimeout(timeoutId);
       req.signal?.removeEventListener("abort", onClientAbort);
-      if (req.signal?.aborted) {
-        yield { type: "done" };
-        return { status: "aborted" };
-      }
+      if (req.signal?.aborted) return { status: "aborted" };
       // مهلة الموفر أو انقطاع الشبكة — قابل لإعادة المحاولة
       return { status: "network_error" };
     }
@@ -276,10 +405,16 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let buf = "";
     let usage: UsageReport | null = null;
     let actualModel = model;
+    let full = ""; // الرد الكامل — لا يُعرض قبل اجتياز الحارسَين
+    let seg = ""; // مقطع البثّ الجاري تجميعه للفحص قبل عرضه
+    let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
+    let overlap = ""; // ذيل ما عُرض — يُفحص مع المقطع التالي منعًا لانقسام كلمة دخيلة
 
-    // نافذة الحارس: نخزّن أول جزء من الرد قبل عرضه
-    let window = "";
-    let windowFlushed = false;
+    // يفحص مقطعًا (مع تداخل) قبل عرضه؛ يُرجع سبب المخالفة إن سقط الحارس
+    const checkSegment = (s: string): string | null => {
+      const verdict = violatesLanguage(overlap + s, expected, userText);
+      return verdict.violated ? (verdict.reason ?? "unknown") : null;
+    };
 
     try {
       for (;;) {
@@ -303,13 +438,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
           }
 
           if (chunk.error?.message) {
-            if (windowFlushed) {
-              // الخطأ بعد بدء العرض — نبلغه ونُنهي
-              const mapped = mapOpenRouterError(null, chunk.error.message);
-              console.error(`[openrouter] mid-stream error: kind=${mapped.kind}`);
-              yield { type: "error", error: mapped.userMessage };
-              return { status: "ok" };
-            }
+            // خطأ أثناء البث وقبل أي عرض — عامله كخطأ تقني قابل للتحويل/الاحتياط
             await reader.cancel().catch(() => undefined);
             return { status: "http_error", errorRaw: chunk.error.message };
           }
@@ -324,52 +453,57 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
           const text = chunk.choices?.[0]?.delta?.content;
           if (!text) continue;
+          full += text;
+          if (opts.buffered) continue; // الوضع المحمي: تجميع بلا عرض
 
-          if (windowFlushed) {
-            yield { type: "text", text };
-            continue;
-          }
-
-          window += text;
-          if (window.length >= GUARD_WINDOW_CHARS) {
-            const verdict = violatesLanguage(window, expected, userText);
-            if (verdict.violated) {
+          // البثّ العام: افحص كل مقطع قبل عرضه (يلتقط التسريب أينما ورد).
+          // النافذة الأولى بحجمها الأصلي (زمن أول token كما هو)، ثم مقاطع أصغر للسلاسة.
+          seg += text;
+          if (seg.length >= (anyFlushed ? GUARD_TAIL_CHARS : GUARD_WINDOW_CHARS)) {
+            const reason = checkSegment(seg);
+            if (reason) {
               await reader.cancel().catch(() => undefined);
-              return { status: "guard_violation" };
+              // لم يُعرض شيء بعد → احتياط نظيف بنموذج آخر
+              if (!anyFlushed) return { status: "guard_violation", guardReason: reason };
+              // عُرض جزء سليم بالفعل ولا يمكن سحبه — نوقف قبل تسريب المقطع المخالف
+              console.error(`[openrouter] mid-stream language leak: model=${model} reason=${reason}`);
+              yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+              return { status: "ok", text: full, model: actualModel, usage };
             }
-            yield { type: "meta", model: actualModel };
-            yield { type: "text", text: window };
-            windowFlushed = true;
+            if (!anyFlushed) {
+              yield { type: "meta", model: actualModel, mode: "general", regenerations: 0 };
+              anyFlushed = true;
+            }
+            yield { type: "text", text: seg };
+            overlap = seg.slice(-GUARD_OVERLAP_CHARS);
+            seg = "";
           }
         }
       }
 
-      // انتهى البث والنافذة لم تُعرض بعد (رد قصير) — افحص ثم اعرض
-      if (!windowFlushed) {
-        const verdict = violatesLanguage(window, expected, userText);
-        if (verdict.violated) return { status: "guard_violation" };
-        yield { type: "meta", model: actualModel };
-        if (window) yield { type: "text", text: window };
-      }
+      if (opts.buffered) return { status: "ok", text: full, model: actualModel, usage };
 
+      // بقية المقطع الأخير — تُفحص أيضًا قبل عرضها
+      if (seg) {
+        const reason = checkSegment(seg);
+        if (reason) {
+          if (!anyFlushed) return { status: "guard_violation", guardReason: reason };
+          console.error(`[openrouter] mid-stream language leak: model=${model} reason=${reason}`);
+          yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+          return { status: "ok", text: full, model: actualModel, usage };
+        }
+        if (!anyFlushed) {
+          yield { type: "meta", model: actualModel, mode: "general", regenerations: 0 };
+          anyFlushed = true;
+        }
+        yield { type: "text", text: seg };
+      }
       if (usage) yield { type: "usage", usage };
       yield { type: "done" };
-      return { status: "ok" };
+      return { status: "ok", text: full, model: actualModel, usage };
     } catch {
-      if (req.signal?.aborted) {
-        // عرض ما وصل قبل الإيقاف إن لم تكن النافذة عُرضت
-        if (!windowFlushed && window) {
-          yield { type: "meta", model: actualModel };
-          yield { type: "text", text: window };
-        }
-        yield { type: "done" };
-        return { status: "aborted" };
-      }
+      if (req.signal?.aborted) return { status: "aborted" };
       console.error("[openrouter] stream read failed");
-      if (windowFlushed) {
-        yield { type: "error", error: "انقطع البث أثناء توليد الرد. أعد المحاولة." };
-        return { status: "ok" };
-      }
       return { status: "network_error" };
     }
   }

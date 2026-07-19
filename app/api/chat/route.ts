@@ -5,6 +5,7 @@ import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
+import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import {
   buildSourcesContext,
   NO_MATCH_HINT,
@@ -17,14 +18,6 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const DEFAULT_TITLE = "محادثة جديدة";
-const SYSTEM_PROMPT = `أنت YSD AI، مساعد ذكي احترافي تابع لمنصة YSD AI Studio.
-أجب دائمًا بلغة آخر رسالة كتبها المستخدم، حتى لو كانت المحادثة بدأت بلغة أخرى.
-عندما يكتب المستخدم بالعربية، استخدم العربية فقط، باستثناء أسماء التقنيات والأكواد عند الحاجة.
-عندما يكتب بالإنجليزية أو لغة أخرى، أجب بتلك اللغة.
-لا تخلط العربية مع لغات أخرى.
-لا تخترع اسم منشئ أو شركة أو معلومات شخصية.
-لا تدّعِ أنك طورت المنتج.
-اكتب بإجابة واضحة ومنظمة ومباشرة.`;
 
 /** Rate limiting بسيط داخل الذاكرة — يُستبدل بـ Redis/Upstash في الإنتاج */
 const buckets = new Map<string, { count: number; resetAt: number }>();
@@ -247,6 +240,10 @@ export async function POST(req: NextRequest) {
       const tProvider = Date.now();
       let providerFirstByteMs = -1;
       let totalFirstTokenMs = -1;
+      // v0.6.5: الوضع المختار وزمن الحالة وعدد إعادات التوليد — أرقام فقط
+      let statusMs = -1;
+      let answerMode: "general" | "protected" = "general";
+      let regenerations = 0;
 
       try {
         for await (const chunk of provider.streamChat({
@@ -262,8 +259,14 @@ export async function POST(req: NextRequest) {
             }
             assistantText += chunk.text;
             send({ type: "text", text: chunk.text });
+          } else if (chunk.type === "status" && chunk.text) {
+            // حالة تحقّق قصيرة — تُعرض فورًا ولا تُحفظ ضمن نص الرد
+            if (statusMs < 0) statusMs = Date.now() - tProvider;
+            send({ type: "status", text: chunk.text });
           } else if (chunk.type === "meta" && chunk.model) {
             actualModelId = chunk.model;
+            if (chunk.mode) answerMode = chunk.mode;
+            if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
             // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
@@ -314,6 +317,7 @@ export async function POST(req: NextRequest) {
         const fallbackCount = idx > 0 ? idx : 0;
         console.log(
           `[chat] rid=${requestId} model=${actualModelId ?? modelId} fallback_count=${fallbackCount} ` +
+            `mode=${answerMode} regeneration_count=${regenerations} status_ms=${statusMs} ` +
             `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
         );
       } catch (err) {

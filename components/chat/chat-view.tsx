@@ -52,6 +52,8 @@ interface Msg {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  /** حالة قصيرة أثناء الوضع المحمي («جارٍ التحقق…») — ليست جزءًا من الرد */
+  status?: string;
   /** النموذج الفعلي الذي أجاب — يُعرض في وضع التطوير فقط */
   model?: string;
   /** مصادر RAG المستند إليها الرد */
@@ -87,7 +89,7 @@ interface ChatViewProps {
 }
 
 interface SSEEvent {
-  type: "text" | "error" | "done" | "meta" | "sources";
+  type: "text" | "error" | "done" | "meta" | "sources" | "status";
   text?: string;
   error?: string;
   model?: string;
@@ -210,6 +212,11 @@ export function ChatView({
                 prev.map((m) =>
                   m.id === asstTempId ? { ...m, content: m.content + data.text } : m,
                 ),
+              );
+            } else if (data.type === "status" && data.text) {
+              // حالة الوضع المحمي — تُعرض بدل نقاط الانتظار الفارغة
+              setMessages((prev) =>
+                prev.map((m) => (m.id === asstTempId ? { ...m, status: data.text } : m)),
               );
             } else if (data.type === "meta" && data.model) {
               setMessages((prev) =>
@@ -656,14 +663,19 @@ export function ChatView({
                         {m.content ? (
                           <Markdown text={m.content} />
                         ) : (
-                          <div className="flex gap-1.5 py-2">
-                            {[0, 1, 2].map((i) => (
-                              <span
-                                key={i}
-                                className="w-1.5 h-1.5 rounded-full bg-primary-glow"
-                                style={{ animation: `pulse-dot 1.1s ${i * 0.18}s infinite` }}
-                              />
-                            ))}
+                          <div className="flex items-center gap-2 py-2">
+                            <div className="flex gap-1.5">
+                              {[0, 1, 2].map((i) => (
+                                <span
+                                  key={i}
+                                  className="w-1.5 h-1.5 rounded-full bg-primary-glow"
+                                  style={{ animation: `pulse-dot 1.1s ${i * 0.18}s infinite` }}
+                                />
+                              ))}
+                            </div>
+                            {m.status && (
+                              <span className="text-xs text-ink-faint">{m.status}</span>
+                            )}
                           </div>
                         )}
                         {!m.streaming && m.sources && m.sources.length > 0 && (

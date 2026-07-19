@@ -30,12 +30,17 @@ export interface UsageReport {
 }
 
 export interface StreamChunk {
-  type: "text" | "usage" | "done" | "error" | "meta";
+  /** "status" = حالة قصيرة تُعرض فورًا في الوضع المحمي (ليست جزءًا من الرد) */
+  type: "text" | "usage" | "done" | "error" | "meta" | "status";
   text?: string;
   usage?: UsageReport;
   error?: string;
   /** معرّف النموذج الفعلي الذي أجاب (مع "meta") — للتسجيل والعرض في التطوير */
   model?: string;
+  /** الوضع المختار (مع "meta"): بثّ عام أو محمي بالتحقق — للتسجيل الآمن */
+  mode?: "general" | "protected";
+  /** عدد مرات إعادة التوليد الصارمة (مع "meta") — يجب ألا يتجاوز 1 */
+  regenerations?: number;
 }
 
 export interface ModelInfo {

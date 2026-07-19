@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   detectExpectedLanguage,
+  findStrayLatinWords,
   scriptRatios,
   violatesLanguage,
 } from "../lib/ai/language-guard";
@@ -94,5 +95,73 @@ describe("scriptRatios", () => {
     const r = scriptRatios(text);
     expect(r.latin).toBe(0);
     expect(r.arabic).toBeGreaterThan(0);
+  });
+});
+
+// ── v0.6.5 RC2: تشديد حارس اللغة على الرد العربي ──────────────────────────
+const AR_STORY_Q = "اكتب مشهد معركة قصير في رواية خيالية عن فارس وتنين.";
+
+describe("★ RC2 — تحمّل صفري لأنظمة الكتابة غير المطلوبة داخل رد عربي", () => {
+  it("كلمة يابانية واحدة داخل رد عربي تُكتشف (كانت تنجو من عتبة 5٪)", () => {
+    const reply =
+      "في قلب الوادي رفع الفارس 目を سيفه اللامع وواجه التنين بشجاعة نادرة في أرض المعركة الواسعة.";
+    const v = violatesLanguage(reply, "ar", AR_STORY_Q);
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("unwanted_scripts");
+  });
+
+  it("كلمة سيريلية واحدة داخل رد عربي تُكتشف", () => {
+    const reply =
+      "صمد الفارس словно الأسد أمام نيران التنين المتقدة في تلك المعركة الطويلة الحاسمة الفاصلة.";
+    const v = violatesLanguage(reply, "ar", AR_STORY_Q);
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("unwanted_scripts");
+  });
+
+  it("حرف يوناني داخل رد عربي يُكتشف", () => {
+    const reply =
+      "قيمة الزاوية تساوي π تقريبًا في هذه المعادلة الرياضية الطويلة المعقدة التي نناقشها الآن بالتفصيل.";
+    const v = violatesLanguage(reply, "ar", "اشرح لي المعادلة بالعربية.");
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("unwanted_scripts");
+  });
+});
+
+describe("★ RC2 — كشف الكلمات اللاتينية الصغيرة الدخيلة (loot، bajo)", () => {
+  it("كلمة إسبانية صغيرة (bajo) داخل رد عربي تُكتشف", () => {
+    const reply =
+      "صرخ الفارس bajo هدير اللهب لكنه صمد وواصل القتال حتى النهاية المريرة في تلك الليلة الطويلة.";
+    const v = violatesLanguage(reply, "ar", AR_STORY_Q);
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("stray_latin");
+  });
+
+  it("كلمة إنجليزية صغيرة ملتصقة (كغرضloot) تُكتشف", () => {
+    const reply =
+      "عند موت العدو سيُسقط القناع الأبيض كغرضloot يمكنك التقاطه بسهولة تامة ثم تجهيزه في خانة الدرع.";
+    const v = violatesLanguage(reply, "ar", "كيف أحصل على القناع؟");
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("stray_latin");
+  });
+});
+
+describe("★ RC2 — أسماء العلم والاختصارات لا تُرفض", () => {
+  it("White Mask وElden Ring داخل رد عربي تمرّ", () => {
+    const reply =
+      "القناع الأبيض White Mask في لعبة Elden Ring يمنحك ضررًا إضافيًا عند تراكم النزف الذاتي، وهو درع رأس مفيد لبنية النزف.";
+    expect(violatesLanguage(reply, "ar", "أخبرني عن القناع الأبيض في اللعبة.").violated).toBe(false);
+  });
+
+  it("اختصارات AI وPDF وRAG داخل رد عربي تمرّ", () => {
+    const reply =
+      "يستخدم النظام تقنيات AI لتحليل ملفات PDF عبر خط أنابيب RAG، ثم يعرض النتائج للمستخدم بشكل منظم وواضح.";
+    expect(violatesLanguage(reply, "ar", "اشرح كيف يعمل النظام.").violated).toBe(false);
+  });
+
+  it("findStrayLatinWords: يلتقط الدخيل ويترك أسماء العلم والاختصارات", () => {
+    expect(findStrayLatinWords("نص فيه loot و bajo دخيلان")).toEqual(["loot", "bajo"]);
+    expect(findStrayLatinWords("White Mask و Elden Ring و PostgreSQL")).toEqual([]);
+    expect(findStrayLatinWords("نستخدم AI و PDF و RAG هنا")).toEqual([]);
+    expect(findStrayLatinWords("رابط https://example.com/loot ليس دخيلًا")).toEqual([]);
   });
 });

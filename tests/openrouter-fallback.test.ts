@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OpenRouterProvider } from "../lib/ai/openrouter";
 import { _resetCooldowns, isCoolingDown } from "../lib/ai/model-cooldown";
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "../lib/ai/free-models";
+import {
+  UNCERTAINTY_FALLBACK_MESSAGE,
+  VERIFYING_STATUS_MESSAGE,
+} from "../lib/ai/uncertainty-guard";
 
 /** يبني ردًا يشبه بث SSE من OpenRouter */
 function sseResponse(text: string, model: string): Response {
@@ -174,5 +178,91 @@ describe("حارس اللغة يستمر مع كل fallback", () => {
     const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
     expect(text).not.toMatch(/чрезвычайно/);
     expect(text).toMatch(/[؀-ۿ]/);
+  });
+});
+
+// ── v0.6.5 RC2: حارس عدم اليقين داخل مسار البث ────────────────────────────
+const SPECIFIC_REQ = (modelId: string) => ({
+  modelId,
+  messages: [{ role: "user" as const, content: "كيف أحصل على القناع الأبيض في اللعبة؟" }],
+});
+
+// رد متحفّظ يمرّر مواقع/خطوات محددة (يجب أن يُمنع) — عربي نقي فيجتاز حارس اللغة
+const HEDGED_SPECIFIC =
+  "القناع موجود في المنطقة الشمالية من الخريطة. اذهب إلى موقع النعمة القريب ثم اتجه شمالًا، " +
+  "وبعض المصادر تشير إلى أنه قد يكون قرب «كنيسة إيلله» في تلك الأنحاء البعيدة.";
+// اعتراف آمن بعدم التأكد بلا اختراع مواقع (يجب أن يمرّ)
+const SAFE_HEDGE =
+  "لست متأكد من مكان القناع بالضبط، ولا أريد أن أعطيك معلومة غير دقيقة عنه فأفضّل ألا أخمّن.";
+
+describe("★ اختيار الوضع — البثّ العام بلا تأخير مقابل الوضع المحمي", () => {
+  // رد عربي طويل (>نافذة الحارس) لإثبات وصوله على دفعات لا دفعة واحدة
+  const LONG_ARABIC = "هذه إجابة عربية طويلة وسليمة تمامًا بلا أي خلط لغوي إطلاقًا. ".repeat(12);
+  const GENERAL_REQ = (modelId: string) => ({
+    modelId,
+    messages: [{ role: "user" as const, content: "اكتب لي فقرة قصيرة عن البحر." }],
+  });
+
+  it("المحادثة العامة ما زالت streaming — دفعات متعددة وبلا حالة تحقّق", async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse(LONG_ARABIC, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(GENERAL_REQ(YSD_FREE_MODEL_ID)));
+    const textChunks = out.filter((c) => c.type === "text");
+    expect(textChunks.length).toBeGreaterThan(1); // بثّ على دفعات لا تجميع كامل
+    expect(out.some((c) => c.type === "status")).toBe(false); // لا تحقّق للمحادثة العامة
+    expect(textChunks.map((c) => c.text).join("")).toBe(LONG_ARABIC);
+  });
+
+  it("السؤال المتخصص يدخل الوضع المحمي — حالة فورية ثم دفعة واحدة بعد الفحص", async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse(SAFE_HEDGE, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    expect(out[0]?.type).toBe("status"); // ★ الحالة أول ما يصل — لا شاشة انتظار فارغة
+    expect(out[0]?.text).toBe(VERIFYING_STATUS_MESSAGE);
+    expect(out.filter((c) => c.type === "text").length).toBe(1); // الرد بعد الفحص دفعة واحدة
+  });
+});
+
+describe("★ حارس عدم اليقين — إعادة توليد صارمة ثم رسالة آمنة", () => {
+  it("تخمين متحفّظ لتفاصيل دقيقة → إعادة توليد صارمة تُنتج اعترافًا آمنًا فيُعرض", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(SAFE_HEDGE, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
+    expect(text).toMatch(/لست متأكد/); // الاعتراف الآمن وصل
+    expect(text).not.toMatch(/كنيسة إيلله|اذهب إلى/); // المواقع/الخطوات المتحفّظة لم تصل
+    expect(fetchMock.mock.calls.length).toBe(2); // إعادة توليد واحدة فقط
+  });
+
+  it("★ الرد المشكوك فيه لا يصل المستخدم إطلاقًا قبل فحصه", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(SAFE_HEDGE, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
+    // ولا شظية من النص المتحفّظ المخمِّن ظهرت
+    expect(text).not.toContain("المنطقة الشمالية");
+    expect(text).not.toContain("موقع النعمة");
+    expect(text).not.toContain("بعض المصادر");
+  });
+
+  it("إصرار النموذج على التخمين بعد الإعادة → رسالة عدم التأكد الآمنة", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
+    expect(text).toBe(UNCERTAINTY_FALLBACK_MESSAGE); // استُبدل التخمين بالرسالة الآمنة
+    expect(text).not.toMatch(/كنيسة إيلله|اذهب إلى/);
+    expect(fetchMock.mock.calls.length).toBe(2); // لا حلقة تكرار
+  });
+
+  it("رد واثق بلا تحفّظ يمرّ كما هو (لا يتدخّل الحارس)", async () => {
+    const confident =
+      "للحصول على القناع الأبيض اهزم العدو الذي يحمله في الموقع المحدد، ثم جهّزه في خانة درع الرأس.";
+    fetchMock.mockResolvedValueOnce(sseResponse(confident, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
+    expect(text).toBe(confident);
+    expect(fetchMock.mock.calls.length).toBe(1); // بلا إعادة توليد
   });
 });
