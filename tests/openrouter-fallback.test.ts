@@ -181,6 +181,78 @@ describe("حارس اللغة يستمر مع كل fallback", () => {
   });
 });
 
+// ── v0.6.5 RC3: تسريب لغوي متأخر → متابعة صامتة بلا رسالة خطأ ─────────────
+describe("★ RC3 — تسريب بعد عرض جمل نظيفة", () => {
+  const STORY_REQ = (modelId: string) => ({
+    modelId,
+    messages: [{ role: "user" as const, content: "اكتب مشهد معركة قصير في رواية خيالية." }],
+  });
+  // جملتان نظيفتان ثم جملة فيها كلمة دخيلة ثم بقية
+  const CLEAN = "وقف الفارس أمام التنين. لمع سيفه تحت ضوء الفجر. ";
+  const LEAK = "صرخ bajo هدير اللهب. ";
+  const AFTER = "ثم سقط التنين أرضًا.";
+  const LEAKY_REPLY = CLEAN + LEAK + AFTER;
+  // تكملة تُعيد آخر جملة معروضة قبل أن تكمل — يجب ألا تتكرر أمام المستخدم
+  const CONT_REPEATS = "لمع سيفه تحت ضوء الفجر. ثم رفع درعه وصمد حتى مطلع النهار.";
+
+  const joinText = (out: { type: string; text?: string }[]) =>
+    out.filter((c) => c.type === "text").map((c) => c.text).join("");
+  const countOf = (hay: string, needle: string) => hay.split(needle).length - 1;
+
+  it("★ لا يظهر أي جزء من الجملة المخالفة، والنص النظيف السابق يبقى", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse("ثم رفع درعه وصمد حتى مطلع النهار.", FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    const text = joinText(out);
+    expect(text).not.toMatch(/bajo/i); // الكلمة الدخيلة لم تصل
+    expect(text).not.toContain("هدير اللهب"); // ولا الجملة المخالفة كلها
+    expect(text).toContain("وقف الفارس أمام التنين."); // النص النظيف محفوظ
+    expect(text).toContain("لمع سيفه تحت ضوء الفجر.");
+  });
+
+  it("★ لا رسالة خطأ في منتصف المحادثة، والمتابعة تُعرض", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse("ثم رفع درعه وصمد حتى مطلع النهار.", FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    expect(out.some((c) => c.type === "error")).toBe(false); // ولا رسالة خطأ
+    expect(joinText(out)).toContain("ثم رفع درعه وصمد");
+  });
+
+  it("★ المتابعة تكمل من آخر جملة بلا تكرار البداية", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(CONT_REPEATS, FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    const text = joinText(out);
+    expect(countOf(text, "لمع سيفه تحت ضوء الفجر")).toBe(1); // لم تتكرر الجملة المعادة
+    expect(text).toContain("ثم رفع درعه وصمد حتى مطلع النهار.");
+  });
+
+  it("★ محاولة احتياط واحدة فقط — وإن سرّبت المتابعة أيضًا يُنهى بعبارة قصيرة", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse("ثم صرخ otra مرة أخرى.", FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    const text = joinText(out);
+    expect(fetchMock.mock.calls.length).toBe(2); // لا احتياط ثانٍ
+    expect(text).not.toMatch(/otra/i); // تسريب المتابعة لم يصل
+    expect(text).toContain("توقفت هنا للحفاظ على جودة الرد.");
+    expect(out.some((c) => c.type === "error")).toBe(false);
+  });
+
+  it("★ الكتابة الإبداعية النظيفة تظل streaming بلا تدخّل", async () => {
+    const clean = "وقف الفارس أمام التنين. لمع سيفه تحت ضوء الفجر. ثم سقط التنين أرضًا.";
+    fetchMock.mockResolvedValueOnce(sseResponse(clean, FREE_MODEL_CHAIN[0]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    expect(joinText(out)).toBe(clean); // بلا نقص ولا زيادة
+    expect(out.filter((c) => c.type === "text").length).toBeGreaterThan(1); // بثّ بالجمل
+    expect(out.some((c) => c.type === "error")).toBe(false);
+    expect(fetchMock.mock.calls.length).toBe(1); // بلا احتياط
+  });
+});
+
 // ── v0.6.5 RC2: حارس عدم اليقين داخل مسار البث ────────────────────────────
 const SPECIFIC_REQ = (modelId: string) => ({
   modelId,

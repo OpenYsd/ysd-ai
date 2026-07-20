@@ -169,6 +169,85 @@ export const GUARD_TAIL_CHARS = 120;
 /** تداخل الفحص بالأحرف — يمنع نجاة كلمة دخيلة انقسمت بين مقطعين */
 export const GUARD_OVERLAP_CHARS = 24;
 
+/**
+ * فحص **وحدة بثّ** (جملة) قبل عرضها — بلا حدّ أدنى للطول.
+ * الحدود الدنيا في violatesLanguage وُضعت لردّ كامل؛ تطبيقها على جملة قصيرة
+ * كان يُنجي تسريبًا مثل «صرخ bajo.» (٧ أحرف فقط). هنا كلمة دخيلة واحدة تكفي.
+ * قاعدة السماح نفسها: ما فيه حرف كبير اسم علم، والاختصارات والروابط والكود مستثناة.
+ */
+export function violatesStreamUnit(
+  unit: string,
+  expected: ExpectedLanguage,
+  userText: string,
+): { violated: boolean; reason?: string } {
+  const r = scriptRatios(unit);
+  const unwanted =
+    (userUsesScript(userText, "cyrillic") ? 0 : r.cyrillic) +
+    (userUsesScript(userText, "cjk") ? 0 : r.cjk) +
+    r.otherUnwanted;
+
+  if (expected === "ar") {
+    if (unwanted > 0) return { violated: true, reason: "unwanted_scripts" };
+    if (findStrayLatinWords(unit).length > 0) return { violated: true, reason: "stray_latin" };
+    return { violated: false };
+  }
+  if (r.totalLetters >= 30 && unwanted / r.totalLetters > 0.05) {
+    return { violated: true, reason: "unwanted_scripts" };
+  }
+  return { violated: false };
+}
+
+/** أقصى طول لوحدة بثّ بلا نهاية جملة — حدّ آمن يمنع الانتظار الطويل */
+export const STREAM_UNIT_MAX_CHARS = 240;
+
+/**
+ * يقتطع من المخزن وحدات كاملة (تنتهي بعلامة نهاية جملة)، وإلا فعند حدّ آمن.
+ * ready + rest = buffer دائمًا، فلا يضيع حرف من رد النموذج.
+ */
+export function takeCompleteUnits(buffer: string): { ready: string; rest: string } {
+  let lastEnd = -1;
+  for (let i = 0; i < buffer.length; i++) {
+    if (/[.!?؟…\n؛]/.test(buffer[i] ?? "")) lastEnd = i;
+  }
+  if (lastEnd >= 0) {
+    let e = lastEnd + 1;
+    while (e < buffer.length && /\s/.test(buffer[e] ?? "")) e++;
+    return { ready: buffer.slice(0, e), rest: buffer.slice(e) };
+  }
+  if (buffer.length >= STREAM_UNIT_MAX_CHARS) {
+    const cut = buffer.lastIndexOf(" ", STREAM_UNIT_MAX_CHARS);
+    const at = cut > 40 ? cut + 1 : STREAM_UNIT_MAX_CHARS;
+    return { ready: buffer.slice(0, at), rest: buffer.slice(at) };
+  }
+  return { ready: "", rest: buffer };
+}
+
+/**
+ * يزيل ما أعاده نموذج الاحتياط من نص سبق عرضه، فلا يتكرر أمام المستخدم.
+ * يجرّب أولًا إيجاد ذيل المعروض داخل التكملة (يغطي الإعادة الكاملة)، ثم أطول
+ * تداخل بين ذيل المعروض وصدر التكملة.
+ */
+export function stripRepeatedPrefix(emitted: string, cont: string): string {
+  if (!emitted || !cont) return cont;
+  const tailRaw = emitted.slice(-40);
+  if (tailRaw.length >= 20) {
+    const idx = cont.indexOf(tailRaw);
+    if (idx >= 0) return cont.slice(idx + tailRaw.length).replace(/^\s+/, "");
+  }
+  const maxOv = Math.min(300, emitted.length, cont.length);
+  for (let L = maxOv; L >= 20; L--) {
+    if (emitted.slice(-L) === cont.slice(0, L)) return cont.slice(L).replace(/^\s+/, "");
+  }
+  return cont;
+}
+
+/** يُلحق بالموجّه عند طلب متابعة الرد بعد تسريب — بلا إعادة بداية */
+export const CONTINUATION_SUFFIX =
+  "\n\nتنبيه: أكمل النص السابق من حيث انتهى تمامًا، بالعربية فقط. لا تُعِد أي جزء سبق، ولا تبدأ من جديد، ولا تكتب مقدمة ولا اعتذارًا — واصل مباشرة، ويُمنع إدراج أي كلمة من لغة أخرى.";
+
+/** إنهاء لطيف عند آخر جملة نظيفة حين يتعذّر الإكمال — بلا رسالة خطأ */
+export const TRUNCATED_NOTICE = "\n\nتوقفت هنا للحفاظ على جودة الرد.";
+
 /** رسالة فشل كل النماذج — تُعرض للمستخدم */
 export const GUARD_FAILURE_MESSAGE =
   "تعذر الحصول على رد عربي بجودة مناسبة حاليًا. رسالتك محفوظة، حاول إعادة التوليد.";

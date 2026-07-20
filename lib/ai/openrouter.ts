@@ -21,9 +21,12 @@ import {
   violatesUncertainty,
 } from "./uncertainty-guard";
 import {
+  CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
-  GUARD_TAIL_CHARS,
-  GUARD_WINDOW_CHARS,
+  TRUNCATED_NOTICE,
+  stripRepeatedPrefix,
+  takeCompleteUnits,
+  violatesStreamUnit,
 } from "./language-guard";
 
 /**
@@ -102,9 +105,17 @@ interface SSEDelta {
 
 /** نتيجة محاولة واحدة مع نموذج واحد — الرد الكامل يُرجَّع للفحص في streamChat */
 interface AttemptResult {
-  status: "ok" | "guard_violation" | "http_error" | "network_error" | "aborted";
-  /** سبب سقوط حارس اللغة في وضع البثّ (قبل عرض أي شيء) */
+  status:
+    | "ok"
+    | "guard_violation" // تسريب قبل عرض أي شيء → احتياط نظيف بنموذج آخر
+    | "leak_after_flush" // تسريب بعد عرض جمل نظيفة → متابعة صامتة
+    | "http_error"
+    | "network_error"
+    | "aborted";
+  /** سبب سقوط حارس اللغة — رمز فقط، بلا الكلمة المخالفة ولا محتوى المستخدم */
   guardReason?: string;
+  /** ما عُرض فعلًا للمستخدم من جمل نظيفة (لبناء طلب المتابعة) */
+  emitted?: string;
   httpStatus?: number;
   errorRaw?: string;
   /** من ترويسة Retry-After إن أرسلها الموفر — تتقدّم على مدة 429 الافتراضية */
@@ -197,6 +208,23 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
       if (result.status === "aborted") return;
 
+      // تسريب بعد عرض جمل نظيفة — لا خطأ ولا نص مخالف: متابعة صامتة مرة واحدة
+      if (result.status === "leak_after_flush") {
+        console.error(
+          `[openrouter] late leak: model=${model} reason=${result.guardReason ?? "?"} continue=${!langRetryUsed}`,
+        );
+        const next = usable[i + 1];
+        if (!langRetryUsed && next) {
+          langRetryUsed = true; // احتياط لغوي واحد فقط
+          yield* this.continueAfterLeak(req, next, expected, userText, result.emitted ?? "");
+          return;
+        }
+        // لا احتياط متاح — إنهاء لطيف عند آخر جملة نظيفة
+        yield { type: "text", text: TRUNCATED_NOTICE };
+        yield { type: "done" };
+        return;
+      }
+
       // مخالفة لغة أثناء البثّ العام قبل عرض أي شيء — احتياط بنموذج آخر
       if (result.status === "guard_violation") {
         console.error(
@@ -280,6 +308,49 @@ export class OpenRouterProvider implements AIProviderAdapter {
       type: "error",
       error: lastError?.userMessage ?? GUARD_FAILURE_MESSAGE,
     };
+  }
+
+  /**
+   * متابعة صامتة بعد تسريب لغوي متأخر: يُطلب من نموذج آخر إكمال الرد من آخر
+   * جملة نظيفة بالعربية فقط، بلا إعادة بداية. المستخدم لا يرى خطأ ولا النص
+   * المخالف. وإن تعذّر الإكمال يُنهى الرد بعبارة قصيرة عند آخر جملة نظيفة.
+   * يُجمَّع رد المتابعة كاملًا (مسار تعافٍ نادر) ليُنقّى ويُفحص قبل عرضه.
+   */
+  private async *continueAfterLeak(
+    req: ChatRequest,
+    model: string,
+    expected: ReturnType<typeof detectExpectedLanguage>,
+    userText: string,
+    emitted: string,
+  ): AsyncGenerator<StreamChunk> {
+    const contReq: ChatRequest = {
+      ...req,
+      systemPrompt: (req.systemPrompt ?? "") + CONTINUATION_SUFFIX,
+      messages: [...req.messages, { role: "assistant", content: emitted }],
+    };
+
+    const r: AttemptResult = yield* this.attempt(
+      contReq,
+      model,
+      { strictLang: true, strictUnc: false, buffered: true },
+      userText,
+      expected,
+    );
+
+    if (r.status === "ok") {
+      // انزع ما أعاده النموذج من نص سبق عرضه، ثم افحص التكملة كاملة
+      const cont = stripRepeatedPrefix(emitted, (r.text ?? "").trim());
+      if (cont && !violatesLanguage(cont, expected, userText).violated) {
+        yield { type: "text", text: (/\s$/.test(emitted) ? "" : " ") + cont };
+        if (r.usage) yield { type: "usage", usage: r.usage };
+        yield { type: "done" };
+        return;
+      }
+    }
+
+    // فشل الإكمال (تسريب أو عطل تقني) — إنهاء لطيف بلا رسالة خطأ
+    yield { type: "text", text: TRUNCATED_NOTICE };
+    yield { type: "done" };
   }
 
   /**
@@ -406,13 +477,14 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let usage: UsageReport | null = null;
     let actualModel = model;
     let full = ""; // الرد الكامل — لا يُعرض قبل اجتياز الحارسَين
-    let seg = ""; // مقطع البثّ الجاري تجميعه للفحص قبل عرضه
+    let seg = ""; // ما لم تكتمل منه جملة بعد
+    let emitted = ""; // الجمل النظيفة التي عُرضت فعلًا
     let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
-    let overlap = ""; // ذيل ما عُرض — يُفحص مع المقطع التالي منعًا لانقسام كلمة دخيلة
+    let overlap = ""; // ذيل ما عُرض — يُفحص مع الوحدة التالية منعًا لانقسام كلمة دخيلة
 
-    // يفحص مقطعًا (مع تداخل) قبل عرضه؛ يُرجع سبب المخالفة إن سقط الحارس
+    // يفحص وحدة (مع تداخل) قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة
     const checkSegment = (s: string): string | null => {
-      const verdict = violatesLanguage(overlap + s, expected, userText);
+      const verdict = violatesStreamUnit(overlap + s, expected, userText);
       return verdict.violated ? (verdict.reason ?? "unknown") : null;
     };
 
@@ -456,51 +528,62 @@ export class OpenRouterProvider implements AIProviderAdapter {
           full += text;
           if (opts.buffered) continue; // الوضع المحمي: تجميع بلا عرض
 
-          // البثّ العام: افحص كل مقطع قبل عرضه (يلتقط التسريب أينما ورد).
-          // النافذة الأولى بحجمها الأصلي (زمن أول token كما هو)، ثم مقاطع أصغر للسلاسة.
+          // البثّ العام: وحدات جمل — تُجمَّع حتى نهاية جملة (أو حدّ آمن) وتُفحص قبل العرض.
           seg += text;
-          if (seg.length >= (anyFlushed ? GUARD_TAIL_CHARS : GUARD_WINDOW_CHARS)) {
-            const reason = checkSegment(seg);
+          for (;;) {
+            const { ready, rest } = takeCompleteUnits(seg);
+            if (!ready) break;
+            seg = rest;
+            const reason = checkSegment(ready);
             if (reason) {
               await reader.cancel().catch(() => undefined);
               // لم يُعرض شيء بعد → احتياط نظيف بنموذج آخر
               if (!anyFlushed) return { status: "guard_violation", guardReason: reason };
-              // عُرض جزء سليم بالفعل ولا يمكن سحبه — نوقف قبل تسريب المقطع المخالف
-              console.error(`[openrouter] mid-stream language leak: model=${model} reason=${reason}`);
-              yield { type: "error", error: GUARD_FAILURE_MESSAGE };
-              return { status: "ok", text: full, model: actualModel, usage };
+              // عُرضت جمل نظيفة — لا تُعرض الجملة المخالفة ولا رسالة خطأ؛ تُتابَع صامتًا
+              return {
+                status: "leak_after_flush",
+                guardReason: reason,
+                emitted,
+                model: actualModel,
+                usage,
+              };
             }
             if (!anyFlushed) {
               yield { type: "meta", model: actualModel, mode: "general", regenerations: 0 };
               anyFlushed = true;
             }
-            yield { type: "text", text: seg };
-            overlap = seg.slice(-GUARD_OVERLAP_CHARS);
-            seg = "";
+            yield { type: "text", text: ready };
+            emitted += ready;
+            overlap = emitted.slice(-GUARD_OVERLAP_CHARS);
           }
         }
       }
 
       if (opts.buffered) return { status: "ok", text: full, model: actualModel, usage };
 
-      // بقية المقطع الأخير — تُفحص أيضًا قبل عرضها
+      // بقية النص الأخيرة — وحدة تُفحص أيضًا قبل عرضها
       if (seg) {
         const reason = checkSegment(seg);
         if (reason) {
           if (!anyFlushed) return { status: "guard_violation", guardReason: reason };
-          console.error(`[openrouter] mid-stream language leak: model=${model} reason=${reason}`);
-          yield { type: "error", error: GUARD_FAILURE_MESSAGE };
-          return { status: "ok", text: full, model: actualModel, usage };
+          return {
+            status: "leak_after_flush",
+            guardReason: reason,
+            emitted,
+            model: actualModel,
+            usage,
+          };
         }
         if (!anyFlushed) {
           yield { type: "meta", model: actualModel, mode: "general", regenerations: 0 };
           anyFlushed = true;
         }
         yield { type: "text", text: seg };
+        emitted += seg;
       }
       if (usage) yield { type: "usage", usage };
       yield { type: "done" };
-      return { status: "ok", text: full, model: actualModel, usage };
+      return { status: "ok", text: full, model: actualModel, usage, emitted };
     } catch {
       if (req.signal?.aborted) return { status: "aborted" };
       console.error("[openrouter] stream read failed");

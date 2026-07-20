@@ -7,7 +7,10 @@ import {
   detectExpectedLanguage,
   findStrayLatinWords,
   scriptRatios,
+  stripRepeatedPrefix,
+  takeCompleteUnits,
   violatesLanguage,
+  violatesStreamUnit,
 } from "../lib/ai/language-guard";
 
 const AR_Q = "اشرح الفرق بين API وقاعدة البيانات بالعربية.";
@@ -142,6 +145,39 @@ describe("★ RC2 — كشف الكلمات اللاتينية الصغيرة ا
     const v = violatesLanguage(reply, "ar", "كيف أحصل على القناع؟");
     expect(v.violated).toBe(true);
     expect(v.reason).toBe("stray_latin");
+  });
+});
+
+describe("★ RC3 — وحدات الجمل وفحصها", () => {
+  it("takeCompleteUnits: يقتطع حتى نهاية الجملة ويحفظ الباقي", () => {
+    const r = takeCompleteUnits("وقف الفارس. لمع سيفه تحت");
+    expect(r.ready).toBe("وقف الفارس. ");
+    expect(r.rest).toBe("لمع سيفه تحت");
+    expect(r.ready + r.rest).toBe("وقف الفارس. لمع سيفه تحت"); // بلا فقد حرف
+  });
+
+  it("takeCompleteUnits: بلا نهاية جملة ودون الحد الآمن → لا شيء جاهز", () => {
+    expect(takeCompleteUnits("نص قصير بلا نهاية").ready).toBe("");
+  });
+
+  it("★ جملة قصيرة فيها كلمة دخيلة تُكتشف (الحدّ الأدنى كان يُنجيها)", () => {
+    const unit = "صرخ bajo هناك.";
+    // الفحص الكامل يتجاهلها لقصرها، وفحص الوحدة يمسكها
+    expect(violatesLanguage(unit, "ar", "اكتب قصة").violated).toBe(false);
+    const v = violatesStreamUnit(unit, "ar", "اكتب قصة");
+    expect(v.violated).toBe(true);
+    expect(v.reason).toBe("stray_latin");
+  });
+
+  it("★ جملة قصيرة نظيفة فيها اسم علم إنجليزي تمرّ", () => {
+    expect(violatesStreamUnit("جرّب White Mask.", "ar", "سؤال").violated).toBe(false);
+    expect(violatesStreamUnit("افتح ملف PDF.", "ar", "سؤال").violated).toBe(false);
+  });
+
+  it("stripRepeatedPrefix: يزيل ما أُعيد من النص المعروض", () => {
+    const emitted = "وقف الفارس أمام التنين. لمع سيفه تحت ضوء الفجر. ";
+    expect(stripRepeatedPrefix(emitted, "لمع سيفه تحت ضوء الفجر. ثم صمد.")).toBe("ثم صمد.");
+    expect(stripRepeatedPrefix(emitted, "ثم صمد.")).toBe("ثم صمد."); // بلا تكرار يبقى كما هو
   });
 });
 
