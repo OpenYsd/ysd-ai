@@ -256,6 +256,7 @@ export async function POST(req: NextRequest) {
       let statusMs = -1;
       let answerMode: "general" | "protected" = "general";
       let regenerations = 0;
+      let emptyCompletions = 0;
 
       try {
         for await (const chunk of provider.streamChat({
@@ -279,6 +280,7 @@ export async function POST(req: NextRequest) {
             actualModelId = chunk.model;
             if (chunk.mode) answerMode = chunk.mode;
             if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
+            if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
             // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
@@ -296,7 +298,8 @@ export async function POST(req: NextRequest) {
 
         // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
         let assistantMessageId: string | null = null;
-        if (assistantText) {
+        // لا تُحفظ رسالة مساعد فارغة أو مسافات فقط
+        if (assistantText.trim()) {
           const insertRow: Record<string, unknown> = {
             conversation_id: conversationId,
             role: "assistant",
@@ -329,7 +332,8 @@ export async function POST(req: NextRequest) {
         const fallbackCount = idx > 0 ? idx : 0;
         console.log(
           `[chat] rid=${requestId} model=${actualModelId ?? modelId} fallback_count=${fallbackCount} ` +
-            `mode=${answerMode} regeneration_count=${regenerations} status_ms=${statusMs} ` +
+            `mode=${answerMode} regeneration_count=${regenerations} ` +
+            `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
         );
       } catch (err) {

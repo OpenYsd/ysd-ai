@@ -41,6 +41,8 @@ export interface StreamChunk {
   mode?: "general" | "protected";
   /** عدد مرات إعادة التوليد الصارمة (مع "meta") — يجب ألا يتجاوز 1 */
   regenerations?: number;
+  /** عدد النماذج التي أنهت البثّ بلا نص (مع "meta") — للتسجيل الآمن */
+  emptyCompletions?: number;
 }
 
 export interface ModelInfo {

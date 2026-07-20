@@ -20,6 +20,7 @@ import {
   needsVerifiedMode,
   violatesUncertainty,
 } from "./uncertainty-guard";
+import { buildNoCompletionMessage, isEmptyCompletion } from "./empty-completion";
 import {
   CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
@@ -98,7 +99,10 @@ export function mapOpenRouterError(status: number | null, raw: string): {
 
 interface SSEDelta {
   model?: string;
-  choices?: { delta?: { content?: string } }[];
+  choices?: {
+    delta?: { content?: string; reasoning?: string; reasoning_content?: string };
+    finish_reason?: string | null;
+  }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
   error?: { message?: string };
 }
@@ -109,9 +113,16 @@ interface AttemptResult {
     | "ok"
     | "guard_violation" // تسريب قبل عرض أي شيء → احتياط نظيف بنموذج آخر
     | "leak_after_flush" // تسريب بعد عرض جمل نظيفة → متابعة صامتة
+    | "empty_completion" // أنهى البثّ بلا نص للمستخدم → فشل محاولة لا نجاح
     | "http_error"
     | "network_error"
     | "aborted";
+  /** سبب الإنهاء كما أرسله المزوّد — للتسجيل الآمن فقط */
+  finishReason?: string | null;
+  /** هل أرسل النموذج تفكيرًا داخليًا؟ قيمة منطقية فقط — لا يُعرض ولا يُحفظ */
+  reasoningPresent?: boolean;
+  /** عدد أحرف النص الصالح — رقم فقط بلا محتوى */
+  textLen?: number;
   /** سبب سقوط حارس اللغة — رمز فقط، بلا الكلمة المخالفة ولا محتوى المستخدم */
   guardReason?: string;
   /** ما عُرض فعلًا للمستخدم من جمل نظيفة (لبناء طلب المتابعة) */
@@ -170,6 +181,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
     let langRetryUsed = false;
     let uncRetryUsed = false;
+    let emptyCompletionCount = 0;
     let lastError: { kind: string; userMessage: string } | null = null;
 
     // اختيار الوضع: المحمي (تجميع + فحص قبل العرض) للأسئلة المتخصصة فقط،
@@ -207,6 +219,19 @@ export class OpenRouterProvider implements AIProviderAdapter {
       );
 
       if (result.status === "aborted") return;
+
+      // إكمال فارغ: فشل محاولة — تهدئة قصيرة والانتقال للتالي بلا إعادة لنفس النموذج
+      if (result.status === "empty_completion") {
+        emptyCompletionCount++;
+        const cooled = markCooldown(model, "empty_completion", null);
+        // أرقام ومعرّفات فقط — لا محتوى ولا تفكير
+        console.error(
+          `[openrouter] failure_kind=empty_completion model_id=${model} ` +
+            `finish_reason=${result.finishReason ?? "none"} text_char_count=${result.textLen ?? 0} ` +
+            `reasoning_present=${result.reasoningPresent ?? false} cooldown_ms=${cooled}`,
+        );
+        continue;
+      }
 
       // تسريب بعد عرض جمل نظيفة — لا خطأ ولا نص مخالف: متابعة صامتة مرة واحدة
       if (result.status === "leak_after_flush") {
@@ -276,7 +301,13 @@ export class OpenRouterProvider implements AIProviderAdapter {
         }
 
         // رد نظيف → سلّمه
-        yield { type: "meta", model: actualModel, mode: "protected", regenerations: 0 };
+        yield {
+          type: "meta",
+          model: actualModel,
+          mode: "protected",
+          regenerations: 0,
+          emptyCompletions: emptyCompletionCount,
+        };
         if (text) yield { type: "text", text };
         if (result.usage) yield { type: "usage", usage: result.usage };
         yield { type: "done" };
@@ -302,6 +333,25 @@ export class OpenRouterProvider implements AIProviderAdapter {
         `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} ` +
           `kind=${lastError.kind}${reason ? ` cooldown=${reason} cooldown_ms=${cooledMs}` : " cooldown=none"}`,
       );
+    }
+
+    // انتهت السلسلة بلا نص صالح. إن كان السبب إكمالات فارغة فليست عطلًا تقنيًا:
+    // نُعيد رسالة عربية واضحة (مع ذكر اسم اللعبة إن عُرف) بدل رسالة فارغة.
+    if (emptyCompletionCount > 0 && !lastError) {
+      const message = buildNoCompletionMessage(userText);
+      console.error(
+        `[openrouter] all attempts empty: count=${emptyCompletionCount} chain=${usable.length}`,
+      );
+      yield {
+        type: "meta",
+        model: usable[usable.length - 1] ?? req.modelId,
+        mode: verified ? "protected" : "general",
+        regenerations: 0,
+        emptyCompletions: emptyCompletionCount,
+      };
+      yield { type: "text", text: message };
+      yield { type: "done" };
+      return;
     }
 
     yield {
@@ -480,6 +530,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let usage: UsageReport | null = null;
     let actualModel = model;
     let full = ""; // الرد الكامل — لا يُعرض قبل اجتياز الحارسَين
+    let finishReason: string | null = null;
+    let reasoningPresent = false; // قيمة منطقية فقط — التفكير لا يُخزَّن ولا يُعرض
     let seg = ""; // ما لم تكتمل منه جملة بعد
     let emitted = ""; // الجمل النظيفة التي عُرضت فعلًا
     let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
@@ -526,7 +578,14 @@ export class OpenRouterProvider implements AIProviderAdapter {
             };
           }
 
-          const text = chunk.choices?.[0]?.delta?.content;
+          const choice = chunk.choices?.[0];
+          if (choice?.finish_reason) finishReason = choice.finish_reason;
+          // وجود التفكير يُسجَّل كقيمة منطقية فقط — لا يُقرأ محتواه ولا يُمرَّر
+          if (choice?.delta?.reasoning || choice?.delta?.reasoning_content) {
+            reasoningPresent = true;
+          }
+
+          const text = choice?.delta?.content;
           if (!text) continue;
           full += text;
           if (opts.buffered) continue; // الوضع المحمي: تجميع بلا عرض
@@ -536,6 +595,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
           for (;;) {
             const { ready, rest } = takeCompleteUnits(seg);
             if (!ready) break;
+            // وحدة بيضاء (مسافات/أسطر فقط) لا تُعرض وحدها — تُضمّ إلى ما بعدها
+            if (ready.trim() === "") break;
             seg = rest;
             const reason = checkSegment(ready);
             if (reason) {
@@ -560,6 +621,18 @@ export class OpenRouterProvider implements AIProviderAdapter {
             overlap = emitted.slice(-GUARD_OVERLAP_CHARS);
           }
         }
+      }
+
+      // إكمال فارغ (لا نص، أو مسافات/أسطر فقط، أو تفكير بلا إجابة) = فشل محاولة.
+      // لا يُمرَّر إلى الحارسَين ولا يُعرض ولا يُحفظ.
+      if (isEmptyCompletion(full)) {
+        return {
+          status: "empty_completion",
+          model: actualModel,
+          finishReason,
+          reasoningPresent,
+          textLen: full.length,
+        };
       }
 
       if (opts.buffered) return { status: "ok", text: full, model: actualModel, usage };

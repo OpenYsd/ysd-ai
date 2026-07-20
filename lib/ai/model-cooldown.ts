@@ -9,19 +9,25 @@
  *   • 429 rate_limit   — حد عابر  → Retry-After إن وُجد، وإلا 15 دقيقة.
  *   • 404 no_free_model — غياب مزوّد مجاني، حالة بنيوية → 6 ساعات.
  *   • 5xx / timeout     — عطل مزوّد → دقيقتان.
+ *   • إكمال فارغ        — النموذج ردّ بلا نص (تفكير بلا إجابة) → دقيقتان.
  *
  * قيد معروف: الحالة في ذاكرة العملية (مثل lib/rate-limit.ts) — لكل نسخة خادم،
  * وتُفقد عند إعادة التشغيل. الكلفة القصوى: محاولة فاشلة واحدة لكل نموذج بعد كل
  * إقلاع. بديلها (تخزين في القاعدة) يعني كتابة عند كل فشل — كلفة أكبر من الفائدة.
  */
 
-export type CooldownReason = "rate_limit" | "no_free_model" | "provider_error";
+export type CooldownReason =
+  | "rate_limit"
+  | "no_free_model"
+  | "provider_error"
+  | "empty_completion";
 
 /** المدد بالميلي ثانية — مبنية على طبيعة الفشل */
 export const COOLDOWN_MS: Readonly<Record<CooldownReason, number>> = {
   rate_limit: 15 * 60_000, // 15 دقيقة (ما لم يُحدد Retry-After)
   no_free_model: 6 * 60 * 60_000, // 6 ساعات
   provider_error: 2 * 60_000, // دقيقتان
+  empty_completion: 2 * 60_000, // دقيقتان — يمنع تكرار الرد الفارغ في كل طلب
 };
 
 /** سقف احترازي: لا نثق بـRetry-After بلا حد — قد يصل بقيمة ضخمة */
