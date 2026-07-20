@@ -22,6 +22,11 @@ export interface ChatRequest {
   temperature?: number;
   /** لإلغاء الطلب من جهة العميل */
   signal?: AbortSignal;
+  /**
+   * مصدر إسناد التفاصيل المتخصصة (v0.6.5 RC7). غيابه = "none" أي معرفة
+   * النموذج وحدها، وهي غير كافية لتمرير المواقع والخطوات والأرقام.
+   */
+  grounding?: { source: "rag" | "knowledge_base" | "tool" | "user_context" | "none"; sourceId?: string };
 }
 
 export interface UsageReport {
@@ -43,6 +48,9 @@ export interface StreamChunk {
   regenerations?: number;
   /** عدد النماذج التي أنهت البثّ بلا نص (مع "meta") — للتسجيل الآمن */
   emptyCompletions?: number;
+  /** حقول داخلية فقط (v0.6.5 RC7) — لا تُعرض للمستخدم */
+  groundingSource?: "rag" | "knowledge_base" | "tool" | "user_context" | "none";
+  protectedDetailBlocked?: boolean;
 }
 
 export interface ModelInfo {

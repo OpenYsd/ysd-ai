@@ -22,6 +22,11 @@ import {
 } from "./uncertainty-guard";
 import { buildNoCompletionMessage, isEmptyCompletion } from "./empty-completion";
 import {
+  STRICT_GROUNDING_SUFFIX,
+  buildUnsourcedMessage,
+  violatesGrounding,
+} from "./grounding-guard";
+import {
   CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
   TRUNCATED_NOTICE,
@@ -181,6 +186,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
     let langRetryUsed = false;
     let uncRetryUsed = false;
+    let groundingRetryUsed = false;
     let emptyCompletionCount = 0;
     let lastError: { kind: string; userMessage: string } | null = null;
 
@@ -300,6 +306,31 @@ export class OpenRouterProvider implements AIProviderAdapter {
           return;
         }
 
+        // حارس الإسناد — تفاصيل متخصصة بلا مصدر موثوق لا تُعرض أصلًا
+        const grounding = req.grounding ?? { source: "none" as const };
+        if (violatesGrounding(text, userText, grounding).violated) {
+          console.error(
+            `[openrouter] unsourced specifics blocked: model=${model} grounding_source=${grounding.source}`,
+          );
+          if (!groundingRetryUsed) {
+            groundingRetryUsed = true;
+            yield* this.regenerateGrounded(req, model, expected, userText, grounding);
+            return;
+          }
+          yield {
+            type: "meta",
+            model: actualModel,
+            mode: "protected",
+            regenerations: 1,
+            emptyCompletions: emptyCompletionCount,
+            groundingSource: grounding.source,
+            protectedDetailBlocked: true,
+          };
+          yield { type: "text", text: buildUnsourcedMessage(userText) };
+          yield { type: "done" };
+          return;
+        }
+
         // رد نظيف → سلّمه
         yield {
           type: "meta",
@@ -307,6 +338,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
           mode: "protected",
           regenerations: 0,
           emptyCompletions: emptyCompletionCount,
+          groundingSource: grounding.source,
+          protectedDetailBlocked: false,
         };
         if (text) yield { type: "text", text };
         if (result.usage) yield { type: "usage", usage: result.usage };
@@ -403,6 +436,60 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
     // فشل الإكمال (تسريب أو عطل تقني) — إنهاء لطيف بلا رسالة خطأ
     yield { type: "text", text: TRUNCATED_NOTICE };
+    yield { type: "done" };
+  }
+
+  /**
+   * إعادة توليد واحدة بعد سقوط حارس الإسناد: يُطلب من النموذج ألا يذكر مواقع
+   * أو خطوات أو أرقامًا غير موثقة وأن يعترف باختصار. إن أصرّ على التفاصيل
+   * غير المُسنَدة تُعرض الرسالة الآمنة المرتبطة بالكيان — بلا تمرير أي تفصيل.
+   */
+  private async *regenerateGrounded(
+    req: ChatRequest,
+    model: string,
+    expected: ReturnType<typeof detectExpectedLanguage>,
+    userText: string,
+    grounding: NonNullable<ChatRequest["grounding"]>,
+  ): AsyncGenerator<StreamChunk> {
+    const strictReq: ChatRequest = {
+      ...req,
+      systemPrompt: (req.systemPrompt ?? "") + STRICT_GROUNDING_SUFFIX,
+    };
+    const r: AttemptResult = yield* this.attempt(
+      strictReq,
+      model,
+      { strictLang: false, strictUnc: true, buffered: true },
+      userText,
+      expected,
+    );
+
+    const meta = (blocked: boolean): StreamChunk => ({
+      type: "meta",
+      model: r.model ?? model,
+      mode: "protected",
+      regenerations: 1,
+      groundingSource: grounding.source,
+      protectedDetailBlocked: blocked,
+    });
+
+    if (r.status === "ok") {
+      const text = (r.text ?? "").trim();
+      const clean =
+        text.length > 0 &&
+        !violatesLanguage(text, expected, userText).violated &&
+        !violatesGrounding(text, userText, grounding).violated;
+      if (clean) {
+        yield meta(false);
+        yield { type: "text", text };
+        if (r.usage) yield { type: "usage", usage: r.usage };
+        yield { type: "done" };
+        return;
+      }
+    }
+
+    // ما زال يذكر تفاصيل غير موثقة (أو تعذّر التوليد) → الرسالة الآمنة وحدها
+    yield meta(true);
+    yield { type: "text", text: buildUnsourcedMessage(userText) };
     yield { type: "done" };
   }
 

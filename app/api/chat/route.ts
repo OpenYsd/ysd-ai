@@ -7,6 +7,7 @@ import { resolveProviderForModel } from "@/lib/ai/registry";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { buildEntityContext, detectEntities } from "@/lib/ai/entity-aliases";
+import { detectUserGrounding } from "@/lib/ai/grounding-guard";
 import {
   buildSourcesContext,
   NO_MATCH_HINT,
@@ -204,6 +205,15 @@ export async function POST(req: NextRequest) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
   }
 
+  // إسناد التفاصيل المتخصصة: مصادر المستخدم أولًا، ثم سياقه الصريح. معرفة
+  // النموذج وحدها ليست إسنادًا — فالتفاصيل غير الموثقة تُمنع في الوضع المحمي.
+  const grounding: NonNullable<Parameters<typeof provider.streamChat>[0]["grounding"]> =
+    ragSnippets.length > 0
+      ? { source: "rag" }
+      : detectUserGrounding(queryText)
+        ? { source: "user_context" }
+        : { source: "none" };
+
   // أسماء الكيانات بالنقحرة («الدن رينق» = Elden Ring): سياق داخلي في الموجّه
   // وحده — رسالة المستخدم المحفوظة والمعروضة والمُرسلة لا تتغير بحرف.
   const entities = detectEntities(queryText);
@@ -257,12 +267,15 @@ export async function POST(req: NextRequest) {
       let answerMode: "general" | "protected" = "general";
       let regenerations = 0;
       let emptyCompletions = 0;
+      let groundingSource: string = grounding.source;
+      let protectedDetailBlocked = false;
 
       try {
         for await (const chunk of provider.streamChat({
           modelId,
           messages: history,
           systemPrompt,
+          grounding,
           signal: req.signal,
         })) {
           if (chunk.type === "text" && chunk.text) {
@@ -281,6 +294,11 @@ export async function POST(req: NextRequest) {
             if (chunk.mode) answerMode = chunk.mode;
             if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
             if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
+            // حقول داخلية فقط — تُسجَّل ولا تُرسل للعميل
+            if (chunk.groundingSource) groundingSource = chunk.groundingSource;
+            if (typeof chunk.protectedDetailBlocked === "boolean") {
+              protectedDetailBlocked = chunk.protectedDetailBlocked;
+            }
             // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
@@ -334,6 +352,7 @@ export async function POST(req: NextRequest) {
           `[chat] rid=${requestId} model=${actualModelId ?? modelId} fallback_count=${fallbackCount} ` +
             `mode=${answerMode} regeneration_count=${regenerations} ` +
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
+            `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
             `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
         );
       } catch (err) {
