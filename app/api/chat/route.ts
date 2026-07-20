@@ -6,6 +6,7 @@ import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
+import { buildEntityContext, detectEntities } from "@/lib/ai/entity-aliases";
 import {
   buildSourcesContext,
   NO_MATCH_HINT,
@@ -201,6 +202,17 @@ export async function POST(req: NextRequest) {
     systemPrompt = `${systemPrompt}\n\n${buildSourcesContext(ragSnippets)}`;
   } else if (ragSearchedNoMatch) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
+  }
+
+  // أسماء الكيانات بالنقحرة («الدن رينق» = Elden Ring): سياق داخلي في الموجّه
+  // وحده — رسالة المستخدم المحفوظة والمعروضة والمُرسلة لا تتغير بحرف.
+  const entities = detectEntities(queryText);
+  if (entities.length > 0) {
+    systemPrompt = `${systemPrompt}\n\n${buildEntityContext(entities)}`;
+    // سجل آمن: الاسم الموحّد فقط — لا نص المستخدم
+    console.log(
+      `[chat] rid=${requestId} entities=${entities.map((e) => e.canonical).join(",")}`,
+    );
   }
 
   // 9) بث الرد عبر SSE
