@@ -242,6 +242,34 @@ describe("★ RC3 — تسريب بعد عرض جمل نظيفة", () => {
     expect(out.some((c) => c.type === "error")).toBe(false);
   });
 
+  it("★ RC4: نموذج الاحتياط يعيد الرد من أوله ثم يكمل → لا تكرار في الناتج", async () => {
+    // ما سيُعرض نظيفًا قبل التسريب
+    const shown = CLEAN.trim();
+    const restart = `${shown} ثم سقط التنين أرضًا وساد الصمت.`;
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(restart, FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    const text = joinText(out);
+    expect(countOf(text, "وقف الفارس أمام التنين")).toBe(1); // البداية لم تتكرر
+    expect(countOf(text, "لمع سيفه تحت ضوء الفجر")).toBe(1);
+    expect(text).toContain("ثم سقط التنين أرضًا وساد الصمت."); // الجديد ظهر
+    expect(out.some((c) => c.type === "error")).toBe(false);
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it("★ RC4: تكملة مكررة بالكامل بلا جديد → عبارة الجودة فقط بلا تكرار", async () => {
+    fetchMock
+      .mockResolvedValueOnce(sseResponse(LEAKY_REPLY, FREE_MODEL_CHAIN[0]!))
+      .mockResolvedValueOnce(sseResponse(CLEAN.trim(), FREE_MODEL_CHAIN[1]!));
+    const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
+    const text = joinText(out);
+    expect(countOf(text, "وقف الفارس أمام التنين")).toBe(1); // لم يتكرر شيء
+    expect(text).toContain("توقفت هنا للحفاظ على جودة الرد.");
+    expect(out.some((c) => c.type === "error")).toBe(false);
+    expect(fetchMock.mock.calls.length).toBe(2); // متابعة واحدة فقط
+  });
+
   it("★ الكتابة الإبداعية النظيفة تظل streaming بلا تدخّل", async () => {
     const clean = "وقف الفارس أمام التنين. لمع سيفه تحت ضوء الفجر. ثم سقط التنين أرضًا.";
     fetchMock.mockResolvedValueOnce(sseResponse(clean, FREE_MODEL_CHAIN[0]!));

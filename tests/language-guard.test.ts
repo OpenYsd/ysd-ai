@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  dedupeContinuation,
   detectExpectedLanguage,
   findStrayLatinWords,
   scriptRatios,
@@ -176,8 +177,88 @@ describe("★ RC3 — وحدات الجمل وفحصها", () => {
 
   it("stripRepeatedPrefix: يزيل ما أُعيد من النص المعروض", () => {
     const emitted = "وقف الفارس أمام التنين. لمع سيفه تحت ضوء الفجر. ";
-    expect(stripRepeatedPrefix(emitted, "لمع سيفه تحت ضوء الفجر. ثم صمد.")).toBe("ثم صمد.");
-    expect(stripRepeatedPrefix(emitted, "ثم صمد.")).toBe("ثم صمد."); // بلا تكرار يبقى كما هو
+    expect(stripRepeatedPrefix(emitted, "لمع سيفه تحت ضوء الفجر. ثم صمد أمام اللهب الحارق.")).toBe(
+      "ثم صمد أمام اللهب الحارق.",
+    );
+    // بلا تكرار يبقى كما هو
+    expect(stripRepeatedPrefix(emitted, "ثم صمد أمام اللهب الحارق.")).toBe(
+      "ثم صمد أمام اللهب الحارق.",
+    );
+  });
+});
+
+// ── v0.6.5 RC4: تنقية التكملة على مستوى الكلمات ───────────────────────────
+describe("★ RC4 — dedupeContinuation يمنع تكرار المتابعة", () => {
+  const EMITTED =
+    "وقف الفارس أمام التنين الضخم. لمع سيفه تحت ضوء الفجر الباهت.\n\n" +
+    "اندفع نحو الوحش وضرب الحراشف الصلبة بكل قوته.\n\n";
+  const NEW_PART = "ثم سقط التنين أرضًا وساد الصمت في الوادي.";
+
+  it("★ إعادة النص كاملًا حرفيًا ثم تكملة → يبقى الجديد فقط", () => {
+    const d = dedupeContinuation(EMITTED, EMITTED + NEW_PART);
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ إعادة النص كاملًا باختلاف المسافات والأسطر → يبقى الجديد فقط", () => {
+    const messy = EMITTED.replace(/\s+/g, " ").replace(/\. /g, ".\n") + NEW_PART;
+    const d = dedupeContinuation(EMITTED, messy);
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ إعادة البداية باختلاف علامات الترقيم والتشكيل → يبقى الجديد فقط", () => {
+    const repunct =
+      "وقفَ الفارس أمام التنين الضخم، لمع سيفه تحت ضوء الفجر الباهت! " +
+      "اندفع نحو الوحش وضرب الحراشف الصلبة بكل قوته… " +
+      NEW_PART;
+    const d = dedupeContinuation(EMITTED, repunct);
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ إعادة آخر فقرة فقط → تُقتطع ويبقى الجديد", () => {
+    const d = dedupeContinuation(
+      EMITTED,
+      "اندفع نحو الوحش وضرب الحراشف الصلبة بكل قوته. " + NEW_PART,
+    );
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ تداخل آخر جملة مع بداية التكملة → يُقتطع التداخل", () => {
+    const d = dedupeContinuation(EMITTED, "وضرب الحراشف الصلبة بكل قوته. " + NEW_PART);
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ تكملة جديدة صحيحة لا تُحذف", () => {
+    const d = dedupeContinuation(EMITTED, NEW_PART);
+    expect(d.ok).toBe(true);
+    expect(d.text).toBe(NEW_PART);
+  });
+
+  it("★ تكملة مكررة بالكامل بلا جديد → تُرفض", () => {
+    const d = dedupeContinuation(EMITTED, EMITTED);
+    expect(d.ok).toBe(false);
+    expect(d.reason).toBe("no_new");
+    expect(d.text).toBe("");
+  });
+
+  it("★ تكملة أغلبها تكرار مبعثر → تُرفض بشبكة الأمان", () => {
+    // لا تبدأ بإعادة صريحة، لكنها تعيد فقرة كاملة من المعروض
+    const d = dedupeContinuation(EMITTED, "وبعد لحظة، اندفع نحو الوحش وضرب الحراشف الصلبة بكل قوته.");
+    expect(d.ok).toBe(false);
+    expect(d.reason).toBe("duplicate");
+  });
+
+  it("لا يتكرر أي مقطع في الناتج النهائي", () => {
+    const d = dedupeContinuation(EMITTED, EMITTED + NEW_PART);
+    const finalText = EMITTED + d.text;
+    const countOf = (h: string, n: string) => h.split(n).length - 1;
+    expect(countOf(finalText, "وقف الفارس أمام التنين")).toBe(1);
+    expect(countOf(finalText, "اندفع نحو الوحش")).toBe(1);
+    expect(countOf(finalText, "لمع سيفه")).toBe(1);
   });
 });
 

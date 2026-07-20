@@ -24,7 +24,7 @@ import {
   CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
   TRUNCATED_NOTICE,
-  stripRepeatedPrefix,
+  dedupeContinuation,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -338,14 +338,17 @@ export class OpenRouterProvider implements AIProviderAdapter {
     );
 
     if (r.status === "ok") {
-      // انزع ما أعاده النموذج من نص سبق عرضه، ثم افحص التكملة كاملة
-      const cont = stripRepeatedPrefix(emitted, (r.text ?? "").trim());
-      if (cont && !violatesLanguage(cont, expected, userText).violated) {
-        yield { type: "text", text: (/\s$/.test(emitted) ? "" : " ") + cont };
+      // انزع ما أعاده النموذج من نص سبق عرضه (مقارنة على مستوى الكلمات)،
+      // ثم افحص التكملة لغويًا. أي شكّ في التكرار → لا تُعرض إطلاقًا.
+      const d = dedupeContinuation(emitted, r.text ?? "");
+      if (d.ok && !violatesLanguage(d.text, expected, userText).violated) {
+        yield { type: "text", text: (/\s$/.test(emitted) ? "" : " ") + d.text };
         if (r.usage) yield { type: "usage", usage: r.usage };
         yield { type: "done" };
         return;
       }
+      // رمز القرار فقط — بلا نص الرد ولا الكلمة المخالفة
+      console.error(`[openrouter] continuation rejected: reason=${d.ok ? "language" : d.reason}`);
     }
 
     // فشل الإكمال (تسريب أو عطل تقني) — إنهاء لطيف بلا رسالة خطأ

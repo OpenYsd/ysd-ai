@@ -223,22 +223,144 @@ export function takeCompleteUnits(buffer: string): { ready: string; rest: string
 }
 
 /**
- * يزيل ما أعاده نموذج الاحتياط من نص سبق عرضه، فلا يتكرر أمام المستخدم.
- * يجرّب أولًا إيجاد ذيل المعروض داخل التكملة (يغطي الإعادة الكاملة)، ثم أطول
- * تداخل بين ذيل المعروض وصدر التكملة.
+ * تنقية التكملة (v0.6.5 RC4) — المقارنة على مستوى **الكلمات** لا الحروف.
+ *
+ * الإصدار السابق كان يطابق حرفيًا، فسقط حيًّا حين أعاد نموذج الاحتياط الردَّ من
+ * أوله: ذيل المعروض ينتهي بفاصل فقرة لم يُعِده النموذج بنفس الصورة، ولا يوجد
+ * تداخل بين ذيل المعروض وصدر التكملة — فلم يُقتطع شيء وظهر الرد مرتين.
+ *
+ * التطبيع يُهمل المسافات والأسطر المتكررة وعلامات الترقيم والاقتباس والتشكيل
+ * والتطويل، ويوحّد صور الألف والياء والهاء — وكلّه للمقارنة فقط، والنص المعروض
+ * يبقى كما ولّده النموذج.
  */
+const ARABIC_MARKS = /[ً-ْٰـ]/g;
+
+function normalizeWord(w: string): string {
+  return w
+    .replace(ARABIC_MARKS, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ئ/g, "ي")
+    .replace(/ؤ/g, "و")
+    .replace(/ة/g, "ه")
+    .toLowerCase();
+}
+
+interface WordTok {
+  w: string;
+  start: number;
+}
+
+/** كلمات النص مع مواضعها — الترقيم والمسافات فواصل تُهمل تمامًا */
+function tokenizeWords(s: string): WordTok[] {
+  const out: WordTok[] = [];
+  const re = /[\p{L}\p{N}\p{M}]+/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const w = normalizeWord(m[0]);
+    if (w) out.push({ w, start: m.index });
+  }
+  return out;
+}
+
+/** أطول تطابق متصل بين متتاليتَي كلمات (لقياس نسبة التكرار) */
+function longestCommonRun(a: WordTok[], b: WordTok[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  const A = Math.min(a.length, 600);
+  const B = Math.min(b.length, 600);
+  let prev = new Array<number>(B + 1).fill(0);
+  let best = 0;
+  for (let i = 1; i <= A; i++) {
+    const cur = new Array<number>(B + 1).fill(0);
+    for (let j = 1; j <= B; j++) {
+      if (a[i - 1]!.w === b[j - 1]!.w) {
+        const v = (prev[j - 1] ?? 0) + 1;
+        cur[j] = v;
+        if (v > best) best = v;
+      }
+    }
+    prev = cur;
+  }
+  return best;
+}
+
+/** أقل تداخل يُعتدّ به عند نهاية المعروض */
+const MIN_OVERLAP_WORDS = 4;
+/** أقل بادئة تُعدّ «إعادة من البداية» */
+const MIN_RESTART_WORDS = 5;
+/** أقل نص جديد مفيد يستحق العرض */
+const MIN_NEW_WORDS = 3;
+/** فوق هذه النسبة من التكرار المتصل تُرفض التكملة */
+const MAX_DUPLICATE_RATIO = 0.5;
+
+export interface DedupeResult {
+  text: string;
+  /** هل تصلح التكملة للعرض؟ */
+  ok: boolean;
+  /** رمز القرار فقط — لا يحمل نصًا ولا كلمة مخالفة */
+  reason: "ok" | "empty" | "no_new" | "duplicate";
+}
+
+/**
+ * تُرجع الجزء الجديد فقط من تكملة نموذج الاحتياط، أو ترفضها كلها.
+ * تكشف حالتين: إعادة الرد من بدايته، وتداخل ذيل المعروض مع صدر التكملة.
+ */
+export function dedupeContinuation(emitted: string, cont: string): DedupeResult {
+  const c = cont.trim();
+  if (!c) return { text: "", ok: false, reason: "empty" };
+  if (!emitted.trim()) return { text: c, ok: true, reason: "ok" };
+
+  const E = tokenizeWords(emitted);
+  const C = tokenizeWords(c);
+  if (C.length === 0) return { text: "", ok: false, reason: "empty" };
+
+  // (١) إعادة من البداية: أطول بادئة مشتركة بين صدر التكملة وصدر المعروض
+  let head = 0;
+  while (head < C.length && head < E.length && C[head]!.w === E[head]!.w) head++;
+
+  // (٢) تداخل: أطول L بحيث أول L كلمة من التكملة = آخر L كلمة من المعروض
+  let overlap = 0;
+  const maxL = Math.min(C.length, E.length, 400);
+  for (let L = maxL; L >= MIN_OVERLAP_WORDS; L--) {
+    let same = true;
+    for (let i = 0; i < L; i++) {
+      if (C[i]!.w !== E[E.length - L + i]!.w) {
+        same = false;
+        break;
+      }
+    }
+    if (same) {
+      overlap = L;
+      break;
+    }
+  }
+
+  const cut = Math.max(
+    head >= MIN_RESTART_WORDS ? head : 0,
+    overlap >= MIN_OVERLAP_WORDS ? overlap : 0,
+  );
+
+  if (C.length - cut < MIN_NEW_WORDS) return { text: "", ok: false, reason: "no_new" };
+
+  const text = c
+    .slice(C[cut]!.start)
+    .replace(/^[\s\p{P}]+/u, "")
+    .trim();
+  if (!text) return { text: "", ok: false, reason: "no_new" };
+
+  // (٣) شبكة أمان: ما تبقّى ما زال يكرّر المعروض بنسبة كبيرة → لا يُعرض
+  const rest = tokenizeWords(text);
+  if (rest.length < MIN_NEW_WORDS) return { text: "", ok: false, reason: "no_new" };
+  if (longestCommonRun(rest, E) / rest.length >= MAX_DUPLICATE_RATIO) {
+    return { text: "", ok: false, reason: "duplicate" };
+  }
+
+  return { text, ok: true, reason: "ok" };
+}
+
+/** غلاف نصّي مباشر فوق dedupeContinuation */
 export function stripRepeatedPrefix(emitted: string, cont: string): string {
-  if (!emitted || !cont) return cont;
-  const tailRaw = emitted.slice(-40);
-  if (tailRaw.length >= 20) {
-    const idx = cont.indexOf(tailRaw);
-    if (idx >= 0) return cont.slice(idx + tailRaw.length).replace(/^\s+/, "");
-  }
-  const maxOv = Math.min(300, emitted.length, cont.length);
-  for (let L = maxOv; L >= 20; L--) {
-    if (emitted.slice(-L) === cont.slice(0, L)) return cont.slice(L).replace(/^\s+/, "");
-  }
-  return cont;
+  return dedupeContinuation(emitted, cont).text;
 }
 
 /** يُلحق بالموجّه عند طلب متابعة الرد بعد تسريب — بلا إعادة بداية */
