@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.production.yml --env-file <ملفك> up -d
 #
-# الصورة المعتمدة: ysd-ai:0.6.4 (1.01GB) — خادم Node دائم، غير root،
+# الصورة المعتمدة: ysd-ai:0.6.5 (1.01GB) — خادم Node دائم، غير root،
 # RAG مُختبَر حيًا داخلها (رفع → استخراج → embeddings → بحث دلالي).
 #
 # ⚠️ ملف البيئة يبقى **خارج** المستودع وخارج الصورة. .dockerignore يُخرج .env*
@@ -12,7 +12,7 @@
 
 services:
   ysd-ai:
-    image: ysd-ai:0.6.4
+    image: ysd-ai:0.6.5
     container_name: ysd-ai
 
     # لا build هنا عمدًا: الصورة تُبنى بـ build args (NEXT_PUBLIC_* تُحقَن في حزمة
