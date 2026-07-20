@@ -51,6 +51,10 @@ export interface StreamChunk {
   /** حقول داخلية فقط (v0.6.5 RC7) — لا تُعرض للمستخدم */
   groundingSource?: "rag" | "knowledge_base" | "tool" | "user_context" | "none";
   protectedDetailBlocked?: boolean;
+  /** v0.6.5 RC8: رُدّ بلا أي نداء للمزوّد (اختصار الوضع المحمي بلا مصدر) */
+  shortCircuit?: boolean;
+  /** عدد طلبات التوليد الفعلية المرسلة للمزوّد في هذا الرد */
+  providerCalls?: number;
 }
 
 export interface ModelInfo {

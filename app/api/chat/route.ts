@@ -269,6 +269,8 @@ export async function POST(req: NextRequest) {
       let emptyCompletions = 0;
       let groundingSource: string = grounding.source;
       let protectedDetailBlocked = false;
+      let shortCircuit = false;
+      let providerCalls = -1;
 
       try {
         for await (const chunk of provider.streamChat({
@@ -299,6 +301,8 @@ export async function POST(req: NextRequest) {
             if (typeof chunk.protectedDetailBlocked === "boolean") {
               protectedDetailBlocked = chunk.protectedDetailBlocked;
             }
+            if (typeof chunk.shortCircuit === "boolean") shortCircuit = chunk.shortCircuit;
+            if (typeof chunk.providerCalls === "number") providerCalls = chunk.providerCalls;
             // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
@@ -353,6 +357,8 @@ export async function POST(req: NextRequest) {
             `mode=${answerMode} regeneration_count=${regenerations} ` +
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
+            `protected_short_circuit=${shortCircuit} provider_calls=${providerCalls} ` +
+            `total_response_ms=${Date.now() - tStart} ` +
             `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
         );
       } catch (err) {

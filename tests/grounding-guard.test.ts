@@ -133,29 +133,17 @@ describe("★ RC7 داخل مسار البثّ — الوضع المحمي", () 
     messages: [{ role: "user" as const, content: WM_Q }],
   });
 
-  it("★ رد واثق مختلَق بلا مصدر → لا يظهر، وإعادة توليد واحدة ثم الرسالة الآمنة", async () => {
-    fetchMock
-      .mockResolvedValueOnce(sse(FABRICATED, FREE_MODEL_CHAIN[0]!))
-      .mockResolvedValueOnce(sse(FABRICATED, FREE_MODEL_CHAIN[0]!)); // أصرّ على التفاصيل
+  // ملاحظة (RC8): صار المنع يسبق النداء — سؤال محمي بلا مصدر لا يصل المزوّد
+  // إطلاقًا، فمسار «التوليد ثم الحجب» لم يعد يُبلَغ من هنا. اختبارات
+  // violatesGrounding أعلاه تبقى عقد الحارس كشبكة أمان.
+  it("★ رد مختلَق بلا مصدر: لا يُطلب من المزوّد أصلًا، والرسالة الآمنة فورًا", async () => {
+    fetchMock.mockResolvedValue(sse(FABRICATED, FREE_MODEL_CHAIN[0]!));
     const out = await collect(new OpenRouterProvider().streamChat(protectedReq()));
     const text = joinText(out);
+    expect(fetchMock.mock.calls.length).toBe(0); // صفر طلبات توليد
     expect(text).not.toContain("Siofra"); // ولا شظية من التفاصيل
     expect(text).not.toContain("جدار");
     expect(text).toBe(SAFE_MSG);
-    expect(fetchMock.mock.calls.length).toBe(2); // إعادة توليد واحدة فقط
-  });
-
-  it("★ إعادة التوليد تُنتج اعترافًا نظيفًا → يُعرض بلا تفاصيل", async () => {
-    fetchMock
-      .mockResolvedValueOnce(sse(FABRICATED, FREE_MODEL_CHAIN[0]!))
-      .mockResolvedValueOnce(
-        sse("لست متأكدًا من الطريقة الدقيقة، ولا أريد إعطاءك معلومة خاطئة.", FREE_MODEL_CHAIN[0]!),
-      );
-    const out = await collect(new OpenRouterProvider().streamChat(protectedReq()));
-    const text = joinText(out);
-    expect(text).not.toContain("Siofra");
-    expect(text).toContain("لست متأكد");
-    expect(fetchMock.mock.calls.length).toBe(2);
   });
 
   it("★ التفاصيل المرفوضة لا تصل المستخدم إطلاقًا (فلا تُحفظ)", async () => {

@@ -321,12 +321,21 @@ describe("★ اختيار الوضع — البثّ العام بلا تأخي�
   });
 });
 
+// RC8: الوضع المحمي بلا مصدر لا يصل المزوّد إطلاقًا (اختصار). لاختبار حارس
+// عدم اليقين على ردّ نموذج فعلي نمرّر إسنادًا — الحارس مستقل عن الإسناد.
+const GROUNDED_SPECIFIC_REQ = (modelId: string) => ({
+  ...SPECIFIC_REQ(modelId),
+  grounding: { source: "rag" as const },
+});
+
 describe("★ حارس عدم اليقين — إعادة توليد صارمة ثم رسالة آمنة", () => {
   it("تخمين متحفّظ لتفاصيل دقيقة → إعادة توليد صارمة تُنتج اعترافًا آمنًا فيُعرض", async () => {
     fetchMock
       .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
       .mockResolvedValueOnce(sseResponse(SAFE_HEDGE, FREE_MODEL_CHAIN[0]!));
-    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const out = await collect(
+      new OpenRouterProvider().streamChat(GROUNDED_SPECIFIC_REQ(YSD_FREE_MODEL_ID)),
+    );
     const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
     expect(text).toMatch(/لست متأكد/); // الاعتراف الآمن وصل
     expect(text).not.toMatch(/كنيسة إيلله|اذهب إلى/); // المواقع/الخطوات المتحفّظة لم تصل
@@ -337,7 +346,9 @@ describe("★ حارس عدم اليقين — إعادة توليد صارمة 
     fetchMock
       .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
       .mockResolvedValueOnce(sseResponse(SAFE_HEDGE, FREE_MODEL_CHAIN[0]!));
-    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const out = await collect(
+      new OpenRouterProvider().streamChat(GROUNDED_SPECIFIC_REQ(YSD_FREE_MODEL_ID)),
+    );
     const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
     // ولا شظية من النص المتحفّظ المخمِّن ظهرت
     expect(text).not.toContain("المنطقة الشمالية");
@@ -349,7 +360,9 @@ describe("★ حارس عدم اليقين — إعادة توليد صارمة 
     fetchMock
       .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!))
       .mockResolvedValueOnce(sseResponse(HEDGED_SPECIFIC, FREE_MODEL_CHAIN[0]!));
-    const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
+    const out = await collect(
+      new OpenRouterProvider().streamChat(GROUNDED_SPECIFIC_REQ(YSD_FREE_MODEL_ID)),
+    );
     const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
     expect(text).toBe(UNCERTAINTY_FALLBACK_MESSAGE); // استُبدل التخمين بالرسالة الآمنة
     expect(text).not.toMatch(/كنيسة إيلله|اذهب إلى/);
@@ -359,17 +372,13 @@ describe("★ حارس عدم اليقين — إعادة توليد صارمة 
   // ملاحظة (RC7): كان هذا الاختبار يثبت مرور رد واثق بتفاصيل بلا مصدر — وهو
   // بالضبط العطل الذي رُصد حيًّا (Siofra River المختلَق). العقد الآن: في الوضع
   // المحمي لا تمرّ التفاصيل المتخصصة إلا بإسناد موثوق.
-  it("★ رد واثق بتفاصيل بلا مصدر يُمنع في الوضع المحمي", async () => {
-    const confident =
-      "للحصول على القناع الأبيض اهزم العدو الذي يحمله في الموقع المحدد، ثم جهّزه في خانة درع الرأس.";
-    fetchMock
-      .mockResolvedValueOnce(sseResponse(confident, FREE_MODEL_CHAIN[0]!))
-      .mockResolvedValueOnce(sseResponse(confident, FREE_MODEL_CHAIN[0]!));
+  // RC8: صار المنع **قبل** النداء — لا إعادة توليد ولا نداء أصلًا.
+  it("★ رد واثق بتفاصيل بلا مصدر: لا يصل المزوّد إطلاقًا", async () => {
     const out = await collect(new OpenRouterProvider().streamChat(SPECIFIC_REQ(YSD_FREE_MODEL_ID)));
     const text = out.filter((c) => c.type === "text").map((c) => c.text).join("");
-    expect(text).not.toContain("الموقع المحدد"); // التفاصيل لم تصل
-    expect(text).toMatch(/لست متأكد|غير متأكد/); // رسالة آمنة بدلها
-    expect(fetchMock.mock.calls.length).toBe(2); // إعادة توليد واحدة فقط
+    expect(fetchMock.mock.calls.length).toBe(0); // اختصار: صفر طلبات
+    expect(text).not.toContain("الموقع المحدد");
+    expect(text).toMatch(/لست متأكد|غير متأكد/);
   });
 
   it("★ الرد الواثق نفسه يمرّ كما هو حين يكون مُسنَدًا", async () => {

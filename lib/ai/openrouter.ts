@@ -112,6 +112,11 @@ interface SSEDelta {
   error?: { message?: string };
 }
 
+/** عدّاد طلبات التوليد الفعلية — يُمرَّر بالمرجع عبر كل المحاولات */
+interface ProviderStats {
+  providerCalls: number;
+}
+
 /** نتيجة محاولة واحدة مع نموذج واحد — الرد الكامل يُرجَّع للفحص في streamChat */
 interface AttemptResult {
   status:
@@ -193,6 +198,32 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // اختيار الوضع: المحمي (تجميع + فحص قبل العرض) للأسئلة المتخصصة فقط،
     // والبثّ الفوري لكل ما عداها — فلا تدفع المحادثة العامة ثمن التحقق.
     const verified = needsVerifiedMode(userText);
+    const groundingSource = req.grounding?.source ?? "none";
+    const stats: ProviderStats = { providerCalls: 0 };
+
+    /**
+     * اختصار الوضع المحمي (v0.6.5 RC8): سؤال متخصص بلا أي مصدر موثوق.
+     * النتيجة محسومة سلفًا — حارس الإسناد سيمنع أي تفاصيل مهما ولّد النموذج —
+     * فنداء المزوّد انتظار بلا فائدة (قِيس حيًّا: 129 ثانية ثم الرسالة الآمنة
+     * نفسها). نردّ فورًا بلا أي طلب توليد.
+     */
+    if (verified && groundingSource === "none") {
+      yield { type: "status", text: VERIFYING_STATUS_MESSAGE };
+      yield {
+        type: "meta",
+        model: req.modelId,
+        mode: "protected",
+        regenerations: 0,
+        emptyCompletions: 0,
+        groundingSource: "none",
+        protectedDetailBlocked: true,
+        shortCircuit: true,
+        providerCalls: 0,
+      };
+      yield { type: "text", text: buildUnsourcedMessage(userText) };
+      yield { type: "done" };
+      return;
+    }
 
     // تخطٍّ **قبل** أي طلب: نموذج مهدّأ لا يُرسَل إليه أصلًا.
     const usable = chain.filter((m) => !isCoolingDown(m));
@@ -222,6 +253,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         { strictLang: langRetryUsed, strictUnc: uncRetryUsed, buffered: verified },
         userText,
         expected,
+        stats,
       );
 
       if (result.status === "aborted") return;
@@ -247,7 +279,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         const next = usable[i + 1];
         if (!langRetryUsed && next) {
           langRetryUsed = true; // احتياط لغوي واحد فقط
-          yield* this.continueAfterLeak(req, next, expected, userText, result.emitted ?? "");
+          yield* this.continueAfterLeak(req, next, expected, userText, result.emitted ?? "", stats);
           return;
         }
         // لا احتياط متاح — إنهاء لطيف عند آخر جملة نظيفة
@@ -296,7 +328,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
           console.error(`[openrouter] uncertainty guard tripped: model=${model}`);
           if (!uncRetryUsed) {
             uncRetryUsed = true;
-            yield* this.regenerateStrict(req, model, expected, userText);
+            yield* this.regenerateStrict(req, model, expected, userText, stats);
             return;
           }
           // سبق أن أُعيد التوليد بصرامة وما زال يخمّن → رسالة عدم تأكّد آمنة
@@ -314,7 +346,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
           );
           if (!groundingRetryUsed) {
             groundingRetryUsed = true;
-            yield* this.regenerateGrounded(req, model, expected, userText, grounding);
+            yield* this.regenerateGrounded(req, model, expected, userText, grounding, stats);
             return;
           }
           yield {
@@ -405,6 +437,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     expected: ReturnType<typeof detectExpectedLanguage>,
     userText: string,
     emitted: string,
+    stats: ProviderStats,
   ): AsyncGenerator<StreamChunk> {
     const contReq: ChatRequest = {
       ...req,
@@ -418,6 +451,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       { strictLang: true, strictUnc: false, buffered: true },
       userText,
       expected,
+      stats,
     );
 
     if (r.status === "ok") {
@@ -450,6 +484,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     expected: ReturnType<typeof detectExpectedLanguage>,
     userText: string,
     grounding: NonNullable<ChatRequest["grounding"]>,
+    stats: ProviderStats,
   ): AsyncGenerator<StreamChunk> {
     const strictReq: ChatRequest = {
       ...req,
@@ -461,6 +496,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       { strictLang: false, strictUnc: true, buffered: true },
       userText,
       expected,
+      stats,
     );
 
     const meta = (blocked: boolean): StreamChunk => ({
@@ -503,6 +539,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     model: string,
     expected: ReturnType<typeof detectExpectedLanguage>,
     userText: string,
+    stats: ProviderStats,
   ): AsyncGenerator<StreamChunk> {
     const retry: AttemptResult = yield* this.attempt(
       req,
@@ -510,6 +547,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       { strictLang: false, strictUnc: true, buffered: true },
       userText,
       expected,
+      stats,
     );
 
     if (retry.status === "ok") {
@@ -553,6 +591,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     opts: { strictLang: boolean; strictUnc: boolean; buffered: boolean },
     userText: string,
     expected: ReturnType<typeof detectExpectedLanguage>,
+    stats: ProviderStats,
   ): AsyncGenerator<StreamChunk, AttemptResult> {
     const system =
       (req.systemPrompt ?? "") +
@@ -571,6 +610,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     req.signal?.addEventListener("abort", onClientAbort);
 
     let res: Response;
+    stats.providerCalls++; // طلب توليد فعلي واحد
     try {
       res = await fetch(API_URL, {
         method: "POST",
