@@ -20,6 +20,7 @@ import {
 } from "@/lib/rag/retrieval";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequest, recordRequestMessage } from "@/lib/chat/idempotency";
+import { recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -52,7 +53,12 @@ export async function POST(req: NextRequest) {
   const tAuth = Date.now();
   const ctx = await getRequestContext(await headers(), supabase);
   const authMs = Date.now() - tAuth;
-  if (!ctx) return json({ error: "انتهت جلستك. سجّل الدخول من جديد.", code: "auth_expired" }, 401);
+  if (!ctx) {
+    // جلسة انتهت أثناء الاستخدام — عدّاد فقط، بلا هوية. (الوسيط يعمل في Edge
+    // بذاكرة منفصلة، فالتسجيل هنا حيث تُقرأ المقاييس فعلًا.)
+    recordAbruptSessionEnd();
+    return json({ error: "انتهت جلستك. سجّل الدخول من جديد.", code: "auth_expired" }, 401);
+  }
   const userId = ctx.userId;
 
   // 2) Rate limiting
@@ -308,6 +314,7 @@ export async function POST(req: NextRequest) {
       let protectedDetailBlocked = false;
       let shortCircuit = false;
       let providerCalls = -1;
+      let lastErrorCode: string | null = null;
 
       try {
         for await (const chunk of provider.streamChat({
@@ -352,7 +359,8 @@ export async function POST(req: NextRequest) {
             });
           } else if (chunk.type === "error") {
             // الرمز يسمح للواجهة بعرض رسالة مناسبة لكل حالة بدل «تعذر الاتصال»
-            send({ type: "error", error: chunk.error, code: chunk.errorCode ?? "unknown" });
+            lastErrorCode = chunk.errorCode ?? "unknown";
+            send({ type: "error", error: chunk.error, code: lastErrorCode });
           }
         }
 
@@ -400,6 +408,18 @@ export async function POST(req: NextRequest) {
             `provider_first_byte_ms=${providerFirstByteMs} ` +
             `total_first_text_ms=${totalFirstTokenMs} total_response_ms=${Date.now() - tStart}`,
         );
+
+        // مقياس للوحة المراقبة — أرقام ورموز فقط، بلا أي نص أو هوية
+        recordChatMetric({
+          at: Date.now(),
+          firstTextMs: totalFirstTokenMs,
+          totalMs: Date.now() - tStart,
+          errorCode: lastErrorCode,
+          fallbackCount,
+          providerCalls,
+          mode: answerMode,
+          shortCircuit,
+        });
       } catch (err) {
         console.error("[chat] stream failed:", err);
         send({ type: "error", error: "حدث خطأ أثناء توليد الرد.", code: "unknown" });

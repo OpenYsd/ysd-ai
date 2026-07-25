@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   BarChart3,
   Database,
   FileStack,
@@ -20,6 +21,7 @@ const ITEMS = [
   { href: "/admin/models", label: "النماذج", labelEn: "Models", icon: Database },
   { href: "/admin/rag", label: "RAG", labelEn: "RAG", icon: FileStack },
   { href: "/admin/usage", label: "الاستهلاك", labelEn: "Usage", icon: Gauge },
+  { href: "/admin/health", label: "صحة المحادثة", labelEn: "Health", icon: Activity },
   { href: "/admin/invites", label: "الدعوات", labelEn: "Invites", icon: Mail },
   { href: "/admin/audit", label: "سجل التدقيق", labelEn: "Audit", icon: ScrollText },
   { href: "/admin/settings", label: "الإعدادات", labelEn: "Settings", icon: Settings },
