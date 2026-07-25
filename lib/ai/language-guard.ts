@@ -201,23 +201,72 @@ export function violatesStreamUnit(
 export const STREAM_UNIT_MAX_CHARS = 240;
 
 /**
+ * هل النقطة عند الموضع i نهاية جملة فعلية؟
+ * ليست كذلك في حالتين شائعتين تُنتجان وحدات مبتورة:
+ *   • مُعلّم قائمة مرقّمة في أول السطر: «1.» أو «2)» — النقطة جزء من المُعلّم.
+ *   • رقم عشري: «3.5» — النقطة بين رقمين.
+ */
+function isSentenceEnd(buffer: string, i: number): boolean {
+  const ch = buffer[i] ?? "";
+  if (!/[.!?؟…\n؛]/.test(ch)) return false;
+  if (ch !== ".") return true;
+
+  const next = buffer[i + 1] ?? "";
+  const prev = buffer[i - 1] ?? "";
+  if (/\d/.test(prev) && /\d/.test(next)) return false; // رقم عشري
+
+  if (/\d/.test(prev)) {
+    // ابحث عن بداية الرقم ثم تحقّق أنه في أول السطر → مُعلّم قائمة
+    let j = i - 1;
+    while (j >= 0 && /\d/.test(buffer[j] ?? "")) j--;
+    const before = buffer.slice(0, j + 1);
+    if (/(^|\n)[ \t]*$/.test(before)) return false; // «1.» في أول السطر
+  }
+  return true;
+}
+
+/**
+ * هل ينتهي النص بتمهيد معلّق بلا محتوى بعده؟
+ * مثل «اتبع هذه الخطوات بدقة:» أو سطر فيه «1.» وحده — عرضه منفردًا يُنتج الرد
+ * المبتور الذي رُصد حيًّا (عنوان ثم «1.» ثم عبارة الجودة).
+ */
+export function endsWithDanglingPreamble(text: string): boolean {
+  const t = text.replace(/\s+$/, "");
+  if (!t) return false;
+  if (/[:：]$/.test(t)) return true; // عنوان/تمهيد ينتظر ما بعده
+  const lastLine = (t.split("\n").pop() ?? "").trim();
+  if (!lastLine) return false;
+  // سطر لا يحمل إلا مُعلّم قائمة («1.» أو «2)» أو «-») بلا نص بعده
+  return /^(?:\d+[.)]|[-*•])$/.test(lastLine);
+}
+
+/**
  * يقتطع من المخزن وحدات كاملة (تنتهي بعلامة نهاية جملة)، وإلا فعند حدّ آمن.
  * ready + rest = buffer دائمًا، فلا يضيع حرف من رد النموذج.
+ *
+ * v0.6.6: لا تُسلَّم وحدة تنتهي بتمهيد معلّق — يُتراجع إلى الحدّ الآمن السابق،
+ * وإن لم يبقَ شيء يُحتجز كله حتى تصل خطوة كاملة. فلا يظهر عنوان ولا «1.» وحده.
  */
 export function takeCompleteUnits(buffer: string): { ready: string; rest: string } {
-  let lastEnd = -1;
+  const ends: number[] = [];
   for (let i = 0; i < buffer.length; i++) {
-    if (/[.!?؟…\n؛]/.test(buffer[i] ?? "")) lastEnd = i;
+    if (isSentenceEnd(buffer, i)) ends.push(i);
   }
-  if (lastEnd >= 0) {
-    let e = lastEnd + 1;
+
+  // جرّب أواخر الجمل من الأبعد إلى الأقرب، وتوقّف عند أول وحدة غير معلّقة
+  for (let k = ends.length - 1; k >= 0; k--) {
+    let e = (ends[k] ?? 0) + 1;
     while (e < buffer.length && /\s/.test(buffer[e] ?? "")) e++;
-    return { ready: buffer.slice(0, e), rest: buffer.slice(e) };
+    const ready = buffer.slice(0, e);
+    if (!endsWithDanglingPreamble(ready)) return { ready, rest: buffer.slice(e) };
   }
+
   if (buffer.length >= STREAM_UNIT_MAX_CHARS) {
     const cut = buffer.lastIndexOf(" ", STREAM_UNIT_MAX_CHARS);
     const at = cut > 40 ? cut + 1 : STREAM_UNIT_MAX_CHARS;
-    return { ready: buffer.slice(0, at), rest: buffer.slice(at) };
+    const ready = buffer.slice(0, at);
+    // حتى عند الحدّ الآمن: لا تُسلَّم بادئة معلّقة
+    if (!endsWithDanglingPreamble(ready)) return { ready, rest: buffer.slice(at) };
   }
   return { ready: "", rest: buffer };
 }

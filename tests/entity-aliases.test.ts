@@ -5,7 +5,10 @@
 import { describe, expect, it } from "vitest";
 import {
   ENTITY_ALIASES,
+  ambiguousCandidates,
+  buildClarifyQuestion,
   buildEntityContext,
+  confidentEntities,
   detectEntities,
   normalizeForMatch,
 } from "../lib/ai/entity-aliases";
@@ -87,6 +90,57 @@ describe("★ السياق الداخلي — يمنع سؤال المستخدم
 
   it("بلا كيانات → لا سياق إطلاقًا (الموجّه لا يتغيّر)", () => {
     expect(buildEntityContext([])).toBe("");
+  });
+});
+
+// ── v0.6.6: فصل الأعمال المتشابهة + confidence/entity_type ────────────────
+describe("★ v0.6.6 — JoJo ليست Jujutsu Kaisen", () => {
+  it("★ «جوجيتسو كايسن» → Jujutsu Kaisen وحدها", () => {
+    const e = confidentEntities("ابغى اعرف عن جوجيتسو كايسن");
+    expect(e.map((x) => x.canonical)).toEqual(["Jujutsu Kaisen"]);
+    expect(e[0]!.entityType).toBe("anime_manga");
+  });
+
+  it("★ «مغامرة جوجو الغريبة» → JoJo وحدها", () => {
+    const e = confidentEntities("احب مغامرة جوجو الغريبة");
+    expect(e.map((x) => x.canonical)).toEqual(["JoJo's Bizarre Adventure"]);
+  });
+
+  it("★ «جوجو» وحدها ملتبسة → لا تحويل تلقائي", () => {
+    expect(confidentEntities("ايش رايك في جوجو؟")).toEqual([]);
+    const amb = ambiguousCandidates("ايش رايك في جوجو؟");
+    expect(amb.length).toBeGreaterThan(0);
+    expect(amb.some((a) => a.canonical === "JoJo's Bizarre Adventure")).toBe(true);
+  });
+
+  it("★ «جوجيتسو» لا تُطابق alias «جوجو» (حدود الكلمات)", () => {
+    const names = detectEntities("جوجيتسو كايسن").map((x) => x.canonical);
+    expect(names).not.toContain("JoJo's Bizarre Adventure");
+  });
+
+  it("★ سؤال توضيح مختصر عند الالتباس", () => {
+    const q = buildClarifyQuestion(ambiguousCandidates("ايش رايك في جوجو؟"));
+    expect(q).toMatch(/تقصد/);
+    expect(q.length).toBeLessThan(200); // مختصر
+  });
+
+  it("★ ذكر العملين معًا → التباس لا خلط", () => {
+    const amb = ambiguousCandidates("قارن بين جوجيتسو كايسن ومغامرة جوجو الغريبة");
+    expect(amb.length).toBe(2);
+  });
+
+  it("السياق ينبّه صراحةً على عدم الخلط", () => {
+    const ctx = buildEntityContext(confidentEntities("عن جوجيتسو كايسن"));
+    expect(ctx).toMatch(/Jujutsu Kaisen/);
+    expect(ctx).toMatch(/عمل مختلف تمامًا عن JoJo's Bizarre Adventure/);
+    expect(ctx).toMatch(/لا تخلط بينهما/);
+  });
+
+  it("Elden Ring يبقى واثقًا كما كان (بلا تراجع)", () => {
+    const e = confidentEntities(TESTER_Q);
+    expect(e.map((x) => x.canonical)).toContain("Elden Ring");
+    expect(e[0]!.entityType).toBe("video_game");
+    expect(e[0]!.confidence).toBeGreaterThanOrEqual(0.85);
   });
 });
 

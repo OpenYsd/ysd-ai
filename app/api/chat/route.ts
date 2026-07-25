@@ -6,7 +6,11 @@ import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
-import { buildEntityContext, detectEntities } from "@/lib/ai/entity-aliases";
+import {
+  ambiguousCandidates,
+  buildEntityContext,
+  confidentEntities,
+} from "@/lib/ai/entity-aliases";
 import { detectUserGrounding } from "@/lib/ai/grounding-guard";
 import {
   buildSourcesContext,
@@ -15,6 +19,7 @@ import {
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
+import { claimRequest, recordRequestMessage } from "@/lib/chat/idempotency";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -44,8 +49,10 @@ export async function POST(req: NextRequest) {
   // 1) المصادقة والحالة — من سياق الوسيط المُتحقَّق (ترويسات x-ysd-* المختومة).
   //    يُسقط رحلتَي getUser + profiles؛ ولو غاب السياق يسقط getRequestContext إلى
   //    تحقّق شبكي كامل (fallback آمن — لا ثقة بترويسة ناقصة).
+  const tAuth = Date.now();
   const ctx = await getRequestContext(await headers(), supabase);
-  if (!ctx) return json({ error: "غير مصرح" }, 401);
+  const authMs = Date.now() - tAuth;
+  if (!ctx) return json({ error: "انتهت جلستك. سجّل الدخول من جديد.", code: "auth_expired" }, 401);
   const userId = ctx.userId;
 
   // 2) Rate limiting
@@ -60,7 +67,8 @@ export async function POST(req: NextRequest) {
   // 3) التحقق من المدخلات
   const parsed = chatRequestSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
-  const { conversationId, modelId, message, editMessageId, regenerate } = parsed.data;
+  const { conversationId, modelId, message, editMessageId, regenerate, clientRequestId } =
+    parsed.data;
 
   // 4+5) التحقّق: الملكية وحدّ الاستهلاك — مستقلان، فيُنفَّذان بالتوازي.
   //      الترتيب الأمني ونفس رسائل الخطأ محفوظان: الملكية (404) تُفحص قبل الحد (403).
@@ -146,7 +154,21 @@ export async function POST(req: NextRequest) {
       .is("deleted_at", null);
     userMessageId = lastUser.id;
   } else {
-    // رسالة جديدة
+    // رسالة جديدة — بحارس ازدواج: الطلب نفسه (client_request_id) لا يُحفظ مرتين
+    // مهما تكرر إرساله من نقر مزدوج أو إعادة اتصال.
+    const claim = claimRequest(userId, clientRequestId);
+    if (!claim.isNew) {
+      console.log(`[chat] rid=${requestId} duplicate_request=true`);
+      return json(
+        {
+          error: "هذه الرسالة أُرسلت بالفعل.",
+          code: "duplicate_request",
+          userMessageId: claim.previousUserMessageId,
+        },
+        409,
+      );
+    }
+
     const { data: inserted, error: insertErr } = await supabase
       .from("messages")
       .insert({ conversation_id: conversationId, role: "user", content: message })
@@ -154,6 +176,7 @@ export async function POST(req: NextRequest) {
       .single();
     if (insertErr || !inserted) return json({ error: "تعذّر حفظ الرسالة." }, 500);
     userMessageId = inserted.id;
+    recordRequestMessage(userId, clientRequestId, userMessageId);
 
     // عنوان تلقائي من أول رسالة — يُدمج في تحديث المحادثة المتوازي أدناه
     if (conv.title === DEFAULT_TITLE && message) {
@@ -185,6 +208,8 @@ export async function POST(req: NextRequest) {
   // RAG: استرجاع مقاطع الملفات (بعد توفّر السياق ومعرّفات الملفات معًا)
   let ragSnippets: RetrievedSnippet[] = [];
   let ragSearchedNoMatch = false;
+  let ragMs = 0;
+  const tRag = Date.now();
   const queryText =
     message ?? [...history].reverse().find((m) => m.role === "user")?.content ?? "";
   if (queryText && contextFileIds.length > 0) {
@@ -197,6 +222,7 @@ export async function POST(req: NextRequest) {
       // فشل الاسترجاع لا يمنع المحادثة — تُكمل بدون مصادر
       console.error(`[rag] retrieval failed: ${(err as Error).message?.slice(0, 80)}`);
     }
+    ragMs = Date.now() - tRag;
   }
   if (ragSnippets.length > 0) {
     // كتلة منفصلة مُسوَّرة — الموجه الأساسي لا يتغير ومحتوى الملفات ليس تعليمات
@@ -216,12 +242,23 @@ export async function POST(req: NextRequest) {
 
   // أسماء الكيانات بالنقحرة («الدن رينق» = Elden Ring): سياق داخلي في الموجّه
   // وحده — رسالة المستخدم المحفوظة والمعروضة والمُرسلة لا تتغير بحرف.
-  const entities = detectEntities(queryText);
+  const entities = confidentEntities(queryText);
+  const ambiguous = ambiguousCandidates(queryText);
   if (entities.length > 0) {
     systemPrompt = `${systemPrompt}\n\n${buildEntityContext(entities)}`;
-    // سجل آمن: الاسم الموحّد فقط — لا نص المستخدم
+  }
+  if (ambiguous.length > 0) {
+    // التباس في الاسم → سؤال توضيح واحد بدل التخمين أو الخلط
+    systemPrompt =
+      `${systemPrompt}\n\nالاسم في رسالة المستخدم يحتمل أكثر من عمل ` +
+      `(${ambiguous.map((a) => a.canonical).join(" / ")}). لا تخمّن ولا تخلط بينها: ` +
+      `اطرح سؤال توضيح واحدًا قصيرًا لتحديد المقصود.`;
+  }
+  if (entities.length > 0 || ambiguous.length > 0) {
+    // سجل آمن: الأسماء الموحّدة فقط — لا نص المستخدم
     console.log(
-      `[chat] rid=${requestId} entities=${entities.map((e) => e.canonical).join(",")}`,
+      `[chat] rid=${requestId} entities=${entities.map((e) => e.canonical).join(",") || "none"} ` +
+        `ambiguous=${ambiguous.map((a) => a.canonical).join(",") || "none"}`,
     );
   }
 
@@ -314,7 +351,8 @@ export async function POST(req: NextRequest) {
               output_tokens: chunk.usage.outputTokens,
             });
           } else if (chunk.type === "error") {
-            send({ type: "error", error: chunk.error });
+            // الرمز يسمح للواجهة بعرض رسالة مناسبة لكل حالة بدل «تعذر الاتصال»
+            send({ type: "error", error: chunk.error, code: chunk.errorCode ?? "unknown" });
           }
         }
 
@@ -358,12 +396,13 @@ export async function POST(req: NextRequest) {
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
             `protected_short_circuit=${shortCircuit} provider_calls=${providerCalls} ` +
-            `total_response_ms=${Date.now() - tStart} ` +
-            `provider_first_byte_ms=${providerFirstByteMs} total_first_token_ms=${totalFirstTokenMs}`,
+            `auth_ms=${authMs} database_ms=${dbMs} rag_ms=${ragMs} ` +
+            `provider_first_byte_ms=${providerFirstByteMs} ` +
+            `total_first_text_ms=${totalFirstTokenMs} total_response_ms=${Date.now() - tStart}`,
         );
       } catch (err) {
         console.error("[chat] stream failed:", err);
-        send({ type: "error", error: "حدث خطأ أثناء توليد الرد." });
+        send({ type: "error", error: "حدث خطأ أثناء توليد الرد.", code: "unknown" });
       } finally {
         try {
           controller.close();

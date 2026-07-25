@@ -40,6 +40,8 @@ export interface StreamChunk {
   text?: string;
   usage?: UsageReport;
   error?: string;
+  /** رمز تصنيف الخطأ (v0.6.6) — تعرضه الواجهة برسالة مناسبة لكل حالة */
+  errorCode?: string;
   /** معرّف النموذج الفعلي الذي أجاب (مع "meta") — للتسجيل والعرض في التطوير */
   model?: string;
   /** الوضع المختار (مع "meta"): بثّ عام أو محمي بالتحقق — للتسجيل الآمن */

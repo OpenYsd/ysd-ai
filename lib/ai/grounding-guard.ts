@@ -12,7 +12,13 @@
  * لا يعتمد على `@/` ليبقى قابلًا للاستيراد في اختبارات vitest.
  */
 
-import { detectEntities, normalizeForMatch } from "./entity-aliases";
+import {
+  ambiguousCandidates,
+  buildClarifyQuestion,
+  confidentEntities,
+  detectEntities,
+  normalizeForMatch,
+} from "./entity-aliases";
 
 /** مصدر الإسناد — «none» يعني معرفة النموذج وحدها، وهي غير كافية */
 export type GroundingSource = "rag" | "knowledge_base" | "tool" | "user_context" | "none";
@@ -96,7 +102,11 @@ export const STRICT_GROUNDING_SUFFIX =
 const WHITE_MASK_FORMS = [/white\s*mask/i, /القناع\s*الأبيض/, /القناع\s*الابيض/];
 
 export function buildUnsourcedMessage(userText: string): string {
-  const first = detectEntities(userText)[0];
+  // التباس في الاسم (جوجو/جوجيتسو مثلًا) → سؤال توضيح مختصر بدل التخمين
+  const ambiguous = ambiguousCandidates(userText);
+  if (ambiguous.length > 0) return buildClarifyQuestion(ambiguous);
+
+  const first = confidentEntities(userText)[0];
   if (!first) {
     return "لست متأكدًا من التفاصيل الدقيقة، ولا أبغى أعطيك معلومة خاطئة.";
   }

@@ -10,6 +10,11 @@ export const chatRequestSchema = z
     editMessageId: z.string().uuid().optional(),
     /** إعادة توليد آخر رد دون رسالة جديدة */
     regenerate: z.boolean().optional(),
+    /**
+     * معرّف الطلب من العميل (v0.6.6) — يمنع ازدواج الحفظ حين يتكرر الطلب نفسه
+     * (نقر مزدوج، شبكة بطيئة، إعادة اتصال). الخادم يتجاهل التكرار.
+     */
+    clientRequestId: z.string().min(8).max(64).optional(),
   })
   .refine((d) => d.regenerate === true || typeof d.message === "string", {
     message: "message مطلوبة إلا عند إعادة التوليد",

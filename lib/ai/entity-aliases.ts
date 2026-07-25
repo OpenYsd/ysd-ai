@@ -14,14 +14,18 @@
  * لا يعتمد على `@/` ليبقى قابلًا للاستيراد في اختبارات vitest.
  */
 
-export type EntityKind = "game" | "product";
+export type EntityKind = "game" | "product" | "media";
+
+/** نوع الكيان بدقة أعلى — يمنع الخلط بين عملين مختلفين متشابهي النقحرة */
+export type EntityType = "video_game" | "software" | "anime_manga";
 
 export interface EntityAlias {
   /** الاسم الموحّد كما يُذكر للنموذج */
   canonical: string;
   kind: EntityKind;
-  /** صور مكتوبة شائعة — تُطبَّع عند المطابقة فلا حاجة لسرد كل الاحتمالات */
-  aliases: string[];
+  entityType: EntityType;
+  /** صور مكتوبة شائعة مع ثقتها — تُطبَّع عند المطابقة */
+  aliases: AliasForm[];
 }
 
 /**
@@ -41,39 +45,118 @@ export function normalizeForMatch(s: string): string {
     .toLowerCase();
 }
 
-/** سجل الكيانات — يتوسّع بإضافة سطر واحد */
+/**
+ * صورة مكتوبة واحدة مع درجة ثقتها.
+ * confidence = 1 اسم كامل لا يلتبس · 0.8 نقحرة واضحة · 0.5 صورة مختصرة تلتبس.
+ * ما دون عتبة الوثوق لا يُحوَّل تلقائيًا — يُطرح سؤال توضيح بدل التخمين.
+ */
+export interface AliasForm {
+  form: string;
+  confidence: number;
+}
+
+/** سجل الكيانات — يتوسّع بإضافة عنصر واحد */
 export const ENTITY_ALIASES: EntityAlias[] = [
   {
     canonical: "Elden Ring",
     kind: "game",
+    entityType: "video_game",
     // «الدن رينق» تغطي إلدن/الدن/آلدن × رينق/رينغ بعد التطبيع
-    aliases: ["Elden Ring", "الدن رينق", "الدن رينج", "ايلدن رينق", "ايلدن رينج"],
+    aliases: [
+      { form: "Elden Ring", confidence: 1 },
+      { form: "الدن رينق", confidence: 0.95 },
+      { form: "الدن رينج", confidence: 0.95 },
+      { form: "ايلدن رينق", confidence: 0.95 },
+      { form: "ايلدن رينج", confidence: 0.95 },
+    ],
   },
   {
     canonical: "Minecraft",
     kind: "game",
-    aliases: ["Minecraft", "ماين كرافت", "ماينكرافت"],
+    entityType: "video_game",
+    aliases: [
+      { form: "Minecraft", confidence: 1 },
+      { form: "ماين كرافت", confidence: 0.95 },
+      { form: "ماينكرافت", confidence: 0.95 },
+    ],
   },
   {
     canonical: "Photoshop",
     kind: "product",
-    aliases: ["Photoshop", "فوتوشوب", "فوتو شوب"],
+    entityType: "software",
+    aliases: [
+      { form: "Photoshop", confidence: 1 },
+      { form: "فوتوشوب", confidence: 0.95 },
+      { form: "فوتو شوب", confidence: 0.95 },
+    ],
+  },
+  // ── عملان مختلفان تمامًا تتشابه نقحرتهما العربية — رُصد خلطهما حيًّا ──
+  {
+    canonical: "JoJo's Bizarre Adventure",
+    kind: "media",
+    entityType: "anime_manga",
+    // «جوجو» وحدها ملتبسة (قد يقصد جوجيتسو) فثقتها دون العتبة
+    aliases: [
+      { form: "JoJo's Bizarre Adventure", confidence: 1 },
+      { form: "JoJo Bizarre Adventure", confidence: 1 },
+      { form: "JoJo", confidence: 0.6 },
+      { form: "مغامرة جوجو الغريبة", confidence: 1 },
+      { form: "جوجو الغريبة", confidence: 0.95 },
+      { form: "جوجو بيزار", confidence: 0.95 },
+      { form: "جوجو", confidence: 0.6 },
+    ],
+  },
+  {
+    canonical: "Jujutsu Kaisen",
+    kind: "media",
+    entityType: "anime_manga",
+    aliases: [
+      { form: "Jujutsu Kaisen", confidence: 1 },
+      { form: "جوجيتسو كايسن", confidence: 1 },
+      { form: "جوجتسو كايسن", confidence: 1 },
+      { form: "جوجيتسو", confidence: 0.9 },
+      { form: "جوجتسو", confidence: 0.9 },
+      { form: "صراع السحرة", confidence: 0.9 },
+    ],
   },
 ];
 
 /** أقصر طول مطبَّع يُقبل للمطابقة — يمنع مطابقات عابرة */
-const MIN_ALIAS_LEN = 5;
+const MIN_ALIAS_LEN = 4;
+
+/** عتبة التحويل التلقائي — دونها يُطلب توضيح بدل التخمين */
+export const CONFIDENT_THRESHOLD = 0.85;
 
 export interface DetectedEntity {
   canonical: string;
   kind: EntityKind;
+  entityType: EntityType;
   /** الصورة التي وردت في نص المستخدم (كما وردت، للتوثيق لا للعرض) */
   matched: string;
+  confidence: number;
+}
+
+/**
+ * مطابقة على حدود الكلمات — لا مجرد `includes`.
+ * تمنع أن يبتلع اسمٌ اسمًا آخر يشاركه بادئة (جوجو داخل جوجيتسو مثلًا).
+ */
+function containsAtBoundary(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+  let from = 0;
+  for (;;) {
+    const i = haystack.indexOf(needle, from);
+    if (i < 0) return false;
+    const before = i === 0 ? "" : haystack[i - 1] ?? "";
+    const after = haystack[i + needle.length] ?? "";
+    const isLetter = (c: string) => c !== "" && /[\p{L}\p{N}]/u.test(c);
+    if (!isLetter(before) && !isLetter(after)) return true;
+    from = i + 1;
+  }
 }
 
 /**
  * يكشف الكيانات المذكورة في نص المستخدم دون تعديله.
- * المطابقة على النص المطبَّع، والأسماء متعددة الكلمات فاحتمال الخطأ ضئيل.
+ * لكل كيان تُختار أعلى صورة ثقةً طابقت، والمطابقة على حدود الكلمات.
  */
 export function detectEntities(userText: string): DetectedEntity[] {
   if (!userText) return [];
@@ -81,28 +164,84 @@ export function detectEntities(userText: string): DetectedEntity[] {
   if (!haystack) return [];
   const found: DetectedEntity[] = [];
   for (const entry of ENTITY_ALIASES) {
+    let best: DetectedEntity | null = null;
     for (const alias of entry.aliases) {
-      const norm = normalizeForMatch(alias);
+      const norm = normalizeForMatch(alias.form);
       if (norm.length < MIN_ALIAS_LEN) continue;
-      if (haystack.includes(norm)) {
-        found.push({ canonical: entry.canonical, kind: entry.kind, matched: alias });
-        break; // صورة واحدة تكفي لكل كيان
+      if (!containsAtBoundary(haystack, norm)) continue;
+      if (!best || alias.confidence > best.confidence) {
+        best = {
+          canonical: entry.canonical,
+          kind: entry.kind,
+          entityType: entry.entityType,
+          matched: alias.form,
+          confidence: alias.confidence,
+        };
       }
     }
+    if (best) found.push(best);
   }
   return found;
+}
+
+/** الكيانات الواثقة وحدها — هي التي تُحقن كسياق مؤكَّد */
+export function confidentEntities(userText: string): DetectedEntity[] {
+  return detectEntities(userText).filter((e) => e.confidence >= CONFIDENT_THRESHOLD);
+}
+
+/**
+ * حالة الالتباس: صورة غير واثقة، أو أكثر من كيان محتمل من النوع نفسه.
+ * في الحالتين يُطلب توضيح مختصر بدل التخمين.
+ */
+export function ambiguousCandidates(userText: string): DetectedEntity[] {
+  const all = detectEntities(userText);
+  if (all.length === 0) return [];
+  const confident = all.filter((e) => e.confidence >= CONFIDENT_THRESHOLD);
+  if (confident.length === 1) return []; // واثق ووحيد → لا التباس
+  if (confident.length > 1) return confident; // أكثر من كيان واثق → وضّح
+  return all; // لا شيء واثقًا لكن هناك مرشحون → وضّح
+}
+
+/** سؤال توضيح مختصر يُعرض بدل التخمين */
+export function buildClarifyQuestion(candidates: DetectedEntity[]): string {
+  const names = candidates.map((c) => c.canonical);
+  if (names.length === 0) return "";
+  if (names.length === 1) {
+    return `تقصد ${names[0]}؟ أكّد لي الاسم حتى لا أعطيك معلومة عن عمل آخر.`;
+  }
+  const list = names.slice(0, 3).join(" أم ");
+  return `تقصد ${list}؟ الاسمان مختلفان تمامًا، وأفضّل أن أتأكد بدل أن أخلط بينهما.`;
 }
 
 /**
  * سياق داخلي يُضاف إلى موجّه النظام وحده — يمنع سؤال المستخدم عن اسم معروف،
  * ويعطي صيغة الاعتراف الصحيحة حين تغيب الخطوات الدقيقة، بلا اختراع مواقع.
  */
+const KIND_AR: Record<EntityKind, string> = {
+  game: "لعبة",
+  product: "منتج",
+  media: "عمل (أنمي/مانغا)",
+};
+
+/** أعمال يسهل خلطها — تُذكر صراحةً كي لا يخلط النموذج بينها */
+const CONFUSABLE: Record<string, string> = {
+  "JoJo's Bizarre Adventure": "Jujutsu Kaisen",
+  "Jujutsu Kaisen": "JoJo's Bizarre Adventure",
+};
+
 export function buildEntityContext(entities: DetectedEntity[]): string {
   if (entities.length === 0) return "";
   const lines = entities.map(
-    (e) =>
-      `- «${e.matched}» في رسالة المستخدم تعني ${e.kind === "game" ? "لعبة" : "منتج"} ${e.canonical}.`,
+    (e) => `- «${e.matched}» في رسالة المستخدم تعني ${KIND_AR[e.kind]} ${e.canonical}.`,
   );
+  for (const e of entities) {
+    const other = CONFUSABLE[e.canonical];
+    if (other) {
+      lines.push(
+        `- تنبيه: ${e.canonical} عمل مختلف تمامًا عن ${other} — لا تخلط بينهما ولا تنقل معلومة من أحدهما إلى الآخر.`,
+      );
+    }
+  }
   const first = entities[0]!.canonical;
   return [
     "سياق أسماء (داخلي — لا تعرضه ولا تعلّق عليه):",

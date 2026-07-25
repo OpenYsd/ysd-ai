@@ -11,7 +11,12 @@
  * لا يعتمد على `@/` ليبقى قابلًا للاستيراد في اختبارات vitest.
  */
 
-import { type DetectedEntity, detectEntities } from "./entity-aliases";
+import {
+  type DetectedEntity,
+  ambiguousCandidates,
+  buildClarifyQuestion,
+  confidentEntities,
+} from "./entity-aliases";
 
 /** رسالة عامة حين يتعذّر الحصول على نص صالح من كل النماذج */
 export const NO_COMPLETION_MESSAGE =
@@ -31,7 +36,10 @@ const WHITE_MASK_FORMS = [/white\s*mask/i, /القناع\s*الأبيض/, /ال�
  * المستخدم توضيح الاسم مرة أخرى، ولا يُخترع موقع ولا خطوة.
  */
 export function buildNoCompletionMessage(userText: string): string {
-  const entities: DetectedEntity[] = detectEntities(userText);
+  const ambiguous = ambiguousCandidates(userText);
+  if (ambiguous.length > 0) return buildClarifyQuestion(ambiguous);
+
+  const entities: DetectedEntity[] = confidentEntities(userText);
   const first = entities[0];
   if (!first) return NO_COMPLETION_MESSAGE;
 

@@ -26,6 +26,11 @@ import {
 } from "lucide-react";
 import { uploadWithProgress } from "@/components/files/upload";
 import { useI18n } from "@/lib/i18n";
+import {
+  type ChatErrorCode,
+  ERROR_MESSAGES,
+  codeFromHttpStatus,
+} from "@/lib/ai/error-codes";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { Markdown } from "./markdown";
@@ -36,6 +41,15 @@ export interface ChatModel {
   nameEn: string;
   /** اسم الموفر — يظهر في منتقي النموذج */
   provider?: string;
+}
+
+/** معرّف طلب فريد — يمنع ازدواج الحفظ عند تكرار الإرسال أو إعادة الاتصال */
+function newClientRequestId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
 }
 
 export interface MsgSource {
@@ -90,6 +104,8 @@ interface ChatViewProps {
 
 interface SSEEvent {
   type: "text" | "error" | "done" | "meta" | "sources" | "status";
+  /** رمز تصنيف الخطأ (v0.6.6) */
+  code?: string;
   text?: string;
   error?: string;
   model?: string;
@@ -115,6 +131,8 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** رمز آخر خطأ — يحدد الرسالة وهل تُعرض إعادة المحاولة */
+  const [errorCode, setErrorCode] = useState<ChatErrorCode | null>(null);
   const [modelId, setModelId] = useState<string | null>(
     initialModelId ?? models[0]?.id ?? null,
   );
@@ -128,6 +146,8 @@ export function ChatView({
 
   const convIdRef = useRef<string | null>(conversationId);
   const abortRef = useRef<AbortController | null>(null);
+  /** قفل فوري ضد الإرسال المزدوج (النقر المتكرر / Enter السريع) */
+  const sendLockRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -135,6 +155,30 @@ export function ChatView({
   const model = models.find((m) => m.id === modelId) ?? null;
   const modelName = model ? (locale === "ar" ? model.nameAr : model.nameEn) : null;
   const noProvider = models.length === 0;
+
+  /**
+   * v0.6.6 — حفظ المسودة: ما يكتبه المستخدم لا يضيع عند إعادة المصادقة أو
+   * إعادة تحميل الصفحة. المفتاح لكل محادثة، ويُمسح فور الإرسال الناجح.
+   */
+  const draftKey = `ysd-draft:${conversationId ?? "new"}`;
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(draftKey);
+      if (saved) setInput((cur) => (cur ? cur : saved));
+    } catch {
+      /* التخزين المحلي قد يكون محجوبًا */
+    }
+    // مرة واحدة لكل محادثة
+  }, [draftKey]);
+
+  useEffect(() => {
+    try {
+      if (input.trim()) window.localStorage.setItem(draftKey, input);
+      else window.localStorage.removeItem(draftKey);
+    } catch {
+      /* التخزين المحلي قد يكون محجوبًا */
+    }
+  }, [input, draftKey]);
 
   /* تمرير تلقائي ذكي: يتوقف إذا رجع المستخدم للأعلى */
   useEffect(() => {
@@ -182,8 +226,14 @@ export function ChatView({
         });
 
         if (!res.ok || !res.body) {
-          const j = (await res.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(j?.error ?? "request failed");
+          const j = (await res.json().catch(() => null)) as
+            | { error?: string; code?: string }
+            | null;
+          // 401 من الوسيط يعني انتهاء الجلسة — يُميَّز عن أعطال الشبكة
+          const code = (j?.code ?? codeFromHttpStatus(res.status)) as ChatErrorCode;
+          setErrorCode(code);
+          setError(ERROR_MESSAGES[code] ?? j?.error ?? t("sendError"));
+          return; // الرسالة معروضة ومصنّفة — لا نرميها كخطأ عام
         }
 
         const reader = res.body.getReader();
@@ -229,7 +279,10 @@ export function ChatView({
                 ),
               );
             } else if (data.type === "error" && data.error) {
-              setError(data.error);
+              // الرسالة المصنّفة تتقدّم على نص الخادم العام
+              const code = (data.code ?? "unknown") as ChatErrorCode;
+              setErrorCode(code);
+              setError(ERROR_MESSAGES[code] ?? data.error);
             } else if (data.type === "done") {
               // استبدال المعرّفات المؤقتة بالحقيقية من قاعدة البيانات
               setMessages((prev) =>
@@ -250,7 +303,9 @@ export function ChatView({
         }
       } catch (err) {
         if (!ac.signal.aborted) {
-          setError((err as Error).message || t("sendError"));
+          // فشل fetch/قراءة البثّ = انقطاع شبكة بين المتصفح والخادم
+          setErrorCode("network_error");
+          setError(ERROR_MESSAGES.network_error || (err as Error).message || t("sendError"));
         }
       } finally {
         abortRef.current = null;
@@ -414,23 +469,43 @@ export function ChatView({
     async (textOverride?: string) => {
       const text = (textOverride ?? input).trim();
       if (!text || generating || !modelId) return;
+
+      // v0.6.6 — منع الإرسال المزدوج:
+      // `generating` حالة React لا تُضبط إلا داخل streamRequest، أي **بعد**
+      // await ensureConversation. فالنقرة الثانية أثناء ذلك الانتظار كانت تمرّ
+      // من الحارس فتُرسل الرسالة مرتين. القفل هنا مرجع يُضبط فورًا في نفس
+      // النبضة، فلا نافذة سباق أصلًا.
+      if (sendLockRef.current) return;
+      sendLockRef.current = true;
+
       setInput("");
       setError(null);
       if (taRef.current) taRef.current.style.height = "auto";
 
-      const convId = await ensureConversation();
-      if (!convId) {
-        setError(t("sendError"));
-        setInput(text);
-        return;
-      }
+      try {
+        const convId = await ensureConversation();
+        if (!convId) {
+          setError(t("sendError"));
+          setInput(text); // المسودة تعود للمستخدم بدل أن تضيع
+          return;
+        }
 
-      const tempUserId = `tmp-u-${Date.now()}`;
-      setMessages((prev) => [...prev, { id: tempUserId, role: "user", content: text }]);
-      await streamRequest(
-        { conversationId: convId, modelId, message: text },
-        tempUserId,
-      );
+        const tempUserId = `tmp-u-${Date.now()}`;
+        setMessages((prev) => [...prev, { id: tempUserId, role: "user", content: text }]);
+        await streamRequest(
+          {
+            conversationId: convId,
+            modelId,
+            message: text,
+            // معرّف فريد للطلب: الخادم يتجاهل تكراره فلا تُحفظ الرسالة مرتين
+            // حتى لو تكرر الطلب من إعادة اتصال أو شبكة بطيئة.
+            clientRequestId: newClientRequestId(),
+          },
+          tempUserId,
+        );
+      } finally {
+        sendLockRef.current = false;
+      }
     },
     [input, generating, modelId, streamRequest, ensureConversation, t],
   );
@@ -710,14 +785,28 @@ export function ChatView({
               ))}
 
               {error && (
-                <div className="rise rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[13px] text-red-300 flex items-center justify-between gap-3">
+                <div
+                  className="rise rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[13px] text-red-300 flex items-center justify-between gap-3"
+                  data-error-code={errorCode ?? "unknown"}
+                >
                   <span>{error}</span>
-                  <button
-                    onClick={() => void regenerate()}
-                    className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
-                  >
-                    {t("retry")}
-                  </button>
+                  {errorCode === "auth_expired" ? (
+                    // إعادة التوليد بلا فائدة بعد انتهاء الجلسة — الطريق هو الدخول
+                    <a
+                      href="/login?reason=session_expired"
+                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
+                    >
+                      {t("login")}
+                    </a>
+                  ) : (
+                    // إعادة التوليد لا تُعيد إرسال رسالة المستخدم — لا تكرار
+                    <button
+                      onClick={() => void regenerate()}
+                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
+                    >
+                      {t("retry")}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

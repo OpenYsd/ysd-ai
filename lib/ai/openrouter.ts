@@ -21,6 +21,7 @@ import {
   violatesUncertainty,
 } from "./uncertainty-guard";
 import { buildNoCompletionMessage, isEmptyCompletion } from "./empty-completion";
+import { codeFromProviderKind } from "./error-codes";
 import {
   STRICT_GROUNDING_SUFFIX,
   buildUnsourcedMessage,
@@ -31,6 +32,7 @@ import {
   GUARD_OVERLAP_CHARS,
   TRUNCATED_NOTICE,
   dedupeContinuation,
+  endsWithDanglingPreamble,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -47,8 +49,19 @@ import {
  */
 
 const API_URL = "https://openrouter.ai/api/v1/chat/completions";
-/** مهلة اتصال الموفر الخارجي */
-const PROVIDER_TIMEOUT_MS = 60_000;
+/**
+ * مهلة المحاولة الواحدة مع مزوّد (v0.6.6: 60s → 25s).
+ * قِيس حيًّا أن أول بايت من النماذج المجانية يصل خلال 2–10s في الحالة السوية،
+ * و60s كانت تعني انتظارًا طويلًا بلا طائل قبل الانتقال للتالي.
+ */
+const PROVIDER_TIMEOUT_MS = 25_000;
+
+/**
+ * سقف انتظار المستخدم لسلسلة الاحتياط كاملة.
+ * بدونه كانت أربع محاولات × مهلة كل منها تعني انتظارًا مفتوحًا (رُصد حيًّا 129
+ * ثانية). عند بلوغ السقف نتوقف فورًا ونعرض رسالة واضحة بدل إطالة الصمت.
+ */
+const CHAIN_BUDGET_MS = 45_000;
 
 /** تصنيف أخطاء OpenRouter إلى رسائل عربية واضحة — دون كشف تفاصيل حساسة */
 export function mapOpenRouterError(status: number | null, raw: string): {
@@ -237,6 +250,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       yield {
         type: "error",
         error: `جميع النماذج المجانية مضغوطة حاليًا. أعد المحاولة بعد نحو ${minutes} دقيقة — رسالتك محفوظة.`,
+        errorCode: "provider_unavailable",
       };
       return;
     }
@@ -244,9 +258,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // الوضع المحمي: حالة قصيرة تصل فورًا قبل نداء المزوّد — لا شاشة انتظار فارغة.
     if (verified) yield { type: "status", text: VERIFYING_STATUS_MESSAGE };
 
+    const chainStartedAt = Date.now();
     for (let i = 0; i < usable.length; i++) {
       const model = usable[i];
       if (!model) continue;
+
+      // سقف انتظار المستخدم: لا نبدأ محاولة جديدة بعد نفاد الميزانية
+      if (i > 0 && Date.now() - chainStartedAt >= CHAIN_BUDGET_MS) {
+        console.error(
+          `[openrouter] chain budget exhausted: elapsed_ms=${Date.now() - chainStartedAt} tried=${i}`,
+        );
+        yield {
+          type: "error",
+          error: "استغرق الرد وقتًا أطول من المتوقع. رسالتك محفوظة — أعد المحاولة.",
+          errorCode: "timeout",
+        };
+        return;
+      }
+
       const result: AttemptResult = yield* this.attempt(
         req,
         model,
@@ -319,7 +348,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
             langRetryUsed = true; // إعادة محاولة واحدة بنموذج احتياطي وموجّه أصرم
             continue;
           }
-          yield { type: "error", error: GUARD_FAILURE_MESSAGE };
+          yield { type: "error", error: GUARD_FAILURE_MESSAGE, errorCode: "quality_guard" };
           return;
         }
 
@@ -422,6 +451,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     yield {
       type: "error",
       error: lastError?.userMessage ?? GUARD_FAILURE_MESSAGE,
+      errorCode: lastError ? codeFromProviderKind(lastError.kind) : "quality_guard",
     };
   }
 
@@ -750,6 +780,21 @@ export class OpenRouterProvider implements AIProviderAdapter {
         }
       }
 
+      // v0.6.6: رد لا يحوي إلا تمهيدًا معلّقًا («اتبع الخطوات:» أو «1.» وحده)
+      // ليس إجابة — يُعامَل كإكمال فارغ فيُجرَّب نموذج آخر بدل عرض بادئة مبتورة.
+      if (!isEmptyCompletion(full) && endsWithDanglingPreamble(full) && !anyFlushed) {
+        console.error(
+          `[openrouter] failure_kind=dangling_preamble model_id=${model} text_char_count=${full.length}`,
+        );
+        return {
+          status: "empty_completion",
+          model: actualModel,
+          finishReason,
+          reasoningPresent,
+          textLen: full.length,
+        };
+      }
+
       // إكمال فارغ (لا نص، أو مسافات/أسطر فقط، أو تفكير بلا إجابة) = فشل محاولة.
       // لا يُمرَّر إلى الحارسَين ولا يُعرض ولا يُحفظ.
       if (isEmptyCompletion(full)) {
@@ -764,8 +809,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
       if (opts.buffered) return { status: "ok", text: full, model: actualModel, usage };
 
-      // بقية النص الأخيرة — وحدة تُفحص أيضًا قبل عرضها
-      if (seg) {
+      // بقية النص الأخيرة — وحدة تُفحص أيضًا قبل عرضها.
+      // v0.6.6: إن لم تكن إلا تمهيدًا معلّقًا فلا تُعرض (الرد انتهى قبل الخطوات).
+      if (seg && !endsWithDanglingPreamble(seg)) {
         const reason = checkSegment(seg);
         if (reason) {
           if (!anyFlushed) return { status: "guard_violation", guardReason: reason };

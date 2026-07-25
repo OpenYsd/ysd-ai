@@ -73,13 +73,36 @@ export async function middleware(request: NextRequest) {
   const tAuth = Date.now();
   const { data: claimsData } = await supabase.auth.getClaims();
   mark("auth", Date.now() - tAuth);
-  const userId = claimsData?.claims?.sub ?? null;
+  let userId = claimsData?.claims?.sub ?? null;
 
-  // غير مصادَق
+  // v0.6.6 — إصلاح الخروج المفاجئ بعد ساعة:
+  // getClaims تحقّق **محلي** فقط، فهي تفشل حين ينتهي access token ولا تُجدّده.
+  // كانت النتيجة توجيه المستخدم إلى /login رغم أن refresh token صالح تمامًا.
+  // فإن غابت الهوية **ومعنا كوكي جلسة**، نجرّب تجديدًا شبكيًا واحدًا: getUser
+  // يستخدم refresh token ويكتب الكوكيز الجديدة عبر setAll (يحملها finalize).
+  // بلا كوكي جلسة لا رحلة إطلاقًا — فالزائر المجهول لا يدفع أي ثمن.
+  let sessionRefreshed = false;
+  if (!userId && hasAuthCookie(request)) {
+    const tRefresh = Date.now();
+    const { data: refreshedUser } = await supabase.auth.getUser();
+    mark("refresh", Date.now() - tRefresh);
+    userId = refreshedUser?.user?.id ?? null;
+    sessionRefreshed = Boolean(userId);
+    if (sessionRefreshed) {
+      // معرّف الطلب فقط — بلا هوية ولا محتوى
+      console.log(`[auth] rid=${requestId} session_refreshed=true`);
+    }
+  }
+
+  // غير مصادَق (ولا أمكن التجديد)
   if (!userId) {
-    if (isApi) return finalize(); // API يتحقق بنفسه ويرجع 401
+    // انتهت جلسة كانت قائمة → ميّزها عن «لم يسجّل دخولًا أصلًا» ليعرف العميل السبب
+    const expired = hasAuthCookie(request);
+    if (isApi) return finalize(expired ? json401Expired() : undefined);
     if (!isPublic && path !== "/") {
-      return finalize(NextResponse.redirect(new URL("/login", request.url)));
+      const url = new URL("/login", request.url);
+      if (expired) url.searchParams.set("reason", "session_expired");
+      return finalize(NextResponse.redirect(url));
     }
     return finalize();
   }
@@ -137,6 +160,26 @@ export async function middleware(request: NextRequest) {
   }
 
   return finalize();
+}
+
+/**
+ * هل مع الطلب كوكي جلسة Supabase؟ (sb-<ref>-auth-token[.N])
+ * وجودها يعني «كانت هناك جلسة» — فيستحق الأمر محاولة تجديد واحدة، ويُميَّز
+ * انتهاء الجلسة عن عدم تسجيل الدخول أصلًا.
+ */
+function hasAuthCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some((c) => /^sb-.*auth-token/.test(c.name));
+}
+
+/** انتهت الجلسة وتعذّر التجديد — رمز صريح ليعرضه العميل بوضوح قبل الخروج */
+function json401Expired() {
+  return new NextResponse(
+    JSON.stringify({
+      error: "انتهت جلستك. سجّل الدخول من جديد للمتابعة.",
+      code: "auth_expired",
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 function json403() {
