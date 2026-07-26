@@ -704,10 +704,13 @@ export class OpenRouterProvider implements AIProviderAdapter {
       // مهلة الموفر أو انقطاع الشبكة — قابل لإعادة المحاولة
       return { status: "network_error" };
     }
-    clearTimeout(timeoutId);
+    // ملاحظة (v0.6.6 RC2): المهلة تبقى **مسلّحة** حتى نهاية قراءة البثّ.
+    // كانت تُلغى هنا فور وصول الترويسات، فمزوّد يرسل الترويسات بسرعة ثم يتلكّأ
+    // في الجسم كان يتجاوز أي سقف: قِيس حيًّا 85.7 ثانية رغم ميزانية 45 ثانية.
     req.signal?.removeEventListener("abort", onClientAbort);
 
     if (!res.ok || !res.body) {
+      clearTimeout(timeoutId);
       const raw = await res.text().catch(() => "");
       return {
         status: "http_error",
@@ -871,8 +874,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
       return { status: "ok", text: full, model: actualModel, usage, emitted };
     } catch {
       if (req.signal?.aborted) return { status: "aborted" };
-      console.error("[openrouter] stream read failed");
+      // يشمل انقضاء مهلة المحاولة أثناء البثّ (المهلة تبقى مسلّحة عمدًا)
+      console.error("[openrouter] stream read failed or timed out");
       return { status: "network_error" };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 }
