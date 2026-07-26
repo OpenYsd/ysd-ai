@@ -12,7 +12,7 @@
 
 services:
   ysd-ai:
-    image: ysd-ai:0.6.5
+    image: ysd-ai:0.6.6-rc3
     container_name: ysd-ai
 
     # لا build هنا عمدًا: الصورة تُبنى بـ build args (NEXT_PUBLIC_* تُحقَن في حزمة
@@ -29,7 +29,7 @@ services:
     ports:
       # منفذ المضيف قابل للضبط (YSD_PORT) — يتيح التشغيل خلف عاكس عكسي أو
       # بجوار خدمة أخرى تشغل 3000. منفذ الحاوية يبقى 3000 دائمًا.
-      - "${YSD_PORT:-3000}:3000"
+      - "${YSD_PORT:-3300}:3000"
 
     environment:
       # --- تلزم في الوقتين: build arg (لحزمة المتصفح) + هنا (لقراءات الخادم
@@ -40,6 +40,11 @@ services:
       # --- أسرار خادمية: من ملف البيئة أو secrets المنصة. لا تُخبز في الصورة.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?مطلوب}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # مفتاح خدمة Supabase — خادمي بحت (كتابة observability_events فقط).
+      # بلا بادئة NEXT_PUBLIC: لا يصل المتصفح أبدًا (lib/supabase/admin.ts
+      # محروس بـserver-only). اختياري: غيابه لا يعطّل المحادثة، وتبقى المقاييس
+      # في ذاكرة الخادم مع رمز observability_persistence=disabled.
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
       # --- تشغيلية
       YSD_STRICT_ENV: "1"     # ارفض الإقلاع إن نقص متغير إلزامي بدل العمل معطوبًا
       YSD_LOW_MEMORY: "1"     # يقلّل بصمة نموذج Embeddings المحلي

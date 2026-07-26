@@ -21,10 +21,14 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "node:fs";
 import path from "node:path";
 
-/** يقرأ ملف env بسيطًا دون طباعة أي قيمة */
+/**
+ * يقرأ ملف env بسيطًا دون طباعة أي قيمة.
+ * التقسيم بـ/\r?\n/ لا "\n": ملفات ويندوز CRLF، و`.` في JS لا تُطابق `\r`
+ * فيفشل `$` ولا يُقرأ إلا سطر واحد (رُصد فعليًا على هذا الجهاز).
+ */
 function loadEnvFile(file) {
   if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
     if (!m) continue;
     const key = m[1];
@@ -95,12 +99,28 @@ async function main() {
     if (error) throw new Error(`updateUser failed: ${error.status ?? "?"}`);
   } else {
     console.log("[e2e] إنشاء حساب اختبار جديد");
+    // المنصّة في بيتا مغلقة: handle_new_user يرفض التسجيل بلا تذكرة دعوة
+    // صالحة. نمرّرها في raw_user_meta_data كما يفعل مسار التسجيل المعتمد،
+    // بدل تعطيل require_invite عالميًا (وهو ما كان سيفتح التسجيل للجميع).
+    // handle_new_user يشترط أيضًا terms_accepted صراحةً (وإلا consent_required)
+    // — نفس ما يرسله نموذج التسجيل المعتمد، فيُسجَّل القبول في user_consents.
+    const ticket = process.env.YSD_E2E_INVITE_TICKET;
     const { data, error } = await admin.auth.admin.createUser({
       email: EMAIL,
       password: PASSWORD,
       email_confirm: true,
+      user_metadata: {
+        terms_accepted: true,
+        display_name: "E2E Test",
+        ...(ticket ? { invite_ticket: ticket } : {}),
+      },
     });
-    if (error) throw new Error(`createUser failed: ${error.status ?? "?"}`);
+    if (error) {
+      const hint = ticket
+        ? ""
+        : " (بيتا مغلقة؟ مرّر YSD_E2E_INVITE_TICKET بتذكرة صالحة)";
+      throw new Error(`createUser failed: ${error.status ?? "?"}${hint}`);
+    }
     user = data.user;
   }
 
