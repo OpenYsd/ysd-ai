@@ -443,8 +443,8 @@ export async function POST(req: NextRequest) {
           mode: answerMode,
           shortCircuit,
         });
-        // التخزين الدائم — لا يُنتظر كي لا يؤخّر إغلاق البثّ
-        void persistEvent(supabase as never, {
+        // التخزين الدائم عبر عميل الخدمة — لا يُنتظر كي لا يؤخّر إغلاق البثّ
+        void persistEvent({
           mode: answerMode,
           errorCode: lastErrorCode,
           sessionRefreshResult: null,

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "e2e:prepare": "node scripts/e2e-prepare.mjs",
     "worker:rag": "node scripts/worker-rag.mjs"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "react-hook-form": "^7.53.0",
     "react-markdown": "^9.0.1",
     "remark-gfm": "^4.0.0",
+    "server-only": "^0.0.1",
     "unpdf": "^1.6.2",
     "zod": "^3.23.0"
   },

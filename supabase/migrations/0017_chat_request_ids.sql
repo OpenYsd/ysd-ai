@@ -9,7 +9,10 @@
 create table if not exists public.chat_request_ids (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  client_request_id text not null,
+  -- معرّف مبهم لا وعاء نصّي: الشكل مقيَّد في القاعدة كما في Zod، فلا يمكن
+  -- تهريب نص ذي معنى (مسافات/عربية/رموز) في حقل يُفترض أنه معرّف تقني.
+  client_request_id text not null
+    constraint chat_request_ids_format check (client_request_id ~ '^[A-Za-z0-9_-]{8,64}$'),
   conversation_id uuid references public.conversations(id) on delete cascade,
   user_message_id uuid references public.messages(id) on delete set null,
   status text not null default 'in_progress'
@@ -48,11 +51,13 @@ create policy "chat_request_ids_update_own"
 
 -- تنظيف آمن: يحذف المنتهي فقط، ويُستدعى دوريًا (cron أو عند الحاجة).
 -- security definer ليعمل بلا اعتماد على جلسة مستخدم، مع search_path مثبّت.
+-- pg_temp ضرورية (نفس تقوية 0009): بدونها يستطيع مستخدم إنشاء جدول مؤقت
+-- يسبق في المسار فيُنفَّذ بصلاحيات المالك.
 create or replace function public.cleanup_chat_request_ids()
 returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
   removed integer;

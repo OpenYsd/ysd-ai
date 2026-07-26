@@ -124,6 +124,9 @@ export function _resetMetrics(): void {
 
 const UNDEFINED_TABLE = "42P01";
 
+// عميل الخدمة — server-only، ويُرجع null إن لم يُضبط المفتاح
+import { getAdminClient } from "../supabase/admin";
+
 export interface DurableEvent {
   mode: "general" | "protected";
   errorCode: string | null;
@@ -146,8 +149,16 @@ interface InsertClient {
   };
 }
 
-/** يكتب الحدث في القاعدة — لا يرمي ولا يُبطئ الرد (fire-and-forget عند الاستدعاء) */
-export async function persistEvent(supabase: InsertClient, e: DurableEvent): Promise<void> {
+/**
+ * يكتب الحدث في القاعدة — لا يرمي ولا يُبطئ الرد (fire-and-forget عند الاستدعاء).
+ *
+ * v0.6.6 RC3: الكتابة عبر **عميل الخدمة** حصرًا. الجدول يمنع الكتابة على كل
+ * أدوار العميل (RLS بلا سياسة insert)، فلا يستطيع مستخدم حقن مقاييس مُلفّقة.
+ * وإن غاب المفتاح فلا تتعطل المحادثة: الذاكرة تبقى المصدر الاحتياطي.
+ */
+export async function persistEvent(e: DurableEvent): Promise<void> {
+  const supabase = getAdminClient() as InsertClient | null;
+  if (!supabase) return; // observability_persistence=disabled — سُجّل مرة واحدة
   try {
     const { error } = await supabase.from("observability_events").insert({
       mode: e.mode,

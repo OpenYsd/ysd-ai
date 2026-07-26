@@ -38,31 +38,37 @@ create table if not exists public.observability_events (
 create index if not exists observability_events_created_idx
   on public.observability_events (created_at desc);
 
--- RLS: لا قراءة لأحد عبر anon/authenticated. اللوحة تقرأ عبر مسار إداري
--- خادمي يتحقق من الدور بنفسه، فلا حاجة لفتح الجدول لأي جلسة مستخدم.
+-- RLS: قراءة للإدارة فقط، ولا كتابة لأي مستخدم إطلاقًا.
+--
+-- الكتابة حكرٌ على service_role من الخادم (lib/supabase/admin.ts) وهو يتجاوز
+-- RLS بحكم دوره. السبب: سياسة insert مفتوحة للمُصادَقين كانت تتيح لأي مستخدم
+-- حقن صفوف مقاييس مُلفّقة فيفسد أرقام اللوحة (متوسطات، نسب أخطاء) أو يضخّم
+-- الجدول — وهو جدول بلا user_id فلا يمكن حتى عزل المُسيء.
+--
+-- عدم وجود سياسات insert/update/delete يعني منعها تمامًا لكل من anon
+-- وauthenticated: RLS مفعّلة، وما لا سياسة له مرفوض افتراضًا.
 alter table public.observability_events enable row level security;
 
 drop policy if exists "observability_events_admin_read" on public.observability_events;
+-- is_admin() الموجودة في المشروع: security definer وstable — أخفّ من استعلام
+-- مضمّن على profiles، وتتفادى المرور بسياسات profiles في كل صف.
 create policy "observability_events_admin_read"
   on public.observability_events for select
-  using (
-    exists (
-      select 1 from public.profiles p
-      where p.id = auth.uid() and p.role in ('admin', 'owner')
-    )
-  );
+  using (public.is_admin());
 
+-- تُزال السياسة المتساهلة إن كانت طُبّقت من نسخة سابقة من هذا الملف
 drop policy if exists "observability_events_insert" on public.observability_events;
-create policy "observability_events_insert"
-  on public.observability_events for insert
-  with check (auth.uid() is not null);
+
+-- لا امتيازات مباشرة لأدوار العميل — الاعتماد على RLS وحدها ليس كافيًا
+revoke all on public.observability_events from anon, authenticated;
+grant select on public.observability_events to authenticated; -- تحكمها سياسة is_admin()
 
 -- تنظيف آمن: نافظ اللوحة 60 دقيقة، ونحتفظ بـ7 أيام للتحليل ثم نحذف.
 create or replace function public.cleanup_observability_events()
 returns integer
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
   removed integer;

@@ -18,3 +18,8 @@ scripts/.tmp-*.mjs
 /test-results/
 /playwright-report/
 /blob-report/
+
+# اختبارات E2E — أسرار وحالة جلسة: لا تدخل Git إطلاقًا
+.env.e2e.local
+.playwright/
+.playwright/.auth/

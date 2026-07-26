@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+/**
+ * شكل معرّف الطلب — **نفس** النمط المفروض في القاعدة
+ * (chat_request_ids_format في migration 0017). التطابق مقصود: التحقق هنا
+ * يعطي رسالة عربية واضحة، والقيد هناك هو الضمان الأخير مهما كان المصدر.
+ * معرّف مبهم لا وعاء نصّي: لا مسافات ولا عربية ولا رموز.
+ */
+export const CLIENT_REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
 export const chatRequestSchema = z
   .object({
     conversationId: z.string().uuid(),
@@ -14,7 +22,10 @@ export const chatRequestSchema = z
      * معرّف الطلب من العميل (v0.6.6) — يمنع ازدواج الحفظ حين يتكرر الطلب نفسه
      * (نقر مزدوج، شبكة بطيئة، إعادة اتصال). الخادم يتجاهل التكرار.
      */
-    clientRequestId: z.string().min(8).max(64).optional(),
+    clientRequestId: z
+      .string()
+      .regex(CLIENT_REQUEST_ID_RE, "معرّف الطلب غير صالح")
+      .optional(),
   })
   .refine((d) => d.regenerate === true || typeof d.message === "string", {
     message: "message مطلوبة إلا عند إعادة التوليد",
