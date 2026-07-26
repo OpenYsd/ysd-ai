@@ -22,6 +22,7 @@ import {
 } from "./uncertainty-guard";
 import { buildNoCompletionMessage, isEmptyCompletion } from "./empty-completion";
 import { codeFromProviderKind } from "./error-codes";
+import { ambiguousCandidates, buildClarifyQuestion } from "./entity-aliases";
 import {
   STRICT_GROUNDING_SUFFIX,
   buildUnsourcedMessage,
@@ -33,6 +34,7 @@ import {
   TRUNCATED_NOTICE,
   dedupeContinuation,
   endsWithDanglingPreamble,
+  shouldAppendTruncatedNotice,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -215,6 +217,33 @@ export class OpenRouterProvider implements AIProviderAdapter {
     const stats: ProviderStats = { providerCalls: 0 };
 
     /**
+     * إنفاذ سؤال التوضيح (v0.6.6 RC2): اسم يحتمل أكثر من عمل.
+     * كان توجيهًا في الموجّه فقط، ورُصد حيًّا أن النموذج يتجاهله ويجيب بالتخمين.
+     * الآن يُحسم في النظام: لا نداء للمزوّد إطلاقًا، وسؤال توضيح واحد فقط.
+     */
+    const ambiguous = ambiguousCandidates(userText);
+    if (ambiguous.length > 0) {
+      console.log(
+        `[openrouter] ambiguous_entity=true candidates=${ambiguous.map((a) => a.canonical).join("|")}`,
+      );
+      yield {
+        type: "meta",
+        model: req.modelId,
+        mode: verified ? "protected" : "general",
+        regenerations: 0,
+        emptyCompletions: 0,
+        groundingSource,
+        protectedDetailBlocked: false,
+        shortCircuit: true,
+        providerCalls: 0,
+        ambiguousEntity: true,
+      };
+      yield { type: "text", text: buildClarifyQuestion(ambiguous) };
+      yield { type: "done" };
+      return;
+    }
+
+    /**
      * اختصار الوضع المحمي (v0.6.5 RC8): سؤال متخصص بلا أي مصدر موثوق.
      * النتيجة محسومة سلفًا — حارس الإسناد سيمنع أي تفاصيل مهما ولّد النموذج —
      * فنداء المزوّد انتظار بلا فائدة (قِيس حيًّا: 129 ثانية ثم الرسالة الآمنة
@@ -311,8 +340,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
           yield* this.continueAfterLeak(req, next, expected, userText, result.emitted ?? "", stats);
           return;
         }
-        // لا احتياط متاح — إنهاء لطيف عند آخر جملة نظيفة
-        yield { type: "text", text: TRUNCATED_NOTICE };
+        // لا احتياط متاح — إنهاء عند آخر جملة نظيفة.
+        // العبارة تُضاف فقط إن كان الرد ناقصًا فعلًا؛ وإلا نُنهي بصمت.
+        if (shouldAppendTruncatedNotice(result.emitted ?? "")) {
+          yield { type: "text", text: TRUNCATED_NOTICE };
+        }
         yield { type: "done" };
         return;
       }
@@ -498,8 +530,12 @@ export class OpenRouterProvider implements AIProviderAdapter {
       console.error(`[openrouter] continuation rejected: reason=${d.ok ? "language" : d.reason}`);
     }
 
-    // فشل الإكمال (تسريب أو عطل تقني) — إنهاء لطيف بلا رسالة خطأ
-    yield { type: "text", text: TRUNCATED_NOTICE };
+    // فشل الإكمال (تسريب أو عطل تقني) — إنهاء بلا رسالة خطأ.
+    // إن كان المعروض إجابة مفيدة تنتهي بجملة مكتملة نُنهي بصمت: العبارة حينها
+    // توحي بعطل بينما الرد سليم (رُصد حيًّا في رد Jujutsu Kaisen).
+    if (shouldAppendTruncatedNotice(emitted)) {
+      yield { type: "text", text: TRUNCATED_NOTICE };
+    }
     yield { type: "done" };
   }
 

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getAdminContext } from "@/lib/admin/guard";
-import { summarize } from "@/lib/admin/health-metrics";
+import { summarize, summarizeDurable } from "@/lib/admin/health-metrics";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,12 @@ export default async function AdminHealthPage() {
   const ctx = await getAdminContext();
   if (!ctx) redirect("/chat");
 
-  const s = summarize();
+  // المصدر الدائم أولًا (ينجو من إعادة التشغيل)، والذاكرة احتياطًا إن لم
+  // تُطبَّق الـmigration بعد أو تعذّرت القراءة.
+  const supabase = await createClient();
+  const durable = await summarizeDurable(supabase as never);
+  const s = durable ?? summarize();
+  const persistent = durable !== null;
   const minutes = Math.round(s.windowMs / 60_000);
 
   return (
@@ -116,8 +122,9 @@ export default async function AdminHealthPage() {
       )}
 
       <p className="text-[11.5px] text-ink-faint">
-        ملاحظة: هذه المقاييس في ذاكرة الخادم — تُصفَّر عند إعادة تشغيل الحاوية، ولكل نسخة خادم
-        عدّاداتها. التخزين الدائم يحتاج جدولًا في قاعدة البيانات.
+        {persistent
+          ? "المصدر: جدول observability_events — تبقى الإحصاءات بعد إعادة تشغيل الحاوية وتُجمَّع عبر النسخ. أرقام ورموز فقط، بلا أي نص أو بيانات شخصية."
+          : "المصدر: ذاكرة الخادم (الاحتياطي) — تُصفَّر عند إعادة التشغيل. لتفعيل التخزين الدائم طبّق migration رقم 0018."}
       </p>
     </div>
   );

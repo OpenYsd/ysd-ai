@@ -140,16 +140,36 @@ export interface DetectedEntity {
  * مطابقة على حدود الكلمات — لا مجرد `includes`.
  * تمنع أن يبتلع اسمٌ اسمًا آخر يشاركه بادئة (جوجو داخل جوجيتسو مثلًا).
  */
+/**
+ * السوابق العربية الملتصقة (و/ف/ب/ل/ك) و«ال» التعريف: «بجوجيتسو» و«والدن رينق»
+ * إشارتان صحيحتان للكيان. إهمالها كان يُفقد الكشف تمامًا (رُصد في اختبار
+ * «قارن جوجو بجوجيتسو كايسن» — لم يُكتشف Jujutsu Kaisen أصلًا).
+ */
+function isArabicProclitic(before: string, haystack: string, at: number): boolean {
+  if (!/[وفبلك]/.test(before)) return false;
+  // الحرف السابق للسابقة يجب أن يكون فاصلًا (بداية كلمة)
+  const prev = at >= 2 ? haystack[at - 2] ?? "" : "";
+  return prev === "" || !/[\p{L}\p{N}]/u.test(prev);
+}
+
 function containsAtBoundary(haystack: string, needle: string): boolean {
   if (!needle) return false;
+  const isLetter = (c: string) => c !== "" && /[\p{L}\p{N}]/u.test(c);
   let from = 0;
   for (;;) {
     const i = haystack.indexOf(needle, from);
     if (i < 0) return false;
     const before = i === 0 ? "" : haystack[i - 1] ?? "";
     const after = haystack[i + needle.length] ?? "";
-    const isLetter = (c: string) => c !== "" && /[\p{L}\p{N}]/u.test(c);
-    if (!isLetter(before) && !isLetter(after)) return true;
+    if (!isLetter(after)) {
+      if (!isLetter(before)) return true;
+      if (isArabicProclitic(before, haystack, i)) return true;
+      // «ال» التعريف قبل الاسم
+      if (before === "ل" && i >= 2 && haystack[i - 2] === "ا") {
+        const prev = i >= 3 ? haystack[i - 3] ?? "" : "";
+        if (prev === "" || !isLetter(prev)) return true;
+      }
+    }
     from = i + 1;
   }
 }
@@ -203,14 +223,23 @@ export function ambiguousCandidates(userText: string): DetectedEntity[] {
 }
 
 /** سؤال توضيح مختصر يُعرض بدل التخمين */
+const TYPE_AR: Record<EntityType, string> = {
+  video_game: "لعبة",
+  software: "برنامج",
+  anime_manga: "أنمي",
+};
+
 export function buildClarifyQuestion(candidates: DetectedEntity[]): string {
-  const names = candidates.map((c) => c.canonical);
-  if (names.length === 0) return "";
-  if (names.length === 1) {
-    return `تقصد ${names[0]}؟ أكّد لي الاسم حتى لا أعطيك معلومة عن عمل آخر.`;
+  if (candidates.length === 0) return "";
+  const first = candidates[0]!;
+  if (candidates.length === 1) {
+    return `تقصد ${TYPE_AR[first.entityType]} ${first.canonical}؟ أكّد لي الاسم حتى لا أعطيك معلومة عن عمل آخر.`;
   }
-  const list = names.slice(0, 3).join(" أم ");
-  return `تقصد ${list}؟ الاسمان مختلفان تمامًا، وأفضّل أن أتأكد بدل أن أخلط بينهما.`;
+  const list = candidates
+    .slice(0, 3)
+    .map((c) => c.canonical)
+    .join(" أم ");
+  return `تقصد ${list}؟ عملان مختلفان تمامًا، وأفضّل أن أتأكد بدل أن أخلط بينهما.`;
 }
 
 /**

@@ -419,6 +419,36 @@ export const CONTINUATION_SUFFIX =
 /** إنهاء لطيف عند آخر جملة نظيفة حين يتعذّر الإكمال — بلا رسالة خطأ */
 export const TRUNCATED_NOTICE = "\n\nتوقفت هنا للحفاظ على جودة الرد.";
 
+/** هل ينتهي النص بجملة عربية مكتملة؟ (علامة نهاية، وبلا تمهيد معلّق) */
+export function endsWithCompleteSentence(text: string): boolean {
+  const t = text.replace(/\s+$/, "");
+  if (!t) return false;
+  if (endsWithDanglingPreamble(t)) return false;
+  // علامة نهاية جملة، ويُسمح بعدها بعلامات إغلاق (اقتباس/قوس)
+  return /[.!?؟…][»"'’”)\]]*$/.test(t);
+}
+
+/** أقل عدد كلمات يجعل النص إجابةً مفيدة لا مجرد بادئة */
+const USEFUL_MIN_WORDS = 12;
+
+/** هل ما عُرض إجابة مفيدة قائمة بذاتها؟ */
+export function isUsefulReply(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  return words.length >= USEFUL_MIN_WORDS;
+}
+
+/**
+ * هل نختم بعبارة الجودة؟ (v0.6.6 RC2)
+ * لا: إن كان المعروض إجابة مفيدة تنتهي بجملة مكتملة — نُنهي بصمت، فالعبارة
+ * حينها ضجيج يوحي بعطل بينما الرد سليم تمامًا.
+ * نعم: حين لا يوجد نص مفيد، أو حين تكون البنية ناقصة فعلًا (جملة مبتورة أو
+ * تمهيد معلّق) — فالمستخدم يستحق أن يعرف أن الرد لم يكتمل.
+ */
+export function shouldAppendTruncatedNotice(emitted: string): boolean {
+  if (!isUsefulReply(emitted)) return true;
+  return !endsWithCompleteSentence(emitted);
+}
+
 /** رسالة فشل كل النماذج — تُعرض للمستخدم */
 export const GUARD_FAILURE_MESSAGE =
   "تعذر الحصول على رد عربي بجودة مناسبة حاليًا. رسالتك محفوظة، حاول إعادة التوليد.";

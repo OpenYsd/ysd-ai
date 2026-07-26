@@ -19,8 +19,8 @@ import {
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
-import { claimRequest, recordRequestMessage } from "@/lib/chat/idempotency";
-import { recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
+import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
+import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -78,6 +78,7 @@ export async function POST(req: NextRequest) {
 
   // 4+5) التحقّق: الملكية وحدّ الاستهلاك — مستقلان، فيُنفَّذان بالتوازي.
   //      الترتيب الأمني ونفس رسائل الخطأ محفوظان: الملكية (404) تُفحص قبل الحد (403).
+  const tConvLookup = Date.now();
   const [{ data: conv }, { data: allowed }] = await Promise.all([
     supabase
       .from("conversations")
@@ -88,6 +89,7 @@ export async function POST(req: NextRequest) {
       .single(),
     supabase.rpc("check_usage_allowed", { p_user_id: userId }),
   ]);
+  const conversationLookupMs = Date.now() - tConvLookup;
   if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
   if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
 
@@ -112,6 +114,10 @@ export async function POST(req: NextRequest) {
 
   // 7) تجهيز الرسائل حسب نوع العملية
   let userMessageId: string | null = null;
+  // قياسات القاعدة مفصولة (v0.6.6 RC2): «database_ms» المجمّع كان يخفي أي
+  // عملية تحديدًا هي البطيئة، فيُنسب التأخير إلى Supabase عمومًا بلا تشخيص.
+  let userMessageInsertMs = 0;
+  let assistantMessageInsertMs = 0;
   // عنوان تلقائي مؤجَّل — يُدمج في تحديث المحادثة المتوازي بدل استعلام منفصل
   let newTitle: string | null = null;
 
@@ -162,27 +168,38 @@ export async function POST(req: NextRequest) {
   } else {
     // رسالة جديدة — بحارس ازدواج: الطلب نفسه (client_request_id) لا يُحفظ مرتين
     // مهما تكرر إرساله من نقر مزدوج أو إعادة اتصال.
-    const claim = claimRequest(userId, clientRequestId);
-    if (!claim.isNew) {
+    const claim = await claimRequestDurable(
+      supabase as never,
+      userId,
+      clientRequestId,
+      conversationId,
+    );
+    if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true`);
       return json(
         {
           error: "هذه الرسالة أُرسلت بالفعل.",
           code: "duplicate_request",
-          userMessageId: claim.previousUserMessageId,
+          userMessageId: claim.duplicate ? claim.previousUserMessageId : null,
         },
         409,
       );
     }
 
+    const tInsert = Date.now();
     const { data: inserted, error: insertErr } = await supabase
       .from("messages")
       .insert({ conversation_id: conversationId, role: "user", content: message })
       .select("id")
       .single();
-    if (insertErr || !inserted) return json({ error: "تعذّر حفظ الرسالة." }, 500);
+    userMessageInsertMs = Date.now() - tInsert;
+    if (insertErr || !inserted) {
+      // فشل الحفظ — علّم الحجز failed كي لا يبقى in_progress معلّقًا
+      await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
+      return json({ error: "تعذّر حفظ الرسالة." }, 500);
+    }
     userMessageId = inserted.id;
-    recordRequestMessage(userId, clientRequestId, userMessageId);
+    await finalizeRequest(supabase as never, userId, clientRequestId, "completed", userMessageId);
 
     // عنوان تلقائي من أول رسالة — يُدمج في تحديث المحادثة المتوازي أدناه
     if (conv.title === DEFAULT_TITLE && message) {
@@ -385,11 +402,13 @@ export async function POST(req: NextRequest) {
               })),
             };
           }
+          const tAsstInsert = Date.now();
           const { data: saved } = await supabase
             .from("messages")
             .insert(insertRow)
             .select("id")
             .single();
+          assistantMessageInsertMs = Date.now() - tAsstInsert;
           assistantMessageId = saved?.id ?? null;
         }
         send({ type: "done", userMessageId, assistantMessageId });
@@ -405,20 +424,40 @@ export async function POST(req: NextRequest) {
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
             `protected_short_circuit=${shortCircuit} provider_calls=${providerCalls} ` +
             `auth_ms=${authMs} database_ms=${dbMs} rag_ms=${ragMs} ` +
+            `conversation_lookup_ms=${conversationLookupMs} ` +
+            `user_message_insert_ms=${userMessageInsertMs} ` +
+            `assistant_message_insert_ms=${assistantMessageInsertMs} ` +
             `provider_first_byte_ms=${providerFirstByteMs} ` +
             `total_first_text_ms=${totalFirstTokenMs} total_response_ms=${Date.now() - tStart}`,
         );
 
         // مقياس للوحة المراقبة — أرقام ورموز فقط، بلا أي نص أو هوية
+        const totalResponseMs = Date.now() - tStart;
         recordChatMetric({
           at: Date.now(),
           firstTextMs: totalFirstTokenMs,
-          totalMs: Date.now() - tStart,
+          totalMs: totalResponseMs,
           errorCode: lastErrorCode,
           fallbackCount,
           providerCalls,
           mode: answerMode,
           shortCircuit,
+        });
+        // التخزين الدائم — لا يُنتظر كي لا يؤخّر إغلاق البثّ
+        void persistEvent(supabase as never, {
+          mode: answerMode,
+          errorCode: lastErrorCode,
+          sessionRefreshResult: null,
+          authMs,
+          conversationLookupMs,
+          userMessageInsertMs,
+          ragMs,
+          providerFirstByteMs,
+          totalFirstTextMs: totalFirstTokenMs,
+          totalResponseMs,
+          providerCalls,
+          fallbackCount,
+          protectedShortCircuit: shortCircuit,
         });
       } catch (err) {
         console.error("[chat] stream failed:", err);

@@ -76,3 +76,116 @@ export function recordRequestMessage(
 export function _resetIdempotency(): void {
   seen.clear();
 }
+
+// ── الحماية الدائمة عبر القاعدة (v0.6.6 RC2) ──────────────────────────────
+// ذاكرة العملية أعلاه صارت **cache** فقط. المصدر الموثوق حجز ذرّي على قيد
+// unique(user_id, client_request_id): محاولة ثانية تفشل بـ23505 مهما كانت
+// النسخة التي استقبلتها. وإن غاب الجدول (migration لم تُطبَّق بعد) نسقط إلى
+// الذاكرة بدل أن ينكسر المسار.
+
+/** رمز خطأ Postgres لانتهاك القيد الفريد */
+const UNIQUE_VIOLATION = "23505";
+/** رمز غياب الجدول — يعني أن الـmigration لم تُطبَّق */
+const UNDEFINED_TABLE = "42P01";
+
+export type ClaimOutcome =
+  | { ok: true; storage: "db" | "memory" }
+  | { ok: false; duplicate: true; previousUserMessageId: string | null }
+  | { ok: false; duplicate: false; reason: string };
+
+interface MinimalClient {
+  from: (table: string) => {
+    insert: (row: Record<string, unknown>) => {
+      select: (cols: string) => {
+        single: () => Promise<{ data: unknown; error: { code?: string } | null }>;
+      };
+    };
+    select: (cols: string) => {
+      eq: (c: string, v: unknown) => {
+        eq: (c: string, v: unknown) => {
+          maybeSingle: () => Promise<{ data: unknown; error: unknown }>;
+        };
+      };
+    };
+    update: (row: Record<string, unknown>) => {
+      eq: (c: string, v: unknown) => {
+        eq: (c: string, v: unknown) => Promise<{ error: unknown }>;
+      };
+    };
+  };
+}
+
+/**
+ * حجز ذرّي للطلب. يُستدعى **قبل** حفظ رسالة المستخدم.
+ * التكرار يُكتشف من انتهاك القيد الفريد لا من قراءة مسبقة — فلا سباق.
+ */
+export async function claimRequestDurable(
+  supabase: MinimalClient,
+  userId: string,
+  clientRequestId: string | undefined,
+  conversationId: string,
+): Promise<ClaimOutcome> {
+  if (!clientRequestId) return { ok: true, storage: "memory" };
+
+  // فحص الذاكرة أولًا: يوفّر رحلة قاعدة في الحالة الشائعة (نفس النسخة)
+  const local = claimRequest(userId, clientRequestId);
+  if (!local.isNew) {
+    return { ok: false, duplicate: true, previousUserMessageId: local.previousUserMessageId };
+  }
+
+  const { error } = await supabase
+    .from("chat_request_ids")
+    .insert({
+      user_id: userId,
+      client_request_id: clientRequestId,
+      conversation_id: conversationId,
+      status: "in_progress",
+    })
+    .select("id")
+    .single();
+
+  if (!error) return { ok: true, storage: "db" };
+
+  if (error.code === UNIQUE_VIOLATION) {
+    // نسخة أخرى (أو طلب أسبق) حجزته — اقرأ معرّف الرسالة إن كُتب
+    const { data } = await supabase
+      .from("chat_request_ids")
+      .select("user_message_id")
+      .eq("user_id", userId)
+      .eq("client_request_id", clientRequestId)
+      .maybeSingle();
+    const prev = (data as { user_message_id?: string | null } | null)?.user_message_id ?? null;
+    return { ok: false, duplicate: true, previousUserMessageId: prev };
+  }
+
+  if (error.code === UNDEFINED_TABLE) {
+    // الـmigration لم تُطبَّق — الذاكرة وحدها (حماية داخل النسخة فقط)
+    console.error("[idempotency] chat_request_ids missing — falling back to memory");
+    return { ok: true, storage: "memory" };
+  }
+
+  // عطل قاعدة آخر: لا نمنع المستخدم من الإرسال بسببه
+  console.error(`[idempotency] claim failed code=${error.code ?? "?"} — memory only`);
+  return { ok: true, storage: "memory" };
+}
+
+/** يحدّث الحجز بعد حفظ الرسالة أو عند الفشل — لا يرمي أبدًا */
+export async function finalizeRequest(
+  supabase: MinimalClient,
+  userId: string,
+  clientRequestId: string | undefined,
+  status: "completed" | "failed",
+  userMessageId: string | null,
+): Promise<void> {
+  if (!clientRequestId) return;
+  recordRequestMessage(userId, clientRequestId, userMessageId);
+  try {
+    await supabase
+      .from("chat_request_ids")
+      .update({ status, ...(userMessageId ? { user_message_id: userMessageId } : {}) })
+      .eq("user_id", userId)
+      .eq("client_request_id", clientRequestId);
+  } catch {
+    /* التحديث تحسين لا شرط — الحجز نفسه هو الحماية */
+  }
+}
