@@ -13,3 +13,8 @@ scripts/.qa-owner-inject.js
 scripts/.qa-invite.txt
 scripts/.qa-mail.json
 scripts/.tmp-*.mjs
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
