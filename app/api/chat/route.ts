@@ -22,6 +22,12 @@ import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
 import { endsWithCompleteSentence } from "@/lib/ai/language-guard";
+import {
+  BUCKET_CHAT,
+  consumeRateLimit,
+  rateLimitHeaders,
+  type RateLimitDecision,
+} from "@/lib/rate-limit-distributed";
 
 /**
  * سقف زمني صارم للطلب كله (v0.7.0) — من وصوله حتى done.
@@ -30,27 +36,32 @@ import { endsWithCompleteSentence } from "@/lib/ai/language-guard";
  */
 const TOTAL_REQUEST_BUDGET_MS = 110_000;
 
+/** السقف الفعلي — يُقصَّر في الاختبار وحده خلف البوابة الصريحة */
+function hardLimitMs(): number {
+  const gated =
+    process.env.NODE_ENV === "test" || process.env.YSD_ENABLE_TEST_PROVIDER === "1";
+  if (gated && process.env.YSD_TEST_HARD_LIMIT_MS) {
+    const n = Number(process.env.YSD_TEST_HARD_LIMIT_MS);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return TOTAL_REQUEST_BUDGET_MS;
+}
+
 /** رسالة نفاد الوقت — عربية وواضحة، بلا أي تفصيل تقني */
 const TIMEOUT_MESSAGE = "تعذر إكمال الرد ضمن الوقت المتاح. حاول مرة أخرى بعد قليل.";
+
+/** حدّ المحادثة — نفس قيم الإصدار الحالي (20 طلبًا/دقيقة)، لم تُخترع قيمة جديدة */
+const CHAT_RATE_LIMIT = Number(process.env.YSD_CHAT_RATE_LIMIT ?? 20);
+const CHAT_RATE_WINDOW_SEC = Number(process.env.YSD_CHAT_RATE_WINDOW_SEC ?? 60);
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const DEFAULT_TITLE = "محادثة جديدة";
 
-/** Rate limiting بسيط داخل الذاكرة — يُستبدل بـ Redis/Upstash في الإنتاج */
-const buckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(userId: string, limit = 20, windowMs = 60_000): boolean {
-  const now = Date.now();
-  const b = buckets.get(userId);
-  if (!b || now > b.resetAt) {
-    buckets.set(userId, { count: 1, resetAt: now + windowMs });
-    return true;
-  }
-  if (b.count >= limit) return false;
-  b.count++;
-  return true;
-}
+// v0.7.0 RC2: عدّاد المحادثة المحلي أُزيل — صار المصدر
+// lib/rate-limit-distributed (دالة ذرّية في القاعدة يشترك فيها كل النسخ)،
+// وlib/rate-limit.ts يبقى احتياطًا داخلها عند تعذّر القاعدة.
 
 export async function POST(req: NextRequest) {
   const tStart = Date.now();
@@ -72,8 +83,9 @@ export async function POST(req: NextRequest) {
   }
   const userId = ctx.userId;
 
-  // 2) Rate limiting
-  if (!rateLimit(userId)) return json({ error: "تجاوزت حد الطلبات، حاول بعد قليل." }, 429);
+  // 2) حدّ المعدّل: **أُخِّر عمدًا** إلى ما بعد حجز idempotency (الخطوة 5ب).
+  //    كان هنا، فكان الطلب المكرر (نقر مزدوج/إعادة اتصال) يستهلك من الحدّ
+  //    مرتين رغم أنه رسالة واحدة. الآن: المكرر يُرد 409 بلا استهلاك.
 
   // 2ب) حالة الحساب — نفس الفحص والرسائل (banned يمنعه الوسيط أيضًا؛ دفاع مزدوج)
   if (ctx.status === "banned")
@@ -125,6 +137,7 @@ export async function POST(req: NextRequest) {
 
   // 7) تجهيز الرسائل حسب نوع العملية
   let userMessageId: string | null = null;
+  let rateLimitInfo: RateLimitDecision | null = null;
   // قياسات القاعدة مفصولة (v0.6.6 RC2): «database_ms» المجمّع كان يخفي أي
   // عملية تحديدًا هي البطيئة، فيُنسب التأخير إلى Supabase عمومًا بلا تشخيص.
   let userMessageInsertMs = 0;
@@ -196,6 +209,24 @@ export async function POST(req: NextRequest) {
         409,
       );
     }
+
+    // 5ب) حدّ المعدّل — بعد الحجز مباشرة وقبل أي حفظ أو نداء مزوّد.
+    // الترتيب مقصود: المكرر رُدّ 409 أعلاه بلا استهلاك، والجديد وحده يستهلك.
+    const rl = await consumeRateLimit(userId, BUCKET_CHAT, CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SEC);
+    if (!rl.allowed) {
+      // الطلب مرفوض: لا رسالة تُحفظ، ولا نداء للمزوّد. ونحرّر الحجز كي لا
+      // يبقى in_progress معلّقًا ولا يمنع المستخدم من إعادة المحاولة لاحقًا.
+      await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
+      console.log(
+        `[chat] rid=${requestId} rate_limited=true backend=${rl.backend} remaining=${rl.remaining}`,
+      );
+      return json(
+        { error: "تجاوزت حد الطلبات، حاول بعد قليل.", code: "rate_limit" },
+        429,
+        { ...rateLimitHeaders(rl), "Retry-After": String(rl.retryAfterSec) },
+      );
+    }
+    rateLimitInfo = rl;
 
     const tInsert = Date.now();
     const { data: inserted, error: insertErr } = await supabase
@@ -355,7 +386,7 @@ export async function POST(req: NextRequest) {
        * بأنفسنا برسالة عربية واضحة بدل أن يقطعه وسيط بلا تفسير.
        */
       const hardLimit = new AbortController();
-      const hardLimitTimer = setTimeout(() => hardLimit.abort(), TOTAL_REQUEST_BUDGET_MS);
+      const hardLimitTimer = setTimeout(() => hardLimit.abort(), hardLimitMs());
       // إلغاء العميل يُلغي أيضًا — إشارة واحدة للمزوّد
       const onClientAbort = () => hardLimit.abort();
       req.signal.addEventListener("abort", onClientAbort);
@@ -558,13 +589,14 @@ export async function POST(req: NextRequest) {
       "X-Accel-Buffering": "no",
       "x-ysd-request-id": requestId,
       "Server-Timing": serverTiming,
+      ...(rateLimitInfo ? rateLimitHeaders(rateLimitInfo) : {}),
     },
   });
 }
 
-function json(body: unknown, status: number) {
+function json(body: unknown, status: number, extraHeaders?: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(extraHeaders ?? {}) },
   });
 }
