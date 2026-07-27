@@ -59,6 +59,37 @@ const API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const PROVIDER_TIMEOUT_MS = 25_000;
 
 /**
+ * منافذ اختبار **خادمية بحتة** (v0.7.0) — لا تعمل إلا خلف بوابة صريحة.
+ *
+ * البوابة: NODE_ENV=test أو YSD_ENABLE_TEST_PROVIDER=1. في الإنتاج تبقى مغلقة،
+ * فلا يستطيع أحد — ولا حتى بمتغيّر بيئة مُسرَّب — تحويل نداءات المزوّد إلى
+ * عنوان آخر. ولا شيء من هذا يصل المتصفح (الملف خادمي ولا NEXT_PUBLIC).
+ *
+ * الغرض: التحقق الفعلي من مهلة الخمول والسقف الكلي بمزوّد وهمي يتوقف عمدًا —
+ * وهو ما تعذّر في RC1 لأن العنوان كان ثابتًا في الكود.
+ */
+function testHooksEnabled(): boolean {
+  return process.env.NODE_ENV === "test" || process.env.YSD_ENABLE_TEST_PROVIDER === "1";
+}
+
+/** عنوان المزوّد — الحقيقي، أو عنوان اختبار خلف البوابة وحدها */
+function providerUrl(): string {
+  if (testHooksEnabled() && process.env.YSD_TEST_PROVIDER_URL) {
+    return process.env.YSD_TEST_PROVIDER_URL;
+  }
+  return API_URL;
+}
+
+/** مهلة الخمول — قابلة للتقصير في الاختبار وحده كي لا يطول CI */
+function idleTimeoutMs(): number {
+  if (testHooksEnabled() && process.env.YSD_TEST_IDLE_MS) {
+    const n = Number(process.env.YSD_TEST_IDLE_MS);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return PROVIDER_TIMEOUT_MS;
+}
+
+/**
  * سقف انتظار المستخدم لسلسلة الاحتياط كاملة.
  * بدونه كانت أربع محاولات × مهلة كل منها تعني انتظارًا مفتوحًا (رُصد حيًّا 129
  * ثانية). عند بلوغ السقف نتوقف فورًا ونعرض رسالة واضحة بدل إطالة الصمت.
@@ -673,10 +704,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // الفرق جوهري: بثّ بطيء لكنه متدفّق كان يُقتل عند 25ث رغم أنه يعمل؛
     // والمطلوب قتل الخامل فقط. تُعاد تسليحها عند كل دفعة (armIdle أدناه).
     const timeout = new AbortController();
-    let timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+    const idleMs = idleTimeoutMs();
+    let timeoutId = setTimeout(() => timeout.abort(), idleMs);
     const armIdle = () => {
       clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+      timeoutId = setTimeout(() => timeout.abort(), idleMs);
     };
     const onClientAbort = () => timeout.abort();
     req.signal?.addEventListener("abort", onClientAbort);
@@ -684,7 +716,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let res: Response;
     stats.providerCalls++; // طلب توليد فعلي واحد
     try {
-      res = await fetch(API_URL, {
+      res = await fetch(providerUrl(), {
         method: "POST",
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,

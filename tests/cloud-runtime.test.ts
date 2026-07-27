@@ -219,12 +219,43 @@ describe("★ railway.json", () => {
     expect(RAILWAY.deploy.healthcheckTimeout).toBe(300);
   });
 
-  it("★ نسخة واحدة وسياسة إعادة تشغيل مناسبة", () => {
-    expect(RAILWAY.deploy.numReplicas).toBe(1);
+  it("★ سياسة إعادة تشغيل مناسبة لخدمة ويب دائمة", () => {
     expect(["ON_FAILURE", "ALWAYS"]).toContain(RAILWAY.deploy.restartPolicyType);
+    expect(RAILWAY.deploy.restartPolicyMaxRetries).toBeGreaterThanOrEqual(1);
+  });
+
+  it("★ عدد النسخ لا يُثبَّت في الملف — يُضبط من لوحة Railway", () => {
+    expect(RAILWAY.deploy).not.toHaveProperty("numReplicas");
   });
 
   it("★ لا يثبّت PORT", () => {
     expect(JSON.stringify(RAILWAY)).not.toMatch(/"PORT"/);
+  });
+
+  it("★ مطابق للـschema الرسمي: لا حقل غير معروف وكل القيم ضمن المسموح", () => {
+    // نسخة مثبّتة من schema الرسمي (tests/fixtures) — فحص حتمي بلا شبكة
+    const schema = JSON.parse(read("tests/fixtures/railway.schema.json"));
+    expect(schema.additionalProperties).toBe(false);
+
+    const top = schema.properties as Record<string, unknown>;
+    for (const k of Object.keys(RAILWAY)) {
+      expect(top, `حقل أعلى غير معروف: ${k}`).toHaveProperty(k);
+    }
+    const bp = (schema.properties.build as { properties: Record<string, unknown> }).properties;
+    for (const k of Object.keys(RAILWAY.build)) {
+      expect(bp, `build.${k} غير معروف`).toHaveProperty(k);
+    }
+    const dp = (schema.properties.deploy as { properties: Record<string, unknown> }).properties;
+    for (const k of Object.keys(RAILWAY.deploy)) {
+      expect(dp, `deploy.${k} غير معروف`).toHaveProperty(k);
+    }
+
+    // القيم ضمن enum المسموح
+    const builderEnum = (bp.builder as { anyOf: { enum?: string[] }[] }).anyOf.find((x) => x.enum)?.enum;
+    expect(builderEnum).toContain(RAILWAY.build.builder);
+    const restartEnum = (dp.restartPolicyType as { anyOf: { enum?: string[] }[] }).anyOf.find(
+      (x) => x.enum,
+    )?.enum;
+    expect(restartEnum).toContain(RAILWAY.deploy.restartPolicyType);
   });
 });
