@@ -12,7 +12,7 @@
 
 services:
   ysd-ai:
-    image: ysd-ai:0.6.6-rc3
+    image: ysd-ai:0.6.6-rc4
     container_name: ysd-ai
 
     # لا build هنا عمدًا: الصورة تُبنى بـ build args (NEXT_PUBLIC_* تُحقَن في حزمة
