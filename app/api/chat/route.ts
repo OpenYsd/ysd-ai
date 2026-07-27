@@ -21,6 +21,17 @@ import {
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
+import { endsWithCompleteSentence } from "@/lib/ai/language-guard";
+
+/**
+ * سقف زمني صارم للطلب كله (v0.7.0) — من وصوله حتى done.
+ * 110ث لا 125: الوكلاء أمام المنصّات السحابية (Cloudflare مثلًا) يقطعون قرب
+ * 100ث، ونريد أن ننهي الرد بأنفسنا برسالة واضحة بدل قطع صامت من وسيط.
+ */
+const TOTAL_REQUEST_BUDGET_MS = 110_000;
+
+/** رسالة نفاد الوقت — عربية وواضحة، بلا أي تفصيل تقني */
+const TIMEOUT_MESSAGE = "تعذر إكمال الرد ضمن الوقت المتاح. حاول مرة أخرى بعد قليل.";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -318,6 +329,41 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      /**
+       * نبضة إبقاء الاتصال (v0.7.0): تعليق SSE كل 15 ثانية أثناء انتظار المزوّد.
+       * سطر يبدأ بـ`:` تعليق في بروتوكول SSE — المتصفح يتجاهله، فلا يظهر للمستخدم
+       * ولا يدخل نص الرسالة (المُرسِل هنا لا يمرّ بـsend ولا يُضاف إلى assistantText).
+       * الغرض: منع الوسطاء والوكلاء من قطع اتصال يبدو خاملًا أثناء توليد بطيء.
+       */
+      let keepAlive: ReturnType<typeof setInterval> | null = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          /* العميل أغلق — التنظيف يتكفّل به finally */
+        }
+      }, 15_000);
+      const stopKeepAlive = () => {
+        if (keepAlive) {
+          clearInterval(keepAlive);
+          keepAlive = null;
+        }
+      };
+
+      /**
+       * سقف زمني صارم للطلب كله (v0.7.0). أقل من 125ث عمدًا: الوكلاء أمام
+       * المنصّات (Cloudflare مثلًا) يقطعون عند 100ث تقريبًا، فنريد أن ننهي الرد
+       * بأنفسنا برسالة عربية واضحة بدل أن يقطعه وسيط بلا تفسير.
+       */
+      const hardLimit = new AbortController();
+      const hardLimitTimer = setTimeout(() => hardLimit.abort(), TOTAL_REQUEST_BUDGET_MS);
+      // إلغاء العميل يُلغي أيضًا — إشارة واحدة للمزوّد
+      const onClientAbort = () => hardLimit.abort();
+      req.signal.addEventListener("abort", onClientAbort);
+      let timedOut = false;
+      hardLimit.signal.addEventListener("abort", () => {
+        if (!req.signal.aborted) timedOut = true;
+      });
+
       // قياس المزوّد داخل نفس الطلب — أرقام فقط، بلا محتوى ولا مفاتيح
       const tProvider = Date.now();
       let providerFirstByteMs = -1;
@@ -339,13 +385,16 @@ export async function POST(req: NextRequest) {
           messages: history,
           systemPrompt,
           grounding,
-          signal: req.signal,
+          // السقف الصارم يُلغي المزوّد فعليًا (لا مجرد تجاهل الرد)
+          signal: hardLimit.signal,
         })) {
           if (chunk.type === "text" && chunk.text) {
             if (providerFirstByteMs < 0) {
               providerFirstByteMs = Date.now() - tProvider;
               totalFirstTokenMs = Date.now() - tStart;
             }
+            // أول نص وصل — النبضة لم تعد لازمة
+            stopKeepAlive();
             assistantText += chunk.text;
             send({ type: "text", text: chunk.text });
           } else if (chunk.type === "status" && chunk.text) {
@@ -460,9 +509,24 @@ export async function POST(req: NextRequest) {
           protectedShortCircuit: shortCircuit,
         });
       } catch (err) {
-        console.error("[chat] stream failed:", err);
-        send({ type: "error", error: "حدث خطأ أثناء توليد الرد.", code: "unknown" });
+        if (timedOut) {
+          // نفاد السقف الصارم: لا خطأ تقني للمستخدم.
+          // نصّ نظيف مكتمل وصل ⇒ نُنهي بصمت؛ وإلا رسالة عربية واضحة.
+          lastErrorCode = "timeout";
+          const usable = assistantText.trim();
+          if (!usable || !endsWithCompleteSentence(usable)) {
+            send({ type: "error", error: TIMEOUT_MESSAGE, code: "timeout" });
+          }
+          console.error(`[chat] rid=${requestId} failure_kind=request_timeout`);
+        } else {
+          console.error("[chat] stream failed:", err);
+          send({ type: "error", error: "حدث خطأ أثناء توليد الرد.", code: "unknown" });
+        }
       } finally {
+        // تنظيف حتمي: لا مؤقتات باقية ولا مستمعات مسرّبة مهما كان المسار
+        stopKeepAlive();
+        clearTimeout(hardLimitTimer);
+        req.signal.removeEventListener("abort", onClientAbort);
         try {
           controller.close();
         } catch {
@@ -489,6 +553,9 @@ export async function POST(req: NextRequest) {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      // يمنع الوسطاء (nginx وما يشبهه أمام المنصّات السحابية) من تخزين البثّ
+      // مؤقتًا فيصل الرد دفعة واحدة بعد اكتماله وتضيع تجربة البثّ كليًا.
+      "X-Accel-Buffering": "no",
       "x-ysd-request-id": requestId,
       "Server-Timing": serverTiming,
     },

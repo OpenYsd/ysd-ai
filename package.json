@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "e2e:prepare": "node scripts/e2e-prepare.mjs",
+    "embeddings:prefetch": "node scripts/embeddings-prefetch.mjs",
     "worker:rag": "node scripts/worker-rag.mjs"
   },
   "dependencies": {

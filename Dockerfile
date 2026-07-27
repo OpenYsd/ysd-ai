@@ -63,14 +63,27 @@ RUN test -f /app/.next/standalone/server.js || (echo "خطأ: لا يوجد .nex
 RUN test -d /app/.next/standalone/node_modules/onnxruntime-node \
     || (echo "تحذير: onnxruntime-node غير متتبَّع في standalone — سيُنسخ يدويًا")
 
+# ---------- 2ب) خبز نموذج Embeddings في الصورة ----------
+# نظام ملفات الحاويات السحابية زائل: بدون هذا يُنزَّل النموذج (~112MB) عند أول
+# طلب RAG بعد كل نشر — تأخير ~18ث على مستخدم حقيقي واعتماد على الإنترنت في
+# مسار حيّ. السكربت يفشل بصوت عالٍ (تحقّق وظيفي + حجم) فلا تُبنى صورة ناقصة.
+ENV YSD_MODEL_CACHE=/app/.model-cache
+RUN npm run embeddings:prefetch \
+    && test -d /app/.model-cache \
+    && echo "حجم كاش النموذج:" && du -sh /app/.model-cache
+
 # ---------- 3) التشغيل ----------
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
+# PORT قيمة افتراضية فقط — المنصّات السحابية (Railway وغيرها) تحقن PORT وقت
+# التشغيل فيتجاوزها. HOSTNAME=0.0.0.0 إلزامي وإلا استمع على localhost وحده
+# فيفشل النشر. YSD_MODEL_CACHE يطابق ما خُبز في مرحلة البناء.
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
+    YSD_MODEL_CACHE=/app/.model-cache \
     # قالب النشر المبدئي: يقلّل بصمة نموذج Embeddings المحلي
     YSD_LOW_MEMORY=1
 
@@ -81,6 +94,12 @@ COPY --from=builder --chown=node:node /app/.next/standalone ./
 # الأصول الساكنة لا يتتبّعها standalone — تُنسخ صراحةً
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
+# نموذج Embeddings المخبوز — مقروء لمستخدم node غير الجذر
+COPY --from=builder --chown=node:node /app/.model-cache ./.model-cache
+
+# حارس: صورة بلا نموذج تعني تنزيلًا من الإنترنت في مسار حيّ — نفشل هنا لا هناك
+RUN test -d /app/.model-cache && test -n "$(ls -A /app/.model-cache)" \
+    || (echo "خطأ: كاش نموذج Embeddings مفقود في الصورة" && exit 1)
 
 USER node
 EXPOSE 3000
@@ -93,8 +112,11 @@ EXPOSE 3000
 # أن الحاوية معطوبة بعد 90ث من انقطاع خارجي فأعادت تشغيل خادم سليم — وإعادة
 # التشغيل لا تُصلح خدمة خارجية، بل تقطع الخدمة عن المستخدمين بلا سبب.
 # جسم /api/health (readiness) يبقى للمراقبة وصفحات الحالة — لا لقرار إعادة التشغيل.
+# v0.7.0: المنفذ من process.env.PORT (3000 افتراضًا) — كان مثبّتًا على 3000
+# فيفشل الفحص دائمًا لو حقنت المنصّة منفذًا آخر. والمسار صار /api/live:
+# liveness خالص بلا Supabase ولا أي تبعية خارجية.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(()=>process.exit(0)).catch(()=>process.exit(1))"
+  CMD node -e "const p=process.env.PORT||3000;fetch('http://127.0.0.1:'+p+'/api/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # خادم Node دائم — standalone ينتج server.js بدل next start
 CMD ["node", "server.js"]

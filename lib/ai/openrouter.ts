@@ -669,9 +669,15 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (m.role !== "system") messages.push({ role: m.role, content: m.content });
     }
 
-    // مهلة صريحة للموفر الخارجي (مع احترام إلغاء العميل)
+    // مهلة الخمول (v0.7.0): تُقاس من **آخر بايت وصل** لا من بداية الطلب.
+    // الفرق جوهري: بثّ بطيء لكنه متدفّق كان يُقتل عند 25ث رغم أنه يعمل؛
+    // والمطلوب قتل الخامل فقط. تُعاد تسليحها عند كل دفعة (armIdle أدناه).
     const timeout = new AbortController();
-    const timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+    let timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+    const armIdle = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => timeout.abort(), PROVIDER_TIMEOUT_MS);
+    };
     const onClientAbort = () => timeout.abort();
     req.signal?.addEventListener("abort", onClientAbort);
 
@@ -743,6 +749,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        armIdle(); // وصلت بيانات → أعد تسليح مهلة الخمول من هذه اللحظة
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";

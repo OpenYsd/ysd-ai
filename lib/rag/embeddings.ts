@@ -56,8 +56,9 @@ async function getExtractor(): Promise<Extractor> {
     modelState = "loading";
     extractorPromise = (async () => {
       const { pipeline, env } = await import("@huggingface/transformers");
-      // كاش محلي داخل المشروع (مُتجاهَل في git)
-      env.cacheDir = `${process.cwd()}/.cache/transformers`;
+      // الكاش: YSD_MODEL_CACHE إن ضُبط (الصورة تخبز النموذج فيه وقت البناء)،
+      // وإلا كاش محلي داخل المشروع (مُتجاهَل في git) للتطوير.
+      env.cacheDir = process.env.YSD_MODEL_CACHE || `${process.cwd()}/.cache/transformers`;
       const pipe = await pipeline("feature-extraction", MODEL_ID, {
         dtype: "q8",
       });

@@ -18,7 +18,8 @@ const PUBLIC_PATHS = [
   "/maintenance",
 ];
 // مسارات API عامة لا تتطلب مستخدمًا نشطًا
-const PUBLIC_API = ["/api/health"];
+// /api/live: فحص حياة المنصّة — يجب أن يعمل حتى بلا جلسة وبلا أي تبعية.
+const PUBLIC_API = ["/api/health", "/api/live"];
 
 export async function middleware(request: NextRequest) {
   const startedAt = Date.now();
