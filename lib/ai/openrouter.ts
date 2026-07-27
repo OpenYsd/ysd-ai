@@ -96,6 +96,15 @@ function idleTimeoutMs(): number {
  */
 const CHAIN_BUDGET_MS = 45_000;
 
+/** ميزانية السلسلة — تُقصَّر في الاختبار وحده خلف البوابة */
+function chainBudgetMs(): number {
+  if (testHooksEnabled() && process.env.YSD_TEST_CHAIN_BUDGET_MS) {
+    const n = Number(process.env.YSD_TEST_CHAIN_BUDGET_MS);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return CHAIN_BUDGET_MS;
+}
+
 /** تصنيف أخطاء OpenRouter إلى رسائل عربية واضحة — دون كشف تفاصيل حساسة */
 export function mapOpenRouterError(status: number | null, raw: string): {
   kind: string;
@@ -324,7 +333,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (!model) continue;
 
       // سقف انتظار المستخدم: لا نبدأ محاولة جديدة بعد نفاد الميزانية
-      if (i > 0 && Date.now() - chainStartedAt >= CHAIN_BUDGET_MS) {
+      if (i > 0 && Date.now() - chainStartedAt >= chainBudgetMs()) {
         console.error(
           `[openrouter] chain budget exhausted: elapsed_ms=${Date.now() - chainStartedAt} tried=${i}`,
         );

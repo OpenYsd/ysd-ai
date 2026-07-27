@@ -9,6 +9,7 @@ import { _resetAdminClient } from "../lib/supabase/admin";
 import {
   BUCKET_CHAT,
   _resetFallbackLog,
+  clampRetryAfter,
   consumeRateLimit,
   rateLimitHeaders,
 } from "../lib/rate-limit-distributed";
@@ -203,5 +204,31 @@ describe("★ منافذ اختبار السقف الكلي", () => {
     for (const v of ["YSD_TEST_PROVIDER_URL", "YSD_TEST_IDLE_MS", "YSD_TEST_HARD_LIMIT_MS"]) {
       expect(v.startsWith("NEXT_PUBLIC")).toBe(false);
     }
+  });
+});
+
+// ── v0.7.0 RC3: Retry-After مقيَّد بالنافذة ──────────────────────────────
+describe("★ RC3 — Retry-After لا يتجاوز النافذة", () => {
+  it("★ نافذة 60ث لا تنتج أكثر من 60 مهما كان الانزياح", () => {
+    expect(clampRetryAfter(237, 60)).toBe(60);   // الحالة المرصودة حيًّا
+    expect(clampRetryAfter(3600, 60)).toBe(60);
+    expect(clampRetryAfter(45, 60)).toBe(45);
+  });
+
+  it("★ انزياح ساعة التطبيق للأمام (قيمة سالبة) → أدنى حد 1", () => {
+    expect(clampRetryAfter(-500, 60)).toBe(1);
+    expect(clampRetryAfter(0, 60)).toBe(1);
+  });
+
+  it("★ انزياح للخلف (قيمة ضخمة) → سقف النافذة", () => {
+    expect(clampRetryAfter(Number.MAX_SAFE_INTEGER, 900)).toBe(900);
+  });
+
+  it("قيمة غير رقمية → مدة النافذة (لا NaN في الترويسة)", () => {
+    expect(clampRetryAfter(Number.NaN, 60)).toBe(60);
+  });
+
+  it("★ النافذة الطويلة تُحترم كما هي", () => {
+    expect(clampRetryAfter(845, 900)).toBe(845);
   });
 });

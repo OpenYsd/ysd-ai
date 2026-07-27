@@ -57,7 +57,7 @@ function memoryDecision(
     // الذاكرة لا تُرجع العدّاد؛ نكتفي بإشارة ثنائية صادقة
     remaining: allowed ? Math.max(0, limit - 1) : 0,
     resetAtSec,
-    retryAfterSec: Math.max(1, resetAtSec - Math.floor(Date.now() / 1000)),
+    retryAfterSec: clampRetryAfter(resetAtSec - Math.floor(Date.now() / 1000), windowSeconds),
     backend: "memory_fallback",
   };
 }
@@ -121,13 +121,24 @@ export async function consumeRateLimit(
       limit,
       remaining: Math.max(0, Number(r.remaining) || 0),
       resetAtSec,
-      retryAfterSec: Math.max(1, resetAtSec - Math.floor(Date.now() / 1000)),
+      retryAfterSec: clampRetryAfter(resetAtSec - Math.floor(Date.now() / 1000), windowSeconds),
       backend: "distributed",
     };
   } catch {
     logFallbackOnce("exception");
     return memoryDecision(userId, bucket, limit, windowSeconds);
   }
+}
+
+/**
+ * Retry-After مقيَّد بمدة النافذة (v0.7.0 RC3).
+ * رُصد حيًّا: نافذة 60ث أنتجت Retry-After=237ث. السبب أن reset_at يأتي من ساعة
+ * PostgreSQL بينما الطرح يقع على ساعة الحاوية، وأي انزياح بينهما يتسرّب إلى
+ * الرقم. لا يمكن أن يتجاوز الانتظار مدة النافذة منطقيًا — فنقيّده.
+ */
+export function clampRetryAfter(rawSeconds: number, windowSeconds: number): number {
+  if (!Number.isFinite(rawSeconds)) return windowSeconds;
+  return Math.min(Math.max(1, Math.ceil(rawSeconds)), Math.max(1, windowSeconds));
 }
 
 /** ترويسات المعدّل الموحّدة — تُرسل في القبول والرفض معًا */
