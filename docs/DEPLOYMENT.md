@@ -26,7 +26,7 @@
 | المتغير | الغرض |
 |---|---|
 | `ANTHROPIC_API_KEY` | موفر Anthropic (عند توفر رصيد) |
-| `SUPABASE_SERVICE_ROLE_KEY` | **للعامل المستقل فقط** — غير مطلوب في request-driven. **لا يُوضع في أي `NEXT_PUBLIC_*` ولا يصل المتصفح** |
+| `SUPABASE_SERVICE_ROLE_KEY` | **خادمي بحت** — كتابة `observability_events` (لوحة `/admin/health`). اختياري: غيابه لا يعطّل المحادثة، وتعود المقاييس إلى ذاكرة الخادم مع رمز `observability_persistence=disabled`. **لا يُوضع في أي `NEXT_PUBLIC_*` ولا يصل المتصفح أبدًا** (`lib/supabase/admin.ts` محروس بـ`server-only`) |
 | `YSD_LOW_MEMORY` | `1` لوضع الذاكرة المنخفضة (تقليل المقاطع/الدفعة) |
 | `YSD_STRICT_ENV` | `1` لإيقاف بدء التشغيل عند نقص متغير (إنتاج) |
 
@@ -41,7 +41,7 @@
 docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
-  -t ysd-ai:0.6.5 .
+  -t ysd-ai:0.6.6 .
 
 # التشغيل — NEXT_PUBLIC_* تلزم هنا أيضًا (انظر الجدول)، والأسرار الخادمية runtime فقط
 docker run -d --name ysd-ai -p 3000:3000 \
@@ -49,7 +49,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
   -e NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
   -e OPENROUTER_API_KEY=... \
   -e YSD_STRICT_ENV=1 \
-  ysd-ai:0.6.5
+  ysd-ai:0.6.6
 ```
 
 ### قاعدة الأسرار
@@ -58,7 +58,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` · `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **build arg + runtime** | مرّتان. **build**: تُحقَن في حزمة المتصفح. **runtime**: `lib/env.ts` يقرأ `process.env[name]` **ديناميكيًا**، وNext.js لا يحقن إلا الوصول الساكن — فبدونها يفشل `checkEnv`، ومع `YSD_STRICT_ENV=1` يُرفض الإقلاع وترد كل المسارات **500**. **عامة بطبيعتها**: تصل كل زائر أصلًا، والمفتاح anon محكوم بـRLS. |
 | `OPENROUTER_API_KEY` · `ANTHROPIC_API_KEY` | **runtime فقط** (`-e` أو secrets المنصة) | أسرار خادمية. **لا تمرّرها كـbuild-arg إطلاقًا**: تبقى في تاريخ الطبقات ويكشفها `docker history`. |
-| `SUPABASE_SERVICE_ROLE_KEY` | **لا يُمرَّر** | لعامل RAG المستقل فقط (غير مُفعّل). المعالجة request-driven لا تحتاجه. |
+| `SUPABASE_SERVICE_ROLE_KEY` | **runtime فقط** (`-e` أو secrets المنصة) | سرّ خادمي: يكتب `observability_events` متجاوزًا RLS (الجدول يمنع الكتابة على كل أدوار العميل). **لا build-arg ولا `NEXT_PUBLIC_*`**؛ `import "server-only"` يجعل استيراده من أي مكوّن عميل خطأ بناء، وقد تُحقّق ببحث في حزمة المتصفح بعد البناء: صفر نتائج. |
 
 `.dockerignore` يُخرج `.env*` و`scripts/.qa-*` و`.git` من **سياق البناء نفسه** — فلا يمكن أن تتسرّب ولو بـ`COPY . .`. القالب: [`.env.docker.example`](../.env.docker.example) (أسماء فقط).
 
@@ -82,7 +82,7 @@ docker run -d --name ysd-ai -p 3000:3000 \
 
 ### التشغيل بـcompose (الطريقة المعتمدة)
 
-الصورة الرسمية: **`ysd-ai:0.6.5`** (1.01GB). ملف البيئة يبقى **خارج المستودع**.
+الصورة الرسمية: **`ysd-ai:0.6.6`** (1.01GB). ملف البيئة يبقى **خارج المستودع**.
 
 ```bash
 # 1) جهّز ملف البيئة (أسماء فقط في القالب — املأه خارج git)
@@ -92,7 +92,7 @@ cp env.production.example /مسار/آمن/ysd.env
 docker build \
   --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
-  -t ysd-ai:0.6.5 .
+  -t ysd-ai:0.6.6 .
 
 # 3) شغّل
 docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
@@ -110,7 +110,7 @@ docker compose -f docker-compose.production.yml stop
 docker compose -f docker-compose.production.yml down
 
 # 7) التحديث إلى نسخة أحدث
-docker build --build-arg ... -t ysd-ai:0.6.5 .
+docker build --build-arg ... -t ysd-ai:0.6.6 .
 #    ثم عدّل image: في docker-compose.production.yml
 docker compose -f docker-compose.production.yml --env-file /مسار/آمن/ysd.env up -d
 
