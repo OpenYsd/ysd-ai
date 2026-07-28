@@ -35,7 +35,7 @@ import {
   dedupeContinuation,
   endsWithDanglingPreamble,
   shouldAppendTruncatedNotice,
-  stripCodeAware,
+  endsInsideCodeFence,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -787,20 +787,20 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
     let overlap = ""; // ذيل ما عُرض — يُفحص مع الوحدة التالية منعًا لانقسام كلمة دخيلة
 
-    // حالة سياج الكود عبر البثّ كله (v0.7.0 RC7): الوحدة الواحدة لا تحمل سياجها،
-    // فنتتبّعه هنا كي لا يُقرأ سطر كود على أنه نثر عربي مخلوط بكلمات دخيلة.
-    let insideCode = false;
-
-    // يفحص وحدة (مع تداخل) قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة
+    /**
+     * يفحص وحدة (مع تداخل) قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة.
+     *
+     * حالة سياج الكود (v0.7.0 RC7) تُشتقّ من النص المعروض **قبل** التداخل، لا
+     * من نهايته: التداخل جزء من `emitted` وقد يحوي سياجًا حُسب مرّةً بالفعل،
+     * فتمرير حالة النهاية مع إعادة تمرير التداخل يقلب الحالة مرتين — فيُقرأ
+     * جوف الكتلة نثرًا ويُقطع الرد. الاشتقاق من نقطة بدء التداخل يجعل الحساب
+     * صحيحًا مهما وقع السياج داخل التداخل أو خارجه.
+     */
     const checkSegment = (s: string): string | null => {
-      // التداخل جزء من نص سبق عرضه، فحالة السياج عنده هي الحالة المحفوظة
+      const beforeOverlap = emitted.slice(0, Math.max(0, emitted.length - overlap.length));
+      const insideCode = endsInsideCodeFence(beforeOverlap);
       const verdict = violatesStreamUnit(overlap + s, expected, userText, insideCode);
       return verdict.violated ? (verdict.reason ?? "unknown") : null;
-    };
-
-    /** يُحدِّث حالة السياج بعد اعتماد وحدة للعرض */
-    const advanceCodeState = (s: string): void => {
-      insideCode = stripCodeAware(s, insideCode).endsInsideCode;
     };
 
     try {
@@ -879,7 +879,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
             }
             yield { type: "text", text: ready };
             emitted += ready;
-            advanceCodeState(ready); // ثبّت حالة السياج بعد العرض
+
             overlap = emitted.slice(-GUARD_OVERLAP_CHARS);
           }
         }

@@ -68,6 +68,31 @@ describe("★ RC7: تتبّع حالة السياج", () => {
   });
 });
 
+describe("★ RC7: التداخل لا يقلب حالة السياج مرتين", () => {
+  /**
+   * رُصد حيًّا: 3 من 8 طلبات كود ظلّت تُقطع بعد الإصلاح الأول. السبب أن الفحص
+   * يُعيد تمرير ذيل ما عُرض (overlap) مع الوحدة الجديدة، فإن وقع السياج داخل
+   * الذيل حُسب مرّة ثانية فانقلبت الحالة وصار جوف الكتلة «نثرًا».
+   * الحالة الصحيحة تُشتقّ من النص السابق للتداخل.
+   */
+  it("★ سياج داخل التداخل: الحالة تبقى «داخل الكود»", () => {
+    const emitted = "إليك السكربت:\n\n```bash\n";
+    const overlap = emitted.slice(-24); // يحوي ```bash
+    const beforeOverlap = emitted.slice(0, emitted.length - overlap.length);
+    const insideAtOverlapStart = endsInsideCodeFence(beforeOverlap);
+    const unit = "for f in *.log; do gzip \"$f\"; done";
+    expect(
+      violatesStreamUnit(overlap + unit, "ar", "اكتب سكربت", insideAtOverlapStart).violated,
+    ).toBe(false);
+  });
+
+  it("★ الاشتقاق يعطي الحالة نفسها مهما وقع السياج", () => {
+    // قبل التداخل لا سياج ⇒ خارج الكود؛ والسياج داخل التداخل ينقل إلى الداخل
+    expect(endsInsideCodeFence("إليك السكربت:\n\n")).toBe(false);
+    expect(endsInsideCodeFence("إليك السكربت:\n\n```bash\n")).toBe(true);
+  });
+});
+
 describe("★ RC7: الحراس اللغوية لم تضعف على النثر", () => {
   const leaks: [string, string][] = [
     ["إسباني", "صرخ الرجل bajo el sol وانطلق بعيدًا."],
