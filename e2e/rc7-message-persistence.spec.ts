@@ -81,7 +81,17 @@ test.describe("★ RC7: رسالة المساعد لا تختفي بعد الت�
   let convUrl = "";
 
   test("١) تجهيز: رسالة user + assistant محفوظتان فعلًا", async ({ request }) => {
-    // fixture الطلب داخل الاختبار يرث جلسة storageState — بخلاف beforeAll
+    // محادثة مبذورة في القاعدة مباشرة (YSD_E2E_SEEDED_CONV) — لا تحتاج مزوّدًا.
+    // هذا يفصل ما نختبره (بقاء الرسالة المحفوظة عبر التحديث) عن توليد الردّ.
+    const seeded = process.env.YSD_E2E_SEEDED_CONV;
+    if (seeded) {
+      convId = seeded;
+      convUrl = `/chat/${convId}`;
+      const probe = await request.get(convUrl);
+      expect(probe.status()).toBe(200);
+      return;
+    }
+
     const created = await request.post("/api/conversations", {
       data: { title: "RC7 إثبات البقاء" },
     });
@@ -99,7 +109,6 @@ test.describe("★ RC7: رسالة المساعد لا تختفي بعد الت�
     });
     expect(res.status()).toBe(200);
     const stream = await res.text();
-    // الرد وصل فعلًا بالبثّ وحُفظ (done يحمل معرّف رسالة المساعد)
     expect(stream).toContain('"type":"done"');
     const doneLine = stream.split("\n").find((l) => l.includes('"type":"done"')) ?? "";
     const assistantMessageId = JSON.parse(doneLine.replace(/^data: /, "")).assistantMessageId;
