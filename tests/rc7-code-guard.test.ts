@@ -6,6 +6,7 @@ import {
   endsInsideCodeFence,
   endsWithCompleteSentence,
   shouldAppendTruncatedNotice,
+  isCodeRequest,
 } from "../lib/ai/language-guard";
 
 /**
@@ -90,6 +91,84 @@ describe("★ RC7: التداخل لا يقلب حالة السياج مرتين
     // قبل التداخل لا سياج ⇒ خارج الكود؛ والسياج داخل التداخل ينقل إلى الداخل
     expect(endsInsideCodeFence("إليك السكربت:\n\n")).toBe(false);
     expect(endsInsideCodeFence("إليك السكربت:\n\n```bash\n")).toBe(true);
+  });
+});
+
+describe("★ RC7 بوابة Bash: مصطلح تقني مفرد خارج السياج مقبول", () => {
+  const ASK = "اكتب سكربت Bash يضغط ملفات .log";
+  expect(isCodeRequest(ASK)).toBe(true);
+
+  const TECH = [
+    "gzip", "curl", "chmod", "grep", "awk", "sed", "docker", "npm", "pip",
+    "TypeScript", "useState", "package.json", "src/app/page.tsx", "--force", "HTTP 429",
+  ];
+  for (const term of TECH) {
+    it(`يمرّ: «${term}» داخل نثر عربي`, () => {
+      const unit = `استخدم ${term} لتنفيذ المطلوب هنا.`;
+      expect(violatesStreamUnit(unit, "ar", ASK, false).violated).toBe(false);
+    });
+  }
+
+  it("★ مصطلحان تقنيان في جملتين لا يُعدّان تسلسلًا", () => {
+    const unit = "نستخدم gzip للضغط ثم curl للرفع.";
+    expect(violatesStreamUnit(unit, "ar", ASK, false).violated).toBe(false);
+  });
+});
+
+describe("★ RC7 بوابة Bash: الجمل الأجنبية ما زالت تُمنع في الوضع البرمجي", () => {
+  const ASK = "اكتب سكربت Bash يضغط ملفات .log";
+  const BLOCKED: [string, string][] = [
+    ["إسباني", "ثم قال bajo el sol وانتهى الأمر."],
+    ["إسباني قصير", "وقال hola amigo في النهاية."],
+    ["إنجليزي طبيعي", "ثم كتب this is an unrelated english sentence هنا."],
+  ];
+  for (const [name, text] of BLOCKED) {
+    it(`★ يُمنع ${name} حتى في طلب برمجي`, () => {
+      expect(violatesStreamUnit(text, "ar", ASK, false).violated).toBe(true);
+    });
+  }
+
+  const SCRIPTS: [string, string][] = [
+    ["سيريلي", "هذا شرح للموضوع привет كامل هنا."],
+    ["صيني", "النتيجة كانت 你好 جيدة جدًا."],
+    ["ياباني", "النتيجة كانت こんにちは جيدة."],
+    ["يوناني", "الرمز هو Ω καλημέρα هنا."],
+  ];
+  for (const [name, text] of SCRIPTS) {
+    it(`★ ${name} ممنوع بتحمّل صفري حتى في طلب برمجي`, () => {
+      expect(violatesStreamUnit(text, "ar", ASK, false).violated).toBe(true);
+    });
+  }
+});
+
+describe("★ RC7: تصنيف طلب الكود عام لا خاص بلغة", () => {
+  const YES = [
+    "اكتب سكربت Bash يضغط ملفات .log",
+    "اشرح لي هذا الخطأ TS2345",
+    "راجع دالة Python التالية",
+    "ما معنى `npm install` هنا؟",
+    "صحح استعلام SQL هذا",
+    "اكتب مكوّن React لعدّاد",
+  ];
+  for (const q of YES) {
+    it(`برمجي: ${q.slice(0, 34)}`, () => expect(isCodeRequest(q)).toBe(true));
+  }
+
+  const NO = [
+    "ما رأيك في الطقس اليوم؟",
+    "احكِ لي قصة قصيرة عن البحر",
+    "من هو بطل لعبة White Mask؟",
+    "اشرح لي تاريخ الأندلس باختصار",
+  ];
+  for (const q of NO) {
+    it(`غير برمجي: ${q.slice(0, 34)}`, () => expect(isCodeRequest(q)).toBe(false));
+  }
+
+  it("★ الوضع غير البرمجي لم يتغيّر سلوكه إطلاقًا", () => {
+    // كلمة دخيلة مفردة تبقى مخالفة خارج سياق الكود
+    expect(violatesStreamUnit("وقال loot في اللعبة.", "ar", "احكِ قصة", false).violated).toBe(
+      true,
+    );
   });
 });
 

@@ -157,9 +157,97 @@ export function stripCodeAware(
   return { prose, endsInsideCode: inside };
 }
 
+/**
+ * هل هذا **طلب برمجي**؟ (v0.7.0 RC7 — بوابة Bash)
+ *
+ * تصنيف عام لا يرتبط بلغة بعينها: الطلب برمجي إن ذُكر فعل برمجي، أو اسم لغة/
+ * إطار/صدفة، أو ورد سياج أو كود مضمّن، أو امتداد ملف، أو أمر طرفية أو خطأ
+ * مترجم. الغرض الوحيد: توسيع ما يُقبل من **مصطلحات تقنية مفردة** في النثر
+ * العربي المرافق للكود — لا تعطيل أي حارس.
+ */
+export function isCodeRequest(userText: string): boolean {
+  const t = userText.toLowerCase();
+  if (/```|`[^`\n]+`/.test(userText)) return true; // سياج أو كود مضمّن
+  if (/\.(ts|tsx|js|jsx|py|sql|sh|bash|json|ya?ml|css|html|rs|go|java|rb|php|c|cpp)\b/.test(t))
+    return true; // امتداد ملف
+  if (/\b(ts\d{4}|error\s+[a-z]+\d+|traceback|stack\s*trace|exception|segmentation fault)\b/.test(t))
+    return true; // خطأ مترجم أو أثر مكدس
+  if (/(^|\s)(sudo|npm|npx|pip|git|docker|curl|chmod|grep|awk|sed|kubectl|yarn|pnpm)\s/.test(t))
+    return true; // أمر طرفية
+  const langs =
+    /\b(typescript|javascript|python|java|kotlin|swift|rust|golang|php|ruby|scala|sql|bash|shell|zsh|powershell|react|vue|angular|svelte|next\.?js|node\.?js|django|flask|laravel|express|docker|kubernetes|postgres|postgresql|mysql|mongodb|redis|regex|api|json|yaml|html|css|tailwind)\b/;
+  const verbs =
+    /(اكتب|أكتب|اشرح|صحّح|صحح|راجع|عدّل|عدل|حسّن|أصلح|اصلح|نفّذ|برمج|كود|سكربت|دالة|استعلام|مكوّن|مكون|أمر|سطر أوامر|خطأ|debug|refactor|implement|write|explain|fix|review)/;
+  return langs.test(t) && verbs.test(userText);
+}
+
+/**
+ * هل هذا الرمز اللاتيني **مصطلح تقني** لا كلمة لغة طبيعية؟
+ *
+ * يُقبل حين يحمل شكلًا برمجيًا لا يظهر في النثر الطبيعي: مسار، امتداد، راية،
+ * نقطة/شرطة سفلية/شرطة داخلية، camelCase، أقواس نداء، أو رمز حالة. هذا يفصل
+ * `package.json` و`src/app/page.tsx` و`--force` و`useState()` عن `bajo`.
+ */
+export function looksTechnical(token: string): boolean {
+  if (/^--?[a-z][a-z0-9-]*$/i.test(token)) return true; // راية: --force
+  if (/[/\\]/.test(token)) return true; // مسار: src/app/page.tsx
+  if (/\.[a-z0-9]{1,5}$/i.test(token)) return true; // امتداد: package.json
+  if (/[_.]/.test(token)) return true; // snake_case أو نقطة داخلية
+  if (/[a-z][A-Z]/.test(token)) return true; // camelCase: useState
+  if (/\(\)$/.test(token)) return true; // نداء دالة
+  if (/\d/.test(token)) return true; // رمز/إصدار: TS2345، ES2022
+  return false;
+}
+
 /** هل ينتهي النص بسياج كود مفتوح؟ (عدد ``` فردي) */
 export function endsInsideCodeFence(text: string): boolean {
   return (text.match(/```/g) ?? []).length % 2 === 1;
+}
+
+/**
+ * أطول تسلسل من كلمات لاتينية دخيلة **متجاورة** في النص (v0.7.0 RC7).
+ *
+ * الفكرة الفاصلة: الكلمة التقنية المفردة تعيش داخل نثر عربي («استخدم gzip
+ * لضغط الملفات») فيقطعها حرف عربي من الجانبين، بينما الجملة الأجنبية تأتي
+ * ككتلة متصلة («bajo el sol»، «hola amigo»). فنعدّ التجاور: أي حرف عربي بين
+ * كلمتين دخيلتين يكسر التسلسل.
+ *
+ * هكذا نسمح بالمصطلح التقني المفرد بلا أن نفتح الباب لجملة أجنبية كاملة.
+ */
+export function longestStrayLatinRun(text: string): number {
+  const stripped = text
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\bwww\.\S+/gi, " ")
+    .replace(/[\w.+-]+@[\w.-]+\.\w+/g, " ");
+
+  const re = /[A-Za-z][A-Za-z.\-'’/\\_()]*[A-Za-z)]|[A-Za-z]/g;
+  let m: RegExpExecArray | null;
+  let best = 0;
+  let run = 0;
+  let prevEnd = -1;
+
+  while ((m = re.exec(stripped)) !== null) {
+    const raw = m[0];
+    const isStray =
+      !/[A-Z]/.test(raw) &&
+      raw.replace(/[.\-'’/\\_()]/g, "").length >= 3 &&
+      !LATIN_ALLOW.has(raw.replace(/[.\-'’/\\_()]/g, "").toLowerCase()) &&
+      !looksTechnical(raw);
+
+    if (!isStray) {
+      // رمز معروف/تقني/كبير الحرف لا يُعدّ دخيلًا ولا يكسر التسلسل بذاته
+      prevEnd = re.lastIndex;
+      continue;
+    }
+    // هل يفصل بينها وبين سابقتها حرف عربي؟ → تسلسل جديد
+    const between = prevEnd >= 0 ? stripped.slice(prevEnd, m.index) : "";
+    run = prevEnd >= 0 && !/[؀-ۿ]/.test(between) ? run + 1 : 1;
+    best = Math.max(best, run);
+    prevEnd = re.lastIndex;
+  }
+  return best;
 }
 
 /**
@@ -245,7 +333,17 @@ export function violatesStreamUnit(
     r.otherUnwanted;
 
   if (expected === "ar") {
+    // الأنظمة الكتابية غير المطلوبة (سيريلي/صيني/ياباني/يوناني) تبقى بتحمّل صفري
+    // في كل الأوضاع — البرمجة لا تُرخّص شيئًا منها.
     if (unwanted > 0) return { violated: true, reason: "unwanted_scripts" };
+
+    // في الإجابة البرمجية: المصطلح التقني المفرد خارج السياج مقبول («استخدم
+    // gzip لضغط الملفات»)، أما تسلسل كلمتين طبيعيتين فأجنبيّة تُمنع كما كانت.
+    if (isCodeRequest(userText)) {
+      if (longestStrayLatinRun(unit) >= 2) return { violated: true, reason: "stray_latin" };
+      return { violated: false };
+    }
+
     if (findStrayLatinWords(unit).length > 0) return { violated: true, reason: "stray_latin" };
     return { violated: false };
   }
