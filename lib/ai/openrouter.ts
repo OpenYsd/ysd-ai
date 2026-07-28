@@ -754,7 +754,13 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // ملاحظة (v0.6.6 RC2): المهلة تبقى **مسلّحة** حتى نهاية قراءة البثّ.
     // كانت تُلغى هنا فور وصول الترويسات، فمزوّد يرسل الترويسات بسرعة ثم يتلكّأ
     // في الجسم كان يتجاوز أي سقف: قِيس حيًّا 85.7 ثانية رغم ميزانية 45 ثانية.
-    req.signal?.removeEventListener("abort", onClientAbort);
+    //
+    // ⚠️ v0.7.0 RC4 — السبب الجذري لتعليق السقف الكلي: كان هنا
+    // `req.signal?.removeEventListener("abort", onClientAbort)`، فيُفصل رابط
+    // الإلغاء **فور وصول الترويسات**. بعدها لا يصل إجهاض السقف إلى fetch
+    // إطلاقًا، ويبقى reader.read() معلّقًا على بثّ لا ينتهي — طلب تجاوز 10
+    // دقائق بسقف ثانية واحدة، والمزوّد لم يسجّل أي client_aborted.
+    // الرابط الآن يبقى حتى finally (حيث يُنزع مرة واحدة).
 
     if (!res.ok || !res.body) {
       clearTimeout(timeoutId);

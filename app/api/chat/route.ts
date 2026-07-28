@@ -386,7 +386,12 @@ export async function POST(req: NextRequest) {
        * بأنفسنا برسالة عربية واضحة بدل أن يقطعه وسيط بلا تفسير.
        */
       const hardLimit = new AbortController();
-      const hardLimitTimer = setTimeout(() => hardLimit.abort(), hardLimitMs());
+      // v0.7.0 RC4: المهلة **مطلقة** من بداية الطلب (tStart) لا من بدء البثّ —
+      // فالمصادقة والبحث وRAG تُحتسب ضمنها، ولا يبدأ المزوّد بميزانية كاملة
+      // بعد أن استُهلك أغلب الوقت قبله.
+      const deadlineAt = tStart + hardLimitMs();
+      const remainingMs = deadlineAt - Date.now();
+      const hardLimitTimer = setTimeout(() => hardLimit.abort(), Math.max(1, remainingMs));
       // إلغاء العميل يُلغي أيضًا — إشارة واحدة للمزوّد
       const onClientAbort = () => hardLimit.abort();
       req.signal.addEventListener("abort", onClientAbort);
@@ -411,6 +416,11 @@ export async function POST(req: NextRequest) {
       let lastErrorCode: string | null = null;
 
       try {
+        // انتهت المهلة قبل أن نصل للمزوّد → لا نناديه إطلاقًا
+        if (remainingMs <= 0) {
+          timedOut = true;
+          throw new Error('deadline_exceeded_before_provider');
+        }
         for await (const chunk of provider.streamChat({
           modelId,
           messages: history,
