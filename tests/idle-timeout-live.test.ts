@@ -19,6 +19,12 @@ import { YSD_FREE_MODEL_ID } from "../lib/ai/free-models";
 let mode: "stall" | "trickle" | "clean" = "stall";
 /** اتصالات مفتوحة — للتحقق من عدم التسريب */
 const openSockets = new Set<import("node:net").Socket>();
+/**
+ * إجمالي الاتصالات التي فُتحت فعلًا — العدّاد الصحيح لسؤال «هل اتصل بالخادم
+ * الوهمي؟». حجم openSockets يقيس المفتوح **في هذه اللحظة**، فيتأثر بإغلاق
+ * اتصالات اختبار سابق فيهبط ويُسقط التأكيد لسبب لا علاقة له بالمقصود.
+ */
+let totalConnections = 0;
 let server: http.Server;
 let baseUrl = "";
 
@@ -64,6 +70,7 @@ beforeAll(async () => {
   });
   server.on("connection", (s) => {
     openSockets.add(s);
+    totalConnections++;
     s.on("close", () => openSockets.delete(s));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -148,8 +155,8 @@ describe("★ بوابة منافذ الاختبار مغلقة في الإنت�
     delete process.env.YSD_ENABLE_TEST_PROVIDER;
     // العنوان الوهمي مضبوط، لكن البوابة مغلقة ⇒ يذهب للمزوّد الحقيقي
     // (سيفشل بالشبكة/المفتاح، والمهم أنه **لم** يستعمل عنوان الاختبار)
-    const before = openSockets.size;
+    const before = totalConnections;
     await collect(new OpenRouterProvider().streamChat(req()));
-    expect(openSockets.size).toBe(before); // لم يتصل بالخادم الوهمي
+    expect(totalConnections).toBe(before); // لم يُفتح أي اتصال جديد بالخادم الوهمي
   }, 60_000);
 });

@@ -35,6 +35,7 @@ import {
   dedupeContinuation,
   endsWithDanglingPreamble,
   shouldAppendTruncatedNotice,
+  stripCodeAware,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -786,10 +787,20 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
     let overlap = ""; // ذيل ما عُرض — يُفحص مع الوحدة التالية منعًا لانقسام كلمة دخيلة
 
+    // حالة سياج الكود عبر البثّ كله (v0.7.0 RC7): الوحدة الواحدة لا تحمل سياجها،
+    // فنتتبّعه هنا كي لا يُقرأ سطر كود على أنه نثر عربي مخلوط بكلمات دخيلة.
+    let insideCode = false;
+
     // يفحص وحدة (مع تداخل) قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة
     const checkSegment = (s: string): string | null => {
-      const verdict = violatesStreamUnit(overlap + s, expected, userText);
+      // التداخل جزء من نص سبق عرضه، فحالة السياج عنده هي الحالة المحفوظة
+      const verdict = violatesStreamUnit(overlap + s, expected, userText, insideCode);
       return verdict.violated ? (verdict.reason ?? "unknown") : null;
+    };
+
+    /** يُحدِّث حالة السياج بعد اعتماد وحدة للعرض */
+    const advanceCodeState = (s: string): void => {
+      insideCode = stripCodeAware(s, insideCode).endsInsideCode;
     };
 
     try {
@@ -868,6 +879,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
             }
             yield { type: "text", text: ready };
             emitted += ready;
+            advanceCodeState(ready); // ثبّت حالة السياج بعد العرض
             overlap = emitted.slice(-GUARD_OVERLAP_CHARS);
           }
         }

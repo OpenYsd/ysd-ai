@@ -55,7 +55,7 @@ describe("★ /api/live — فحص حياة بلا تبعيات", () => {
   });
 
   it("الإصدار مضبوط", () => {
-    expect(APP_VERSION).toBe("0.7.0-rc6");
+    expect(APP_VERSION).toBe("0.7.0-rc7");
   });
 });
 

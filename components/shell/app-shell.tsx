@@ -5,7 +5,7 @@
  * محادثات حقيقية من قاعدة البيانات + بحث + إعادة تسمية + حذف.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -103,6 +103,24 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
     if (pathname === `/chat/${id}`) router.push("/chat");
     router.refresh();
   }
+
+  /**
+   * تحميل مسبق عند المرور/التركيز فقط (v0.7.0 RC7).
+   *
+   * prefetch الافتراضي في Next يبدأ عند دخول الرابط إطار العرض — ومع شريط فيه
+   * عشرات المحادثات يعني ذلك عشرات حمولات RSC بلا داعٍ. الربط بنيّة المستخدم
+   * (مرور المؤشر أو تركيز لوحة المفاتيح) يعطي الفورية نفسها بطلب واحد،
+   * ويحفظ ما جُلب في ذاكرة الموجّه فلا يتكرر.
+   */
+  const prefetched = useRef<Set<string>>(new Set());
+  const prefetchConversation = useCallback(
+    (id: string) => {
+      if (prefetched.current.has(id)) return;
+      prefetched.current.add(id);
+      router.prefetch(`/chat/${id}`);
+    },
+    [router],
+  );
 
   const CollapseIcon = dir === "rtl" ? ChevronsRight : ChevronsLeft;
   const ExpandIcon = dir === "rtl" ? ChevronsLeft : ChevronsRight;
@@ -227,6 +245,10 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
               >
                 <Link
                   href={`/chat/${c.id}`}
+                  prefetch={false}
+                  onMouseEnter={() => prefetchConversation(c.id)}
+                  onFocus={() => prefetchConversation(c.id)}
+                  onTouchStart={() => prefetchConversation(c.id)}
                   onClick={() => setMobileOpen(false)}
                   className="flex-1 min-w-0 px-3 py-2 text-[13px] truncate"
                   title={c.title}

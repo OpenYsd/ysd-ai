@@ -82,6 +82,22 @@ const LATIN_ALLOW = new Set([
   "amazon", "openai", "claude", "anthropic", "supabase", "postgres", "postgresql",
   "mysql", "mongodb", "redis", "sqlite", "firebase", "email", "username", "password",
   "token", "admin", "user", "true", "false", "null", "void", "async", "await",
+  // كلمات محجوزة وشائعة في البرمجة (v0.7.0 RC7): تَرِد داخل نثر عربي عند شرح
+  // الكود («استخدم const بدل let»)، وليست تسريبًا لغويًا. الكود داخل الأسيجة
+  // يُجرَّد أصلًا قبل الفحص؛ هذه للحالات النثرية وحدها.
+  "const", "let", "var", "function", "return", "class", "interface", "type", "enum",
+  "import", "export", "from", "default", "extends", "implements", "public", "private",
+  "protected", "static", "readonly", "new", "this", "super", "try", "catch", "finally",
+  "throw", "for", "while", "break", "continue", "switch", "case", "else", "elif",
+  "def", "lambda", "pass", "yield", "with", "and", "not", "none", "self", "print",
+  "select", "insert", "update", "delete", "where", "join", "group", "order", "limit",
+  "table", "index", "primary", "foreign", "unique", "constraint", "schema", "query",
+  "props", "state", "hook", "component", "render", "props", "params", "args", "kwargs",
+  "string", "number", "boolean", "float", "array", "object", "list", "dict", "tuple",
+  "promise", "callback", "error", "exception", "warning", "debug", "trace", "stack",
+  "commit", "branch", "merge", "rebase", "clone", "push", "pull", "fetch", "checkout",
+  "build", "test", "lint", "deploy", "server", "client", "route", "router", "handler",
+  "config", "module", "package", "install", "run", "start", "stop", "restart", "log",
 ]);
 
 /**
@@ -108,6 +124,42 @@ export function findStrayLatinWords(text: string): string[] {
     out.push(raw);
   }
   return out;
+}
+
+/**
+ * تجريد الكود من **وحدة بثّ** مع معرفة حالة السياج عند بدايتها (v0.7.0 RC7).
+ *
+ * السبب الجذري الذي عالجه هذا: أثناء البثّ تُفحص كل جملة على حدة، وسطر الكود
+ * الواحد لا يحمل سياجه معه — فكان `const x = getUser()` يصل إلى فاحص النثر
+ * فيُقرأ كأنه عربية مخلوطة بكلمات دخيلة، فيُقطع الرد البرمجي السليم.
+ *
+ * الحل: تتبّع حالة السياج عبر البثّ كله، وتجريد ما هو **داخل** الكود قبل
+ * الفحص. النثر العربي خارج الكود يبقى مفحوصًا بالكامل بلا أي تخفيف.
+ */
+export function stripCodeAware(
+  unit: string,
+  startsInsideCode: boolean,
+): { prose: string; endsInsideCode: boolean } {
+  let inside = startsInsideCode;
+  let prose = "";
+  // نقسم على سياج ``` مع الاحتفاظ بالفواصل لتتبّع التبديل بدقّة
+  const parts = unit.split(/(```)/);
+  for (const part of parts) {
+    if (part === "```") {
+      inside = !inside;
+      continue;
+    }
+    if (!inside) prose += part;
+    else prose += " "; // داخل الكود → لا يُفحص كنثر
+  }
+  // الكود المضمّن `...` داخل النثر يُجرَّد أيضًا
+  prose = prose.replace(/`[^`\n]*`/g, " ");
+  return { prose, endsInsideCode: inside };
+}
+
+/** هل ينتهي النص بسياج كود مفتوح؟ (عدد ``` فردي) */
+export function endsInsideCodeFence(text: string): boolean {
+  return (text.match(/```/g) ?? []).length % 2 === 1;
 }
 
 /**
@@ -179,7 +231,13 @@ export function violatesStreamUnit(
   unit: string,
   expected: ExpectedLanguage,
   userText: string,
+  /** حالة سياج الكود عند بداية الوحدة (v0.7.0 RC7) — الكود لا يُفحص كنثر */
+  startsInsideCode = false,
 ): { violated: boolean; reason?: string } {
+  // نفحص النثر وحده: ما كان داخل ``` أو `…` يخرج من الحساب كليًا
+  const { prose } = stripCodeAware(unit, startsInsideCode);
+  if (prose.trim() === "") return { violated: false };
+  unit = prose;
   const r = scriptRatios(unit);
   const unwanted =
     (userUsesScript(userText, "cyrillic") ? 0 : r.cyrillic) +
@@ -424,6 +482,10 @@ export function endsWithCompleteSentence(text: string): boolean {
   const t = text.replace(/\s+$/, "");
   if (!t) return false;
   if (endsWithDanglingPreamble(t)) return false;
+  // كتلة كود مغلقة نهايةٌ مكتملة تمامًا (v0.7.0 RC7): الرد البرمجي السليم ينتهي
+  // بسياج ``` لا بنقطة، وكان ذلك يُصنَّف «مبتورًا» فتُلحق به عبارة الجودة.
+  // الشرط: عدد الأسيجة زوجي (كل ما فُتح أُغلق) وآخر ما في النص سياج مغلق.
+  if (/```\s*$/.test(t) && !endsInsideCodeFence(t)) return true;
   // علامة نهاية جملة، ويُسمح بعدها بعلامات إغلاق (اقتباس/قوس)
   return /[.!?؟…][»"'’”)\]]*$/.test(t);
 }
@@ -433,6 +495,11 @@ const USEFUL_MIN_WORDS = 12;
 
 /** هل ما عُرض إجابة مفيدة قائمة بذاتها؟ */
 export function isUsefulReply(text: string): boolean {
+  // كتلة كود مغلقة ذات محتوى = إجابة قائمة بذاتها (v0.7.0 RC7). عدّ الكلمات
+  // وحده كان يَعدّ ردًّا برمجيًا صحيحًا وقصيرًا «غير مفيد» فتُلحق به عبارة
+  // الجودة، مع أن استعلام SQL من سطر واحد إجابة كاملة تمامًا.
+  const closedCode = /```[^\n]*\n([\s\S]*?)\n?```/.exec(text);
+  if (closedCode && (closedCode[1] ?? "").trim().length >= 10) return true;
   const words = text.trim().split(/\s+/).filter(Boolean);
   return words.length >= USEFUL_MIN_WORDS;
 }
