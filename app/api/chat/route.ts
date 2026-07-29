@@ -415,6 +415,8 @@ export async function POST(req: NextRequest) {
       /** حالة اكتمال الرد (RC8) — تُحفظ في metadata */
   let completionStatus: string | null = null;
   let completionReason: string | null = null;
+  /** إجهاض العميل — يُميَّز صراحةً عن المهلة وعطل المزوّد وسقوط الحارس */
+  let clientAborted = false;
   let regenerations = 0;
       let emptyCompletions = 0;
       let groundingSource: string = grounding.source;
@@ -498,6 +500,27 @@ export async function POST(req: NextRequest) {
          * إجهاض العميل الحقيقي (req.signal) لا يمرّ من هنا: timedOut لا يُضبط
          * إلا حين يكون الإجهاض من السقف لا من المتصفح.
          */
+        /**
+         * إجهاض العميل (v0.7.0 RC8) — الفحص المفقود.
+         *
+         * `onClientAbort` يُلغي المزوّد عبر hardLimit، لكن `timedOut` يبقى
+         * false عمدًا حين يكون الإجهاض من المتصفح. فكان التنفيذ **يعبر** فحص
+         * المهلة ويهبط مباشرةً على مسار الحفظ، فتُحفظ رسالة مساعد جزئية
+         * لمستخدم غادر الصفحة أصلًا — رُصد حيًّا (assistant rows = 1).
+         *
+         * العقد: الإجهاض ليس مهلة ولا عطل مزوّد ولا سقوط حارس. لا حفظ، ولا
+         * لاحقة، ولا تنبيه، ولا completion، ولا done. رسالة المستخدم تبقى.
+         */
+        if (req.signal.aborted) {
+          clientAborted = true;
+          console.log(
+            `[chat] rid=${requestId} failure_kind=client_abort ` +
+              `client_aborted=${clientAborted} text_char_count=${assistantText.length} ` +
+              `assistant_saved=false completion=none`,
+          );
+          return;
+        }
+
         if (timedOut) {
           /**
            * v0.7.0 RC8 — تفريق حاسم لم يكن قائمًا:
