@@ -589,6 +589,27 @@ export function buildIncompleteSuffix(emitted: string): string {
   return `${closeFence}${TRUNCATED_NOTICE}`;
 }
 
+/** تنبيه الرد الناقص الموحّد — يُعرض خارج الكود دائمًا */
+export const INCOMPLETE_NOTICE_TEXT = "لم يكتمل هذا الرد. يمكنك إعادة التوليد.";
+
+/**
+ * يُنهي نصًّا جزئيًا بعقد Markdown آمن (v0.7.0 RC8).
+ *
+ * يُغلق السياج المفتوح **للعرض والحفظ معًا** فيبقى عدد الأسيجة زوجيًا، ثم
+ * يضع التنبيه في فقرة مستقلة بعده. لا يُكمل الكود ولا يخترع محتوى.
+ *
+ * **idempotent**: استدعاؤه مرتين لا يكرّر السياج ولا التنبيه — فمسارات
+ * الإنهاء متعددة (مهلة/مزوّد/حارس) وقد تتلاقى.
+ */
+export function finalizeIncompleteText(text: string): string {
+  let out = text.replace(/\s+$/, "");
+  if (endsInsideCodeFence(out)) out += "\n```";
+  const hasNotice =
+    out.includes(INCOMPLETE_NOTICE_TEXT) || out.includes(TRUNCATED_NOTICE.trim());
+  if (!hasNotice) out += `\n\n${INCOMPLETE_NOTICE_TEXT}`;
+  return out;
+}
+
 /** هل ينتهي النص بجملة عربية مكتملة؟ (علامة نهاية، وبلا تمهيد معلّق) */
 export function endsWithCompleteSentence(text: string): boolean {
   const t = text.replace(/\s+$/, "");

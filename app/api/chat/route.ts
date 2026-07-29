@@ -21,7 +21,12 @@ import {
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
-import { endsWithCompleteSentence, TRUNCATED_NOTICE } from "@/lib/ai/language-guard";
+import {
+  endsWithCompleteSentence,
+  finalizeIncompleteText,
+  INCOMPLETE_NOTICE_TEXT,
+  TRUNCATED_NOTICE,
+} from "@/lib/ai/language-guard";
 import {
   BUCKET_CHAT,
   consumeRateLimit,
@@ -494,7 +499,26 @@ export async function POST(req: NextRequest) {
          * إلا حين يكون الإجهاض من السقف لا من المتصفح.
          */
         if (timedOut) {
-          throw new Error("hard_limit_abort");
+          /**
+           * v0.7.0 RC8 — تفريق حاسم لم يكن قائمًا:
+           *
+           * مهلة **قبل** أي نص ⇒ لا شيء يستحق الحفظ، فنرمي إلى معالج المهلة
+           * (رسالة عربية، بلا رسالة مساعد فارغة) — العقد القديم كما هو.
+           *
+           * مهلة **بعد** نص جزئي ⇒ المستخدم رأى النص، فحذفه صمتًا خسارة له.
+           * نُنهيه بعقد Markdown آمن (إغلاق السياج + تنبيه خارجه) ونحفظه
+           * **ناقصًا صراحةً**. لا محاولة مزوّد جديدة بعد أن بدأ العرض.
+           */
+          if (!assistantText.trim()) {
+            throw new Error("hard_limit_abort");
+          }
+          const finalized = finalizeIncompleteText(assistantText);
+          const added = finalized.slice(assistantText.length);
+          if (added) send({ type: "text", text: added });
+          assistantText = finalized;
+          completionStatus = "incomplete_timeout";
+          completionReason = "hard_limit";
+          lastErrorCode = "timeout";
         }
 
         // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
@@ -524,7 +548,9 @@ export async function POST(req: NextRequest) {
             meta.completion = {
               status: completionStatus,
               reason: completionReason,
-              notice: assistantText.includes(TRUNCATED_NOTICE.trim()),
+              notice:
+                assistantText.includes(TRUNCATED_NOTICE.trim()) ||
+                assistantText.includes(INCOMPLETE_NOTICE_TEXT),
             };
           }
           if (Object.keys(meta).length > 0) insertRow.metadata = meta;
@@ -542,7 +568,12 @@ export async function POST(req: NextRequest) {
           userMessageId,
           assistantMessageId,
           completion: completionStatus
-            ? { status: completionStatus, noticeInText: assistantText.includes(TRUNCATED_NOTICE.trim()) }
+            ? {
+                status: completionStatus,
+                noticeInText:
+                  assistantText.includes(TRUNCATED_NOTICE.trim()) ||
+                  assistantText.includes(INCOMPLETE_NOTICE_TEXT),
+              }
             : undefined,
         });
 

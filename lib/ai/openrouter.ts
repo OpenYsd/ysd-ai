@@ -32,6 +32,7 @@ import {
   CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
   buildIncompleteSuffix,
+  finalizeIncompleteText,
   dedupeContinuation,
   endsWithDanglingPreamble,
   shouldAppendTruncatedNotice,
@@ -484,6 +485,29 @@ export class OpenRouterProvider implements AIProviderAdapter {
         if (text) yield { type: "text", text };
         if (result.usage) yield { type: "usage", usage: result.usage };
         yield { type: "done" };
+        return;
+      }
+
+      /**
+       * v0.7.0 RC8 — انقطاع المزوّد **بعد** أن شاهد المستخدم نصًّا.
+       *
+       * الاحتياط هنا خطأ: النص معروض على الشاشة، والانتقال لنموذج آخر يعني
+       * ردًّا ثانيًا يلتصق بالأول أو يحلّ محلّه. العقد: نتوقف عند ما عُرض،
+       * ونُنهيه بعقد Markdown آمن، ونعلّمه ناقصًا صراحةً — بلا نداء إضافي.
+       */
+      if (result.status === "network_error" && (result.emitted ?? "").trim()) {
+        const partial = result.emitted ?? "";
+        const finalized = finalizeIncompleteText(partial);
+        const added = finalized.slice(partial.length);
+        if (added) yield { type: "text", text: added };
+        console.error(
+          `[openrouter] provider_interrupted_after_flush model=${result.model ?? model} text_char_count=${partial.length}`,
+        );
+        yield {
+          type: "done",
+          completion: "incomplete_provider",
+          completionReason: "stream_interrupted",
+        };
         return;
       }
 
@@ -965,7 +989,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (req.signal?.aborted) return { status: "aborted" };
       // يشمل انقضاء مهلة المحاولة أثناء البثّ (المهلة تبقى مسلّحة عمدًا)
       console.error("[openrouter] stream read failed or timed out");
-      return { status: "network_error" };
+      // v0.7.0 RC8: نُعيد ما عُرض فعلًا. بدونه كان النص الذي شاهده المستخدم
+      // يضيع، ويُستأنف احتياط بنموذج آخر وكأن شيئًا لم يُعرض.
+      return { status: "network_error", emitted, model: actualModel };
     } finally {
       clearTimeout(timeoutId);
     }
