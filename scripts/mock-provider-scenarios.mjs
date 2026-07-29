@@ -95,7 +95,14 @@ const server = http.createServer((req, res) => {
     let prompt = "";
     try {
       const j = JSON.parse(body);
-      prompt = (j.messages ?? []).map((m) => m.content).join(" ");
+      /**
+       * السيناريو يُقرأ من **آخر رسالة مستخدم** وحدها، لا من سلسلة الرسائل
+       * كاملة: الطلب الثاني في المحادثة يحمل تاريخها، فكان يطابق كلمة سيناريو
+       * التبادل السابق ويعيد سلوكه — فيظهر تبادل مكتمل بعلامة نقص خاطئة.
+       */
+      const msgs = j.messages ?? [];
+      const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+      prompt = lastUser?.content ?? "";
     } catch {}
     const scenario = pickScenario(prompt);
     stats.requests_by_scenario[scenario] = (stats.requests_by_scenario[scenario] ?? 0) + 1;
