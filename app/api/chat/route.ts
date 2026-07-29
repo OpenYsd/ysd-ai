@@ -407,7 +407,9 @@ export async function POST(req: NextRequest) {
       // v0.6.5: الوضع المختار وزمن الحالة وعدد إعادات التوليد — أرقام فقط
       let statusMs = -1;
       let answerMode: "general" | "protected" = "general";
-      let regenerations = 0;
+      /** حالة اكتمال الرد (RC8) — تُحفظ في metadata */
+  let completionStatus: string | null = null;
+  let regenerations = 0;
       let emptyCompletions = 0;
       let groundingSource: string = grounding.source;
       let protectedDetailBlocked = false;
@@ -442,6 +444,8 @@ export async function POST(req: NextRequest) {
             // حالة تحقّق قصيرة — تُعرض فورًا ولا تُحفظ ضمن نص الرد
             if (statusMs < 0) statusMs = Date.now() - tProvider;
             send({ type: "status", text: chunk.text });
+          } else if (chunk.type === "done" && chunk.completion) {
+            completionStatus = chunk.completion;
           } else if (chunk.type === "meta" && chunk.model) {
             actualModelId = chunk.model;
             if (chunk.mode) answerMode = chunk.mode;
@@ -501,17 +505,20 @@ export async function POST(req: NextRequest) {
             content: assistantText,
             model_id: actualModelId ?? modelId,
           };
-          // عمود metadata يأتي مع migration 0007 — لا نرسله إلا عند وجود مصادر
+          // عمود metadata يأتي مع migration 0007 — لا نرسله إلا عند وجود محتوى
+          const meta: Record<string, unknown> = {};
           if (ragSnippets.length > 0) {
-            insertRow.metadata = {
-              sources: ragSnippets.map((s) => ({
-                fileId: s.fileId,
-                fileName: s.fileName,
-                pageNumber: s.pageNumber,
-                snippet: s.content.slice(0, 180),
-              })),
-            };
+            meta.sources = ragSnippets.map((s) => ({
+              fileId: s.fileId,
+              fileName: s.fileName,
+              pageNumber: s.pageNumber,
+              snippet: s.content.slice(0, 180),
+            }));
           }
+          // حالة الاكتمال (v0.7.0 RC8): غيابها = مكتمل، فالرسائل القديمة تبقى
+          // صالحة بلا ترحيل. لا نعلّم ردًّا مقطوعًا مكتملًا أبدًا.
+          if (completionStatus) meta.completion = completionStatus;
+          if (Object.keys(meta).length > 0) insertRow.metadata = meta;
           const tAsstInsert = Date.now();
           const { data: saved } = await supabase
             .from("messages")

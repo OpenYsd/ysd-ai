@@ -575,6 +575,20 @@ export const CONTINUATION_SUFFIX =
 /** إنهاء لطيف عند آخر جملة نظيفة حين يتعذّر الإكمال — بلا رسالة خطأ */
 export const TRUNCATED_NOTICE = "\n\nتوقفت هنا للحفاظ على جودة الرد.";
 
+/**
+ * لاحقة الرد غير المكتمل مع إغلاق آمن للسياج (v0.7.0 RC8).
+ *
+ * رُصد حيًّا: رد انقطع داخل كتلة كود فأُلحقت العبارة **داخل** السياج المفتوح،
+ * فظهرت للمستخدم كأنها سطر كود، وبقي السياج فرديًا فانكسر عرض Markdown كله.
+ *
+ * هنا نغلق السياج **للعرض فقط** — لا نخترع بقية الكود ولا نكمله — ثم نضع
+ * التنبيه في فقرة مستقلة خارج الكتلة.
+ */
+export function buildIncompleteSuffix(emitted: string): string {
+  const closeFence = endsInsideCodeFence(emitted) ? "\n```" : "";
+  return `${closeFence}${TRUNCATED_NOTICE}`;
+}
+
 /** هل ينتهي النص بجملة عربية مكتملة؟ (علامة نهاية، وبلا تمهيد معلّق) */
 export function endsWithCompleteSentence(text: string): boolean {
   const t = text.replace(/\s+$/, "");

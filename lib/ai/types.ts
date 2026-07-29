@@ -57,6 +57,11 @@ export interface StreamChunk {
   shortCircuit?: boolean;
   /** عدد طلبات التوليد الفعلية المرسلة للمزوّد في هذا الرد */
   providerCalls?: number;
+  /**
+   * حالة اكتمال الرد (v0.7.0 RC8) — تُرسل مع "done".
+   * غيابها يعني رَدًّا مكتملًا؛ فالرسائل القديمة تبقى صالحة بلا ترحيل.
+   */
+  completion?: "incomplete_guard" | "incomplete_timeout" | "incomplete_provider";
   /** v0.6.6: اسم ملتبس → سؤال توضيح من النظام بلا نداء مزوّد */
   ambiguousEntity?: boolean;
 }

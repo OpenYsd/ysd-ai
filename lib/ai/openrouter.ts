@@ -31,11 +31,12 @@ import {
 import {
   CONTINUATION_SUFFIX,
   GUARD_OVERLAP_CHARS,
-  TRUNCATED_NOTICE,
+  buildIncompleteSuffix,
   dedupeContinuation,
   endsWithDanglingPreamble,
   shouldAppendTruncatedNotice,
   endsInsideCodeFence,
+  stripCodeAware,
   takeCompleteUnits,
   violatesStreamUnit,
 } from "./language-guard";
@@ -241,6 +242,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
     const chain: readonly string[] =
       req.modelId === YSD_FREE_MODEL_ID ? FREE_MODEL_CHAIN : [req.modelId];
 
+    /** حالة اكتمال الرد (RC8) — تُضبط عند أي إنهاء غير مكتمل */
+    let incomplete: StreamChunk["completion"] = undefined;
+
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const userText = lastUser?.content ?? "";
     const expected = detectExpectedLanguage(userText);
@@ -384,9 +388,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
         // لا احتياط متاح — إنهاء عند آخر جملة نظيفة.
         // العبارة تُضاف فقط إن كان الرد ناقصًا فعلًا؛ وإلا نُنهي بصمت.
         if (shouldAppendTruncatedNotice(result.emitted ?? "")) {
-          yield { type: "text", text: TRUNCATED_NOTICE };
+          // يغلق أي سياج مفتوح للعرض ثم يضع التنبيه خارج الكتلة (RC8)
+          yield { type: "text", text: buildIncompleteSuffix(result.emitted ?? "") };
+          incomplete = "incomplete_guard";
         }
-        yield { type: "done" };
+        yield { type: "done", completion: incomplete };
         return;
       }
 
@@ -574,10 +580,12 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // فشل الإكمال (تسريب أو عطل تقني) — إنهاء بلا رسالة خطأ.
     // إن كان المعروض إجابة مفيدة تنتهي بجملة مكتملة نُنهي بصمت: العبارة حينها
     // توحي بعطل بينما الرد سليم (رُصد حيًّا في رد Jujutsu Kaisen).
-    if (shouldAppendTruncatedNotice(emitted)) {
-      yield { type: "text", text: TRUNCATED_NOTICE };
+    // الرد ناقص فقط إن احتاج اللاحقة؛ وإلا فالمتابعة أكملته فهو مكتمل
+    const needsNotice = shouldAppendTruncatedNotice(emitted);
+    if (needsNotice) {
+      yield { type: "text", text: buildIncompleteSuffix(emitted) };
     }
-    yield { type: "done" };
+    yield { type: "done", completion: needsNotice ? "incomplete_guard" : undefined };
   }
 
   /**
@@ -785,21 +793,33 @@ export class OpenRouterProvider implements AIProviderAdapter {
     let seg = ""; // ما لم تكتمل منه جملة بعد
     let emitted = ""; // الجمل النظيفة التي عُرضت فعلًا
     let anyFlushed = false; // هل عُرض شيء للمستخدم بالفعل؟
-    let overlap = ""; // ذيل ما عُرض — يُفحص مع الوحدة التالية منعًا لانقسام كلمة دخيلة
 
     /**
-     * يفحص وحدة (مع تداخل) قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة.
+     * يفحص وحدة قبل عرضها؛ يُرجع رمز السبب فقط — بلا الكلمة المخالفة.
      *
-     * حالة سياج الكود (v0.7.0 RC7) تُشتقّ من النص المعروض **قبل** التداخل، لا
-     * من نهايته: التداخل جزء من `emitted` وقد يحوي سياجًا حُسب مرّةً بالفعل،
-     * فتمرير حالة النهاية مع إعادة تمرير التداخل يقلب الحالة مرتين — فيُقرأ
-     * جوف الكتلة نثرًا ويُقطع الرد. الاشتقاق من نقطة بدء التداخل يجعل الحساب
-     * صحيحًا مهما وقع السياج داخل التداخل أو خارجه.
+     * حالة سياج الكود (v0.7.0 RC8) تُشتقّ من **كامل** النص المعروض. المحاولتان
+     * السابقتان ربطتاها بقصّة بطول ثابت (GUARD_OVERLAP_CHARS = 24)، وثبت حيًّا
+     * أن حدّ القصّ يشطر علامة ``` نفسها فلا يراها أيٌّ من الطرفين:
+     *
+     *   emitted       = "**الدالة**\n\n```python\nimport requests"  (37 حرفًا)
+     *   beforeOverlap = "**الدالة**\n\n`"          ← لا ``` كاملة
+     *   overlap       = "``python\nimport requests" ← ولا هنا
+     *
+     * فيُقرأ جوف الكتلة نثرًا عربيًا، ويسقط stray_latin على `requests` و
+     * `response`، فيُقطع رد برمجي سليم. القصّ لم يعد مسؤولًا عن حالة السياج
+     * إطلاقًا، والتداخل صار يُؤخذ من النثر المجرَّد فيستحيل أن يشقّ علامة.
      */
     const checkSegment = (s: string): string | null => {
-      const beforeOverlap = emitted.slice(0, Math.max(0, emitted.length - overlap.length));
-      const insideCode = endsInsideCodeFence(beforeOverlap);
-      const verdict = violatesStreamUnit(overlap + s, expected, userText, insideCode);
+      // حالة السياج تُشتقّ من **كامل** ما عُرض — لا من قصّة بعدد أحرف ثابت.
+      const insideCode = endsInsideCodeFence(emitted);
+      const unitProse = stripCodeAware(s, insideCode).prose;
+      if (unitProse.trim() === "") return null; // الوحدة كلها كود → لا فحص نثر
+
+      // التداخل يُؤخذ من **نثر** ما عُرض لا من نصّه الخام، فيستحيل أن يشقّ ```
+      const emittedProse = stripCodeAware(emitted, false).prose;
+      const proseOverlap = emittedProse.slice(-GUARD_OVERLAP_CHARS);
+
+      const verdict = violatesStreamUnit(proseOverlap + unitProse, expected, userText, false);
       return verdict.violated ? (verdict.reason ?? "unknown") : null;
     };
 
@@ -880,7 +900,6 @@ export class OpenRouterProvider implements AIProviderAdapter {
             yield { type: "text", text: ready };
             emitted += ready;
 
-            overlap = emitted.slice(-GUARD_OVERLAP_CHARS);
           }
         }
       }
