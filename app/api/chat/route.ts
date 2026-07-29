@@ -174,6 +174,30 @@ export async function POST(req: NextRequest) {
       .is("deleted_at", null);
     userMessageId = editMessageId;
   } else if (regenerate) {
+    /**
+     * v0.7.0 RC8 — الحجز **قبل** أي حذف.
+     *
+     * كان هذا الفرع لا يحجز idempotency إطلاقًا: الحجز يقع في فرع الرسالة
+     * الجديدة وحده. فطلبا إعادة توليد متزامنان كانا يمرّان كلاهما، وكلٌّ
+     * يحذف ناعمًا ردود ما بعد آخر رسالة مستخدم — أي أن الثاني يمحو الرد الذي
+     * أنشأه الأول. والحذف عملية غير قابلة للعكس، فلا يجوز أن تسبق التأمين.
+     *
+     * الآن: المكرر يُرد 409 قبل أن يلمس أي صف.
+     */
+    const claim = await claimRequestDurable(
+      supabase as never,
+      userId,
+      clientRequestId,
+      conversationId,
+    );
+    if (!claim.ok) {
+      console.log(`[chat] rid=${requestId} duplicate_request=true path=regenerate`);
+      return json(
+        { error: "هذه الرسالة أُرسلت بالفعل.", code: "duplicate_request" },
+        409,
+      );
+    }
+
     // إعادة توليد: احذف (ناعمًا) الردود التالية لآخر رسالة مستخدم
     const { data: lastUser } = await supabase
       .from("messages")
@@ -184,7 +208,11 @@ export async function POST(req: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(1)
       .single();
-    if (!lastUser) return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
+    if (!lastUser) {
+      // نحرّر الحجز كي لا يبقى in_progress فيمنع محاولة لاحقة مشروعة
+      await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
+      return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
+    }
 
     await supabase
       .from("messages")

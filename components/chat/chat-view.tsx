@@ -168,7 +168,11 @@ export function ChatView({
 
   const convIdRef = useRef<string | null>(conversationId);
   const abortRef = useRef<AbortController | null>(null);
-  /** قفل فوري ضد الإرسال المزدوج (النقر المتكرر / Enter السريع) */
+  /**
+   * قفل توليد **موحّد** فوري — يحمي الإرسال وإعادة التوليد معًا (v0.7.0 RC8).
+   * قفل واحد لا قفلان: لو انفصلا لأمكن أن يعمل send وregenerate بالتوازي على
+   * نفس المحادثة. مرجع لا حالة React، فيُضبط في نفس النبضة قبل أي await.
+   */
   const sendLockRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
@@ -537,13 +541,43 @@ export function ChatView({
   const regenerate = useCallback(async () => {
     const convId = convIdRef.current;
     if (!convId || generating || !modelId) return;
-    // أزل الردود الأخيرة محليًا (الخادم يحذفها ناعمًا)
-    setMessages((prev) => {
-      const arr = [...prev];
-      while (arr.length && arr[arr.length - 1]?.role === "assistant") arr.pop();
-      return arr;
-    });
-    await streamRequest({ conversationId: convId, modelId, regenerate: true }, null);
+
+    /**
+     * v0.7.0 RC8 — إعادة التوليد تشترك في **نفس** قفل الإرسال.
+     *
+     * كانت تحرسها `generating` وحدها، وهي حالة React لا تُضبط إلا داخل
+     * streamRequest — أي بعد أول await. فنقرتان في نبضة واحدة كانتا تمرّان
+     * فتُرسلان طلبين، ولا حرس idempotency على الخادم لأن regenerate كان
+     * يمرّر null بدل clientRequestId. رُصد حيًّا: provider_calls = 2.
+     *
+     * قفل واحد مشترك (لا قفلان) كي لا يعمل الإرسال وإعادة التوليد معًا،
+     * ويُضبط قبل أي await، ويُحرَّر في finally مهما كان المخرج — نجاحًا أو
+     * خطأً أو مهلة أو إجهاضًا أو تكرارًا.
+     */
+    if (sendLockRef.current) return;
+    sendLockRef.current = true;
+
+    try {
+      // أزل الردود الأخيرة محليًا (الخادم يحذفها ناعمًا). القفل يضمن أن هذا
+      // لا يتكرر من نقرة ثانية، فلا يُحذف الرد الذي أنشأه الطلب الأول.
+      setMessages((prev) => {
+        const arr = [...prev];
+        while (arr.length && arr[arr.length - 1]?.role === "assistant") arr.pop();
+        return arr;
+      });
+      await streamRequest(
+        {
+          conversationId: convId,
+          modelId,
+          regenerate: true,
+          // مفتاح جديد لكل محاولة يبدأها المستخدم — الخادم يرفض تكراره بـ409
+          clientRequestId: newClientRequestId(),
+        },
+        null,
+      );
+    } finally {
+      sendLockRef.current = false;
+    }
   }, [generating, modelId, streamRequest]);
 
   const saveEdit = useCallback(
