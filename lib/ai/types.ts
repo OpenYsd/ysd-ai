@@ -62,6 +62,8 @@ export interface StreamChunk {
    * غيابها يعني رَدًّا مكتملًا؛ فالرسائل القديمة تبقى صالحة بلا ترحيل.
    */
   completion?: "incomplete_guard" | "incomplete_timeout" | "incomplete_provider";
+  /** سبب فني مختصر للنقص (رمز فقط، بلا محتوى) — يُعرض في التطوير ويُسجَّل */
+  completionReason?: string;
   /** v0.6.6: اسم ملتبس → سؤال توضيح من النظام بلا نداء مزوّد */
   ambiguousEntity?: boolean;
 }

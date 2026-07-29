@@ -21,7 +21,7 @@ import {
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
-import { endsWithCompleteSentence } from "@/lib/ai/language-guard";
+import { endsWithCompleteSentence, TRUNCATED_NOTICE } from "@/lib/ai/language-guard";
 import {
   BUCKET_CHAT,
   consumeRateLimit,
@@ -409,6 +409,7 @@ export async function POST(req: NextRequest) {
       let answerMode: "general" | "protected" = "general";
       /** حالة اكتمال الرد (RC8) — تُحفظ في metadata */
   let completionStatus: string | null = null;
+  let completionReason: string | null = null;
   let regenerations = 0;
       let emptyCompletions = 0;
       let groundingSource: string = grounding.source;
@@ -446,6 +447,7 @@ export async function POST(req: NextRequest) {
             send({ type: "status", text: chunk.text });
           } else if (chunk.type === "done" && chunk.completion) {
             completionStatus = chunk.completion;
+            completionReason = chunk.completionReason ?? null;
           } else if (chunk.type === "meta" && chunk.model) {
             actualModelId = chunk.model;
             if (chunk.mode) answerMode = chunk.mode;
@@ -517,7 +519,14 @@ export async function POST(req: NextRequest) {
           }
           // حالة الاكتمال (v0.7.0 RC8): غيابها = مكتمل، فالرسائل القديمة تبقى
           // صالحة بلا ترحيل. لا نعلّم ردًّا مقطوعًا مكتملًا أبدًا.
-          if (completionStatus) meta.completion = completionStatus;
+          // notice=true يعني أن النص المحفوظ يحمل التنبيه بالفعل، فلا تكرره الواجهة.
+          if (completionStatus) {
+            meta.completion = {
+              status: completionStatus,
+              reason: completionReason,
+              notice: assistantText.includes(TRUNCATED_NOTICE.trim()),
+            };
+          }
           if (Object.keys(meta).length > 0) insertRow.metadata = meta;
           const tAsstInsert = Date.now();
           const { data: saved } = await supabase
@@ -528,7 +537,14 @@ export async function POST(req: NextRequest) {
           assistantMessageInsertMs = Date.now() - tAsstInsert;
           assistantMessageId = saved?.id ?? null;
         }
-        send({ type: "done", userMessageId, assistantMessageId });
+        send({
+          type: "done",
+          userMessageId,
+          assistantMessageId,
+          completion: completionStatus
+            ? { status: completionStatus, noticeInText: assistantText.includes(TRUNCATED_NOTICE.trim()) }
+            : undefined,
+        });
 
         // سجل آمن مرتبط بـrequest_id فقط — أرقام ومعرّف نموذج، بلا محتوى/بريد/توكن.
         // fallback_count = ترتيب النموذج الفعلي في السلسلة (كم نموذجًا سبقه فشلًا/تخطيًا).

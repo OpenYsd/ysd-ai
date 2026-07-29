@@ -61,11 +61,31 @@ export interface MsgSource {
   similarity?: number;
 }
 
+/** حالات عدم الاكتمال (v0.7.0 RC8) — مصدرها القاعدة وحدها */
+export type MsgCompletionStatus =
+  | "incomplete_guard"
+  | "incomplete_timeout"
+  | "incomplete_provider";
+
+export interface MsgCompletion {
+  status: MsgCompletionStatus;
+  /** هل النص المحفوظ يحمل تنبيه النقص بالفعل؟ فلا تكرره الواجهة */
+  noticeInText: boolean;
+}
+
+/** تنبيه الرد الناقص — خارج Markdown وخارج أي كتلة كود */
+export const INCOMPLETE_NOTICE = "لم يكتمل هذا الرد. يمكنك إعادة التوليد.";
+
 interface Msg {
   id: string;
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  /**
+   * حالة الاكتمال (v0.7.0 RC8). غيابها = مكتمل، فالرسائل القديمة تُعرض بلا
+   * أي تغيير. تُقرأ من messages.metadata.completion — لا من التخزين المحلي.
+   */
+  completion?: MsgCompletion;
   /** حالة قصيرة أثناء الوضع المحمي («جارٍ التحقق…») — ليست جزءًا من الرد */
   status?: string;
   /** النموذج الفعلي الذي أجاب — يُعرض في وضع التطوير فقط */
@@ -112,6 +132,8 @@ interface SSEEvent {
   sources?: MsgSource[];
   userMessageId?: string | null;
   assistantMessageId?: string | null;
+  /** حالة الاكتمال (RC8) — تصل مع done فتظهر فورًا بلا انتظار تحديث */
+  completion?: MsgCompletion;
 }
 
 export function ChatView({
@@ -292,6 +314,8 @@ export function ChatView({
                       ...m,
                       id: data.assistantMessageId ?? m.id,
                       streaming: false,
+                      // حالة النقص تظهر فورًا، وتبقى بعد التحديث لأنها محفوظة
+                      completion: data.completion,
                     };
                   if (tempUserId && m.id === tempUserId && data.userMessageId)
                     return { ...m, id: data.userMessageId };
@@ -768,7 +792,7 @@ export function ChatView({
                               label={t("copy")}
                               onClick={() => void copyText(m.content)}
                             />
-                            {m.id === lastAssistantId && (
+                            {(m.id === lastAssistantId || m.completion) && (
                               <MsgAction
                                 icon={<RefreshCw size={12} />}
                                 label={t("regenerate")}
@@ -777,6 +801,20 @@ export function ChatView({
                               />
                             )}
                           </div>
+                        )}
+                        {/*
+                          تنبيه الرد الناقص (v0.7.0 RC8) — **خارج** Markdown
+                          فلا يقع داخل كتلة كود أبدًا. لا يُعرض إن كان النص
+                          المحفوظ يحمل لاحقة آمنة بالفعل، ولا يُطلق أي نداء
+                          مزوّد بمجرّد العرض أو تحديث الصفحة.
+                        */}
+                        {m.completion && !m.completion.noticeInText && !m.streaming && (
+                          <p
+                            data-incomplete={m.completion.status}
+                            className="mt-2 text-[12px] text-amber-600 dark:text-amber-400"
+                          >
+                            {INCOMPLETE_NOTICE}
+                          </p>
                         )}
                       </div>
                     </div>

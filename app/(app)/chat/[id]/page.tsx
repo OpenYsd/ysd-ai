@@ -77,7 +77,13 @@ export default async function ConversationPage({
   const initialMessages = (rows ?? [])
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => {
-      const meta = (m.metadata ?? {}) as { sources?: unknown };
+      const meta = (m.metadata ?? {}) as {
+        sources?: unknown;
+        completion?: { status?: string; reason?: string | null; notice?: boolean };
+      };
+      // حالة الاكتمال (v0.7.0 RC8): تأتي من القاعدة وحدها — لا localStorage.
+      // غيابها يعني رَدًّا مكتملًا، فالرسائل القديمة تُعرض كما كانت تمامًا.
+      const status = meta.completion?.status;
       return {
         id: m.id,
         role: m.role as "user" | "assistant",
@@ -85,6 +91,13 @@ export default async function ConversationPage({
         sources: Array.isArray(meta.sources)
           ? (meta.sources as import("@/components/chat/chat-view").MsgSource[])
           : undefined,
+        completion:
+          status && status !== "complete"
+            ? {
+                status: status as import("@/components/chat/chat-view").MsgCompletionStatus,
+                noticeInText: meta.completion?.notice === true,
+              }
+            : undefined,
       };
     });
 

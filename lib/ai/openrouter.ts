@@ -392,7 +392,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
           yield { type: "text", text: buildIncompleteSuffix(result.emitted ?? "") };
           incomplete = "incomplete_guard";
         }
-        yield { type: "done", completion: incomplete };
+        yield { type: "done", completion: incomplete, completionReason: result.guardReason };
         return;
       }
 
@@ -585,7 +585,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
     if (needsNotice) {
       yield { type: "text", text: buildIncompleteSuffix(emitted) };
     }
-    yield { type: "done", completion: needsNotice ? "incomplete_guard" : undefined };
+    yield {
+      type: "done",
+      completion: needsNotice ? "incomplete_guard" : undefined,
+      completionReason: needsNotice ? "continuation_rejected" : undefined,
+    };
   }
 
   /**
