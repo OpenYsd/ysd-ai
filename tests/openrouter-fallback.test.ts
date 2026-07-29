@@ -238,7 +238,8 @@ describe("★ RC3 — تسريب بعد عرض جمل نظيفة", () => {
     const text = joinText(out);
     expect(fetchMock.mock.calls.length).toBe(2); // لا احتياط ثانٍ
     expect(text).not.toMatch(/otra/i); // تسريب المتابعة لم يصل
-    expect(text).toContain("توقفت هنا للحفاظ على جودة الرد.");
+    // v0.7.0 RC8: نصّ التنبيه توحّد على «لم يكتمل هذا الرد» بعد رفض المتابعة
+    expect(text).toContain("لم يكتمل هذا الرد. يمكنك إعادة التوليد.");
     expect(out.some((c) => c.type === "error")).toBe(false);
   });
 
@@ -265,7 +266,7 @@ describe("★ RC3 — تسريب بعد عرض جمل نظيفة", () => {
     const out = await collect(new OpenRouterProvider().streamChat(STORY_REQ(YSD_FREE_MODEL_ID)));
     const text = joinText(out);
     expect(countOf(text, "وقف الفارس أمام التنين")).toBe(1); // لم يتكرر شيء
-    expect(text).toContain("توقفت هنا للحفاظ على جودة الرد.");
+    expect(text).toContain("لم يكتمل هذا الرد. يمكنك إعادة التوليد.");
     expect(out.some((c) => c.type === "error")).toBe(false);
     expect(fetchMock.mock.calls.length).toBe(2); // متابعة واحدة فقط
   });

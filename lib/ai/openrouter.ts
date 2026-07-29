@@ -245,6 +245,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
     /** حالة اكتمال الرد (RC8) — تُضبط عند أي إنهاء غير مكتمل */
     let incomplete: StreamChunk["completion"] = undefined;
+    /** عدد محاولات المتابعة (RC8) — واحدة كحد أقصى، ولا تُخلط بالاحتياط */
+    let continuationCount = 0;
 
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const userText = lastUser?.content ?? "";
@@ -377,13 +379,23 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
       // تسريب بعد عرض جمل نظيفة — لا خطأ ولا نص مخالف: متابعة صامتة مرة واحدة
       if (result.status === "leak_after_flush") {
+        /**
+         * v0.7.0 RC8 — تمييز حاسم بين **متابعة** و**احتياط**:
+         *
+         * المتابعة استكمال من آخر نص آمن بالنموذج **نفسه**؛ والاحتياط انتقال
+         * إلى نموذج آخر. كان هذا المسار يمرّر usable[i + 1] — أي نموذجًا
+         * مختلفًا — فيُدمج ردّان من نموذجين في رسالة واحدة بعد أن شاهد
+         * المستخدم النص الأول. الآن: النموذج نفسه، محاولة واحدة، بلا احتياط.
+         */
+        continuationCount = langRetryUsed ? continuationCount : 1;
         console.error(
-          `[openrouter] late leak: model=${model} reason=${result.guardReason ?? "?"} continue=${!langRetryUsed}`,
+          `[openrouter] late leak: model=${model} reason=${result.guardReason ?? "?"} ` +
+            `continue=${!langRetryUsed} continuation_count=${continuationCount} ` +
+            `original_model=${model} continuation_model=${model}`,
         );
-        const next = usable[i + 1];
-        if (!langRetryUsed && next) {
-          langRetryUsed = true; // احتياط لغوي واحد فقط
-          yield* this.continueAfterLeak(req, next, expected, userText, result.emitted ?? "", stats);
+        if (!langRetryUsed) {
+          langRetryUsed = true; // متابعة واحدة فقط — لا ثالثة ولا احتياط
+          yield* this.continueAfterLeak(req, model, expected, userText, result.emitted ?? "", stats);
           return;
         }
         // لا احتياط متاح — إنهاء عند آخر جملة نظيفة.
@@ -601,18 +613,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
       console.error(`[openrouter] continuation rejected: reason=${d.ok ? "language" : d.reason}`);
     }
 
-    // فشل الإكمال (تسريب أو عطل تقني) — إنهاء بلا رسالة خطأ.
-    // إن كان المعروض إجابة مفيدة تنتهي بجملة مكتملة نُنهي بصمت: العبارة حينها
-    // توحي بعطل بينما الرد سليم (رُصد حيًّا في رد Jujutsu Kaisen).
-    // الرد ناقص فقط إن احتاج اللاحقة؛ وإلا فالمتابعة أكملته فهو مكتمل
-    const needsNotice = shouldAppendTruncatedNotice(emitted);
-    if (needsNotice) {
-      yield { type: "text", text: buildIncompleteSuffix(emitted) };
-    }
+    /**
+     * فشل الإكمال (تسريب أو عطل تقني) — إنهاء بلا رسالة خطأ.
+     *
+     * v0.7.0 RC8: الوصول إلى هنا يعني أن المتابعة **رُفضت**، فالرد ناقص
+     * بالتعريف مهما بدت نهايته سليمة. ربط العلامة بـshouldAppendTruncatedNotice
+     * وحده كان يُسقطها كلما انتهى المعروض بكتلة كود مغلقة — وهي نهاية تُعدّ
+     * «جملة مكتملة» منذ RC7 — فيُحفظ رد مبتور على أنه مكتمل.
+     *
+     * التنبيه يُضاف عند الحاجة فقط (finalize يتكفّل بعدم التكرار)، أما
+     * **حالة النقص فتُسجَّل دائمًا**.
+     */
+    const finalized = finalizeIncompleteText(emitted);
+    const added = finalized.slice(emitted.length);
+    if (added) yield { type: "text", text: added };
     yield {
       type: "done",
-      completion: needsNotice ? "incomplete_guard" : undefined,
-      completionReason: needsNotice ? "continuation_rejected" : undefined,
+      completion: "incomplete_guard",
+      completionReason: "continuation_rejected",
     };
   }
 

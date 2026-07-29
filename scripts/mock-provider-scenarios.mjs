@@ -33,6 +33,8 @@ const SCENARIOS = {
   "سيناريو-مهلة-بعد-إغلاق": "timeout_after_closed",
   "سيناريو-انقطاع-المزود": "provider_disconnect",
   "سيناريو-عادي": "normal_complete",
+  "سيناريو-متابعة-ناجحة": "continuation_success",
+  "سيناريو-متابعة-فاشلة": "continuation_failure",
 };
 
 function pickScenario(prompt) {
@@ -59,6 +61,9 @@ const GUARD_CHUNKS = [
 const MIDSTREAM_CHUNKS = ["**مثال**\n\n```python\nimport requests"];
 const AFTER_CLOSED_CHUNKS = ["**مثال**\n\n```python\nx = 1\n```\n\nشرح عربي بعد الكتلة"];
 const DISCONNECT_CHUNKS = ["**الحل**\n\n```python\ndef fetch_user(user_id):"];
+/** تكملة عربية نظيفة — تُعطى للنداء الثاني في سيناريو المتابعة الناجحة */
+const CONT_OK_CHUNKS = ["وبهذا تكتمل الفكرة بعبارة عربية سليمة تمامًا."];
+
 const NORMAL_CHUNKS = [
   "هذه إجابة عربية قصيرة ومكتملة عن السؤال المطروح.",
 ];
@@ -153,6 +158,17 @@ const server = http.createServer((req, res) => {
         emit(SPLIT_CHUNKS, finish);
         break;
       case "guard_after_code":
+        emit(GUARD_CHUNKS, finish);
+        break;
+      case "continuation_success":
+        // النداء الأول يسرّب؛ والثاني (المتابعة) يعطي تكملة عربية نظيفة
+        emit(
+          stats.requests_by_scenario[scenario] === 1 ? GUARD_CHUNKS : CONT_OK_CHUNKS,
+          finish,
+        );
+        break;
+      case "continuation_failure":
+        // النداءان يسرّبان معًا ⇒ تُرفض المتابعة ويُعلَّم الرد ناقصًا
         emit(GUARD_CHUNKS, finish);
         break;
       case "timeout_before_text":
