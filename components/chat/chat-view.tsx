@@ -792,7 +792,14 @@ export function ChatView({
                               label={t("copy")}
                               onClick={() => void copyText(m.content)}
                             />
-                            {(m.id === lastAssistantId || m.completion) && (
+                            {/*
+                              العقد (v0.7.0 RC8): regenerate يعيد توليد **آخر**
+                              تبادل فقط — الخادم يحذف ناعمًا ما بعد آخر رسالة
+                              مستخدم. فعرضه على رسالة ناقصة أقدم يعني إعادة
+                              توليد تبادل آخر غير الذي ضغط عليه المستخدم، وهو
+                              زر لا ينفّذ العملية الصحيحة. لذا يبقى على الأخيرة.
+                            */}
+                            {m.id === lastAssistantId && (
                               <MsgAction
                                 icon={<RefreshCw size={12} />}
                                 label={t("regenerate")}
@@ -804,18 +811,32 @@ export function ChatView({
                         )}
                         {/*
                           تنبيه الرد الناقص (v0.7.0 RC8) — **خارج** Markdown
-                          فلا يقع داخل كتلة كود أبدًا. لا يُعرض إن كان النص
-                          المحفوظ يحمل لاحقة آمنة بالفعل، ولا يُطلق أي نداء
-                          مزوّد بمجرّد العرض أو تحديث الصفحة.
+                          فلا يقع داخل كتلة كود أبدًا.
+                          العلامة data-incomplete تظهر دائمًا للرسالة الناقصة
+                          (حالة النقص لا تختفي)، أما نصّ التنبيه فيُكتم فقط حين
+                          يكون محفوظًا داخل النص بالفعل — فيبقى للمستخدم تنبيه
+                          واحد ظاهر لا اثنان. العرض والتحديث لا يُطلقان أي نداء
+                          مزوّد.
                         */}
-                        {m.completion && !m.completion.noticeInText && !m.streaming && (
-                          <p
-                            data-incomplete={m.completion.status}
-                            className="mt-2 text-[12px] text-amber-600 dark:text-amber-400"
-                          >
-                            {INCOMPLETE_NOTICE}
-                          </p>
-                        )}
+                        {m.completion &&
+                          !m.streaming &&
+                          (m.completion.noticeInText ? (
+                            // التنبيه محفوظ داخل النص (بعد إغلاق السياج) — لا
+                            // نعرض نسخة ثانية، ونكتفي بعلامة تُقرأ آليًا.
+                            <span
+                              hidden
+                              data-incomplete={m.completion.status}
+                              data-notice-in-text="1"
+                            />
+                          ) : (
+                            <p
+                              data-incomplete={m.completion.status}
+                              data-notice-in-text="0"
+                              className="mt-2 text-[12px] text-amber-600 dark:text-amber-400"
+                            >
+                              {INCOMPLETE_NOTICE}
+                            </p>
+                          ))}
                       </div>
                     </div>
                   )}
