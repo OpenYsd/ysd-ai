@@ -255,6 +255,20 @@ export class NineRouterProvider implements AIProviderAdapter {
     const dec = new TextDecoder();
     let buf = "";
     let emittedAny = false;
+    /**
+     * آخر usage مرصود — يُبثّ **مرة واحدة** قبل النهاية.
+     *
+     * رُصد حيًّا على 9Router: البثّ الواحد أرسل إطارَي usage بفارق ~535ms
+     * بقيَم مختلفة (2556/466 ثم 4556/568). الصيغة الأولى كانت تُصدر chunk
+     * لكل إطار، ومسار /api/chat يسجّل حدث استهلاك لكل chunk — فنتج صفّا
+     * usage_events لطلب واحد: محاسبة مضاعفة على المستخدم.
+     *
+     * usage في واجهة OpenAI **تراكمي**، فآخر قيمة هي الإجمالي الصحيح.
+     */
+    let lastUsage: { inputTokens: number; outputTokens: number } | null = null;
+    /** يبثّ الاستهلاك مرة واحدة — يُستدعى عند كل مخرج */
+    const flushUsage = (): StreamChunk[] =>
+      lastUsage ? [{ type: "usage" as const, usage: lastUsage }] : [];
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -268,6 +282,7 @@ export class NineRouterProvider implements AIProviderAdapter {
           if (!t.startsWith("data:")) continue;
           const payload = t.slice(5).trim();
           if (payload === "[DONE]") {
+            for (const u of flushUsage()) yield u;
             yield { type: "done" };
             return;
           }
@@ -289,18 +304,17 @@ export class NineRouterProvider implements AIProviderAdapter {
             yield { type: "text", text };
           }
           if (chunk.usage) {
-            yield {
-              type: "usage",
-              usage: {
-                inputTokens: chunk.usage.prompt_tokens ?? 0,
-                outputTokens: chunk.usage.completion_tokens ?? 0,
-              },
+            // نحتفظ بالأحدث ولا نبثّ الآن — انظر تعليق lastUsage أعلاه
+            lastUsage = {
+              inputTokens: chunk.usage.prompt_tokens ?? 0,
+              outputTokens: chunk.usage.completion_tokens ?? 0,
             };
           }
         }
       }
       // انتهى الجسم بلا [DONE] — انقطاع بثّ. الطبقة المشتركة تُعلّمه ناقصًا.
       console.error(`[nine_router] stream ended without DONE emitted=${emittedAny}`);
+      for (const u of flushUsage()) yield u;
       yield { type: "done", completion: "incomplete_provider", completionReason: "stream_interrupted" };
     } finally {
       reader.cancel().catch(() => undefined);

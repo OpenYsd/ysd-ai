@@ -28,6 +28,8 @@ type Mode =
   | "stream_bad_json"
   | "stream_error_event"
   | "stream_usage"
+  | "stream_usage_twice"
+  | "stream_usage_no_done"
   | "http_401"
   | "http_404"
   | "http_429"
@@ -109,6 +111,18 @@ beforeAll(async () => {
       res.write(sse({ usage: { prompt_tokens: 11, completion_tokens: 22 } }));
       res.write("data: [DONE]\n\n");
       res.end();
+    } else if (mode === "stream_usage_twice") {
+      // نمط مرصود حيًّا على 9Router: إطارا usage في بثّ واحد بقيَم مختلفة
+      res.write(delta("نصّ"));
+      res.write(sse({ usage: { prompt_tokens: 2556, completion_tokens: 466 } }));
+      res.write(delta(" وتكملة"));
+      res.write(sse({ usage: { prompt_tokens: 4556, completion_tokens: 568 } }));
+      res.write("data: [DONE]\n\n");
+      res.end();
+    } else if (mode === "stream_usage_no_done") {
+      res.write(delta("نصّ"));
+      res.write(sse({ usage: { prompt_tokens: 7, completion_tokens: 8 } }));
+      res.end(); // انقطاع — الاستهلاك يجب ألا يضيع
     }
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -300,6 +314,32 @@ describe("★ 9Router — البثّ", () => {
     const u = (await collect(new NineRouterProvider().streamChat(req())))
       .find((c) => c.type === "usage");
     expect(u?.usage).toEqual({ inputTokens: 11, outputTokens: 22 });
+  });
+
+  /**
+   * دفاع عن محاسبة المستخدم. رُصد حيًّا: 9Router أرسل إطارَي usage في بثّ
+   * واحد، والصيغة الأولى أصدرت chunk لكل إطار — ومسار /api/chat يسجّل حدث
+   * استهلاك لكل chunk، فنتج صفّا usage_events لطلب واحد.
+   */
+  it("★ إطارا usage في بثّ واحد ⇒ chunk استهلاك واحد بالقيمة الأخيرة", async () => {
+    mode = "stream_usage_twice";
+    const out = await collect(new NineRouterProvider().streamChat(req()));
+    const usages = out.filter((c) => c.type === "usage");
+    expect(usages.length).toBe(1);
+    expect(usages[0]?.usage).toEqual({ inputTokens: 4556, outputTokens: 568 });
+    // ويصل قبل النهاية لا بعدها
+    expect(out.findIndex((c) => c.type === "usage")).toBeLessThan(
+      out.findIndex((c) => c.type === "done"),
+    );
+  });
+
+  it("★ الاستهلاك لا يضيع عند الانقطاع بلا [DONE]", async () => {
+    mode = "stream_usage_no_done";
+    const out = await collect(new NineRouterProvider().streamChat(req()));
+    const usages = out.filter((c) => c.type === "usage");
+    expect(usages.length).toBe(1);
+    expect(usages[0]?.usage).toEqual({ inputTokens: 7, outputTokens: 8 });
+    expect(out.at(-1)?.completion).toBe("incomplete_provider");
   });
 
   it("★ إجهاض العميل ينهي البثّ بلا تعليق", async () => {
