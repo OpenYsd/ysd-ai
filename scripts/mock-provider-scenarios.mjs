@@ -23,6 +23,10 @@ const stats = {
   chunks_sent: 0,
   released: false,
   heartbeat_sent: 0,
+  /** إغلاق مبكر لاتصال التطبيق بالمزوّد — أيّ سبب، لا «إجهاض متصفح» */
+  connection_closed_early: 0,
+  /** إنهاء طبيعي: بُثّ الرد كاملًا ثم DONE */
+  completed_normally: 0,
   requests_by_scenario: {},
 };
 
@@ -92,6 +96,8 @@ const server = http.createServer((req, res) => {
     stats.chunks_sent = 0;
     stats.released = false;
     stats.heartbeat_sent = 0;
+    stats.connection_closed_early = 0;
+    stats.completed_normally = 0;
     stats.requests_by_scenario = {};
     res.writeHead(200).end("ok");
     return;
@@ -140,11 +146,26 @@ const server = http.createServer((req, res) => {
       if (closed) return;
       closed = true;
       stats.active_sockets = Math.max(0, stats.active_sockets - 1);
-      stats.client_aborted++;
+      /**
+       * ⚠️ تسمية دقيقة (v0.7.0 RC8): هذا العدّاد يعني **إغلاق اتصال التطبيق
+       * بالمزوّد قبل نهايته الطبيعية** — لا «المستخدم ضغط إيقاف».
+       *
+       * أسبابه المحتملة كلها متساوية من منظور المزوّد:
+       *   إجهاض المتصفح · السقف الصارم في route · مهلة الخمول ·
+       *   انقطاع المزوّد · إيقاف العملية أو teardown.
+       *
+       * ضلّلني سابقًا: خفّضتُ hard limit إلى 15s فقطع الخادمُ الاتصال، فقرأتُ
+       * client_aborted=1 على أنه إجهاض من المتصفح وبحثتُ عن عطل غير موجود.
+       * فلا يصحّ استخدامه دليلًا منفردًا على إجهاض العميل — يجب قرنه بمصدر
+       * الإغلاق من سجل route (browser_abort · hard_limit · idle_timeout …).
+       */
+      stats.connection_closed_early++;
+      stats.client_aborted++; // للتوافق مع اختبارات قائمة — نفس المعنى أعلاه
       console.log(JSON.stringify({ ev: "closed", scenario, active: stats.active_sockets }));
     };
     res.on("close", () => {
-      if (!res.writableEnded) onClose(); // إغلاق مبكر = إجهاض عميل
+      // إغلاق قبل نهاية الكتابة = إنهاء مبكر، أيًّا كان مصدره
+      if (!res.writableEnded) onClose();
     });
 
     res.writeHead(200, {
@@ -159,6 +180,7 @@ const server = http.createServer((req, res) => {
       );
       res.write("data: [DONE]\n\n");
       res.end();
+      stats.completed_normally++;
       if (!closed) {
         closed = true;
         stats.active_sockets = Math.max(0, stats.active_sockets - 1);
