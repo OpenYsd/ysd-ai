@@ -7,7 +7,7 @@
  * Markdown وكتل كود · اختيار النموذج.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowUp,
@@ -41,6 +41,11 @@ export interface ChatModel {
   nameEn: string;
   /** اسم الموفر — يظهر في منتقي النموذج */
   provider?: string;
+  /**
+   * هل النموذج متاح الآن؟ (v0.8.0) غيابه يعني «متاح» — المزوّدات القائمة لا
+   * ترسل الحقل، واعتبار غيابه «غير متاح» كان سيُخفي نماذج عاملة.
+   */
+  available?: boolean;
 }
 
 /** معرّف طلب فريد — يمنع ازدواج الحفظ عند تكرار الإرسال أو إعادة الاتصال */
@@ -181,6 +186,53 @@ export function ChatView({
   const model = models.find((m) => m.id === modelId) ?? null;
   const modelName = model ? (locale === "ar" ? model.nameAr : model.nameEn) : null;
   const noProvider = models.length === 0;
+
+  /**
+   * ترتيب القائمة: النموذج الحالي، ثم المتاح، ثم غير المتاح في قسم مستقل.
+   * `available !== false` لا `available === true`: المزوّدات القائمة لا ترسل
+   * الحقل أصلًا، واعتبار غيابه «غير متاح» كان سيُخفي نماذج عاملة.
+   */
+  const orderedModels = useMemo(() => {
+    const available = models.filter((m) => m.available !== false);
+    const unavailable = models.filter((m) => m.available === false);
+    available.sort((a, b) => (a.id === modelId ? -1 : b.id === modelId ? 1 : 0));
+    return { available, unavailable };
+  }, [models, modelId]);
+
+  /**
+   * تغيير نموذج المحادثة (v0.8.0).
+   *
+   * القفل في **المعالِج** لا في المظهر وحده: `disabled` سمة عرض يمكن تجاوزها
+   * (استدعاء برمجي، أداة مطوّر، إضافة متصفح)، والتغيير أثناء بثّ حيّ يعني
+   * ردًّا يُنسب إلى نموذج لم يُنتجه. نرفض هنا أولًا، ثم نُظهر التعطيل.
+   *
+   * القفل نفسه المستعمل للإرسال وإعادة التوليد (sendLockRef) — فيغطّي البثّ
+   * والمتابعة وإعادة التوليد وتنظيف الإيقاف قبل اكتماله، ويُحرَّر في finally
+   * الخاص بها، فلا يبقى مقفولًا بعد مهلة أو إجهاض أو عطل مزوّد.
+   *
+   * الحفظ في conversations.model_id عبر PATCH القائم — والخادم وحده يستنتج
+   * المزوّد من النموذج، فلا يُرسل العميل حقل provider إطلاقًا.
+   */
+  const changeModel = useCallback(
+    async (nextId: string) => {
+      if (generating || sendLockRef.current) return false;
+      if (nextId === modelId) return false;
+      setModelId(nextId);
+      const convId = convIdRef.current;
+      if (!convId) return true; // محادثة لم تُنشأ بعد — تُحفظ مع أول رسالة
+      try {
+        await fetch(`/api/conversations/${convId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ modelId: nextId }),
+        });
+      } catch {
+        // فشل الحفظ لا يُسقط الجلسة: الاختيار يبقى فعّالًا في هذه الصفحة
+      }
+      return true;
+    },
+    [generating, modelId],
+  );
 
   /**
    * v0.6.6 — حفظ المسودة: ما يكتبه المستخدم لا يضيع عند إعادة المصادقة أو
@@ -629,33 +681,69 @@ export function ChatView({
         <div className="relative">
           <button
             onClick={() => setModelOpen((v) => !v)}
-            disabled={noProvider}
+            disabled={noProvider || generating}
+            data-model-locked={generating ? "1" : "0"}
+            title={generating ? "لا يمكن تغيير النموذج أثناء التوليد" : undefined}
             className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] text-ink bg-raised border border-line hover:border-primary/40 transition-colors disabled:opacity-50"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-primary-glow" />
             {modelName ?? t("model")}
             <ChevronDown size={12} className="text-ink-faint" />
           </button>
-          {modelOpen && (
-            <div className="absolute top-full mt-1.5 start-0 w-60 rounded-xl bg-surface border border-line shadow-2xl p-1.5 z-20 rise">
-              {models.map((m) => (
+          {modelOpen && !generating && (
+            <div className="absolute top-full mt-1.5 start-0 w-64 rounded-xl bg-surface border border-line shadow-2xl p-1.5 z-20 rise max-h-[60vh] overflow-y-auto">
+              {/* المتاح أولًا، والنموذج الحالي في رأسه */}
+              {orderedModels.available.map((m) => (
                 <button
                   key={m.id}
+                  data-model-option={m.id}
                   onClick={() => {
-                    setModelId(m.id);
+                    void changeModel(m.id);
                     setModelOpen(false);
                   }}
                   className="w-full text-start rounded-lg px-3 py-2.5 hover:bg-raised transition-colors"
                 >
-                  <div className="text-[13px] text-ink-strong flex items-center justify-between">
-                    {locale === "ar" ? m.nameAr : m.nameEn}
-                    {m.id === modelId && <Check size={13} className="text-primary-glow" />}
+                  <div className="text-[13px] text-ink-strong flex items-center justify-between gap-2">
+                    <span className="truncate">{locale === "ar" ? m.nameAr : m.nameEn}</span>
+                    {m.id === modelId && <Check size={13} className="text-primary-glow shrink-0" />}
                   </div>
                   {m.provider && (
-                    <div className="text-[10.5px] text-ink-faint mt-0.5">{m.provider}</div>
+                    <span className="inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] leading-none bg-raised border border-line text-ink-faint">
+                      {m.provider}
+                    </span>
                   )}
                 </button>
               ))}
+              {/*
+                غير المتاح في قسم منفصل و**غير قابل للاختيار**: عرضه مختارًا
+                يعني رسالة تفشل بعد الإرسال. والقائمة القديمة (stale) تُعرض
+                موسومة بدل إخفائها — قائمة فارغة تبدو كعطل، والقديمة الموسومة
+                معلومة صادقة.
+              */}
+              {orderedModels.unavailable.length > 0 && (
+                <div className="mt-1.5 pt-1.5 border-t border-line">
+                  <div className="px-3 py-1 text-[10.5px] text-ink-faint">
+                    غير متاحة حاليًا
+                  </div>
+                  {orderedModels.unavailable.map((m) => (
+                    <div
+                      key={m.id}
+                      data-model-unavailable={m.id}
+                      aria-disabled="true"
+                      className="w-full text-start rounded-lg px-3 py-2.5 opacity-45 cursor-not-allowed"
+                    >
+                      <div className="text-[13px] text-ink truncate">
+                        {locale === "ar" ? m.nameAr : m.nameEn}
+                      </div>
+                      {m.provider && (
+                        <span className="inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] leading-none bg-raised border border-line text-ink-faint">
+                          {m.provider}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
