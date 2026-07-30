@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
-import { getConfiguredProviders } from "@/lib/ai/registry";
+import { getConfiguredProviders, listModelOptions } from "@/lib/ai/registry";
 import { peekNineRouterCache } from "@/lib/ai/nine-router";
 
 export const runtime = "nodejs";
@@ -44,34 +44,32 @@ export async function GET() {
   const ctx = await getRequestContext(await headers(), supabase);
   if (!ctx) return json({ error: "غير مصرح" }, 401);
 
-  const models: SafeModel[] = [];
-  let stale = false;
+  /**
+   * المصدر الواحد: `listModelOptions` هي نفسها التي تقرأها صفحة المحادثة على
+   * الخادم. مصدران للقائمة يعنيان انحرافًا صامتًا بينهما — نموذج يظهر في مكان
+   * ويغيب في آخر. القدرات تُقرأ من المزوّد المالك بمعرّفه الآمن.
+   *
+   * ولا انتظار شبكي هنا: هذا المسار في طريق العرض، والاكتشاف يملأ الكاش في
+   * مساره الخاص، فما هنا من الكاش أو من القائمة الثابتة.
+   */
+  const providersById = new Map(getConfiguredProviders().map((p) => [p.id, p]));
+  const models: SafeModel[] = listModelOptions().map((o) => {
+    const p = providersById.get(o.providerId);
+    return {
+      id: o.id,
+      name: o.nameAr || o.nameEn || o.id,
+      provider: o.provider,
+      capabilities: {
+        streaming: p?.supportsStreaming ?? true,
+        tools: p?.supportsTools ?? false,
+        vision: p?.supportsVision ?? false,
+      },
+      available: o.available,
+    };
+  });
 
-  for (const p of getConfiguredProviders()) {
-    /**
-     * نعتمد listModels المتزامنة عمدًا: هذا المسار في طريق عرض الواجهة، ولا
-     * يجوز أن ينتظر مزوّدًا بطيئًا. الاكتشاف الشبكي يجري في مساره الإداري
-     * ويملأ الكاش، فما هنا يُقرأ من الكاش أو من القائمة الثابتة.
-     */
-    for (const m of p.listModels()) {
-      if (!m.enabled) continue;
-      models.push({
-        id: m.id,
-        name: m.displayNameAr || m.displayNameEn || m.id,
-        provider: p.displayName,
-        capabilities: {
-          streaming: p.supportsStreaming ?? true,
-          tools: p.supportsTools ?? false,
-          vision: p.supportsVision ?? false,
-        },
-        available: true,
-      });
-    }
-    if (p.id === "nine_router") {
-      const peek = peekNineRouterCache();
-      if (peek && peek.ageMs > STALE_AFTER_MS) stale = true;
-    }
-  }
+  const peek = providersById.has("nine_router") ? peekNineRouterCache() : null;
+  const stale = Boolean(peek && peek.ageMs > STALE_AFTER_MS);
 
   return json({ models, stale }, 200, stale ? { "X-YSD-Models-Stale": "1" } : {});
 }

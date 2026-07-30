@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { updateConversationSchema } from "@/lib/validation/chat";
+import { resolveProviderForModel } from "@/lib/ai/registry";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,19 @@ export async function PATCH(
       if (!proj) return json({ error: "المشروع غير موجود." }, 404);
     }
     update.project_id = parsed.data.projectId;
+  }
+  if (parsed.data.modelId !== undefined) {
+    /**
+     * v0.8.0 — النموذج يُقبل فقط إن كان في سجل المزوّدين الموثوق.
+     *
+     * التحقق من الشكل لا يكفي: معرّف اعتباطي يمرّ إلى conversations.model_id
+     * ثم يفشل عند الإرسال، أو أسوأ — يُنسب إلى مزوّد لا يملكه. والمزوّد
+     * **يُستنتج خادميًا** من النموذج ولا يُقبل من العميل، فلا يستطيع أحد
+     * توجيه رسائله إلى مزوّد آخر بتزوير الحقل.
+     */
+    const owner = resolveProviderForModel(parsed.data.modelId);
+    if (!owner) return json({ error: "النموذج غير متاح حاليًا." }, 400);
+    update.model_id = parsed.data.modelId;
   }
 
   // RLS يضمن الملكية، وشرط user_id دفاع إضافي ضد IDOR

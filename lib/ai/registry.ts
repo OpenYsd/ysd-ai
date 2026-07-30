@@ -36,6 +36,14 @@ export interface ModelOption {
   nameAr: string;
   nameEn: string;
   provider: string;
+  /**
+   * هل النموذج متاح الآن؟ (v0.8.0) القائمة تُبنى من `getConfiguredProviders`
+   * فكل ما يصلها مهيّأ — لكن الحقل صريح كي لا تخمّن الواجهة، ويصير للقائمة
+   * وللمسار /api/models **مصدر واحد** لا مصدران يتباعدان.
+   */
+  available: boolean;
+  /** رمز المزوّد الداخلي الآمن — لا عنوان ولا مفتاح */
+  providerId: string;
 }
 
 export function listModelOptions(): ModelOption[] {
@@ -48,6 +56,8 @@ export function listModelOptions(): ModelOption[] {
         nameAr: m.displayNameAr,
         nameEn: m.displayNameEn,
         provider: p.displayName,
+        providerId: p.id,
+        available: true,
       })),
   );
 }

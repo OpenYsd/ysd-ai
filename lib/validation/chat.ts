@@ -43,7 +43,15 @@ export const updateConversationSchema = z
     title: z.string().min(1).max(120).optional(),
     /** ربط بمشروع (uuid) أو فك الربط (null) */
     projectId: z.string().uuid().nullable().optional(),
+    /**
+     * نموذج المحادثة (v0.8.0). الطول وحده لا يكفي: المسار يتحقق أن المعرّف
+     * **موجود فعلًا** في سجل المزوّدين الموثوق. ولا يُقبل حقل provider من
+     * العميل إطلاقًا — يُستنتج خادميًا من النموذج، وإلا صار بوسع العميل نسب
+     * نموذج إلى مزوّد لا يملكه.
+     */
+    modelId: z.string().min(1).max(120).optional(),
   })
-  .refine((d) => d.title !== undefined || d.projectId !== undefined, {
-    message: "لا يوجد ما يُحدّث",
-  });
+  .refine(
+    (d) => d.title !== undefined || d.projectId !== undefined || d.modelId !== undefined,
+    { message: "لا يوجد ما يُحدّث" },
+  );

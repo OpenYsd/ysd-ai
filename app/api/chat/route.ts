@@ -401,6 +401,10 @@ export async function POST(req: NextRequest) {
   let assistantText = "";
   // النموذج الفعلي الذي أجاب (قد يختلف عن المنطقي مثل ysd/free)
   let actualModelId: string | null = null;
+  /** آخر استهلاك مرصود — يُكتب صفًّا واحدًا بعد البثّ (v0.8.0) */
+  let pendingUsage: { inputTokens: number; outputTokens: number } | null = null;
+  /** عدد إطارات usage الواردة — للتسجيل الآمن، رقم فقط */
+  let usageFrameCount = 0;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -520,7 +524,22 @@ export async function POST(req: NextRequest) {
             completionStatus = chunk.completion;
             completionReason = chunk.completionReason ?? null;
           } else if (chunk.type === "meta" && chunk.model) {
-            actualModelId = chunk.model;
+            /**
+             * v0.8.0 — النموذج الفعلي يُثبَّت عند أول نص.
+             *
+             * fallback **قبل** أول text مشروع: السلسلة تجرّب نموذجًا ثم آخر
+             * ولا شيء وصل المستخدم بعد. أما بعد أول text فتغيير النموذج يعني
+             * ردًّا واحدًا منسوبًا إلى نموذجين — وهو ما يجعل actual_model
+             * المحفوظ كذبًا لا يمكن كشفه لاحقًا. نتجاهله ونسجّله.
+             */
+            if (providerFirstByteMs >= 0 && actualModelId && chunk.model !== actualModelId) {
+              console.error(
+                `[chat] rid=${requestId} model_switch_after_text_ignored ` +
+                  `kept=${actualModelId} rejected=${chunk.model}`,
+              );
+            } else {
+              actualModelId = chunk.model;
+            }
             if (chunk.mode) answerMode = chunk.mode;
             if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
             if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
@@ -534,13 +553,23 @@ export async function POST(req: NextRequest) {
             // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
             send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
-            await supabase.from("usage_events").insert({
-              user_id: userId,
-              conversation_id: conversationId,
-              model_id: actualModelId ?? modelId,
-              input_tokens: chunk.usage.inputTokens,
-              output_tokens: chunk.usage.outputTokens,
-            });
+            /**
+             * v0.8.0 — الاستهلاك يُجمَّع ويُكتب **مرة واحدة** بعد البثّ.
+             *
+             * كان الإدراج يقع هنا لحظة وصول كل chunk. رُصد حيًّا على 9Router:
+             * بثّ واحد أرسل إطارَي usage بقيَم مختلفة، فنتج صفّان في
+             * usage_events لطلب واحد — محاسبة مضاعفة على المستخدم.
+             *
+             * أُصلح المحوّل ليجمعها، لكن الإصلاح هناك يحمي مزوّدًا واحدًا:
+             * أي مزوّد لاحق يرسل إطارين يعيد العطل نفسه. الحارس هنا بنيوي
+             * ويغطّي كل المزوّدين. usage في واجهة OpenAI تراكمي، فآخر قيمة
+             * هي الإجمالي الصحيح.
+             */
+            pendingUsage = {
+              inputTokens: chunk.usage.inputTokens,
+              outputTokens: chunk.usage.outputTokens,
+            };
+            usageFrameCount++;
           } else if (chunk.type === "error") {
             // الرمز يسمح للواجهة بعرض رسالة مناسبة لكل حالة بدل «تعذر الاتصال»
             lastErrorCode = chunk.errorCode ?? "unknown";
@@ -575,6 +604,21 @@ export async function POST(req: NextRequest) {
          * العقد: الإجهاض ليس مهلة ولا عطل مزوّد ولا سقوط حارس. لا حفظ، ولا
          * لاحقة، ولا تنبيه، ولا completion، ولا done. رسالة المستخدم تبقى.
          */
+        /**
+         * كتابة الاستهلاك — صفّ واحد لكل طلب مهما تعدّدت إطارات usage.
+         * تقع قبل فحص إجهاض العميل: الإجهاض يعني ألّا يُحاسَب المستخدم على
+         * ردٍّ لم يصله، وهو المسار الوحيد الذي لا يُكتب فيه استهلاك.
+         */
+        if (pendingUsage && !req.signal.aborted) {
+          await supabase.from("usage_events").insert({
+            user_id: userId,
+            conversation_id: conversationId,
+            model_id: actualModelId ?? modelId,
+            input_tokens: pendingUsage.inputTokens,
+            output_tokens: pendingUsage.outputTokens,
+          });
+        }
+
         if (req.signal.aborted) {
           clientAborted = true;
           console.log(
@@ -620,6 +664,19 @@ export async function POST(req: NextRequest) {
           };
           // عمود metadata يأتي مع migration 0007 — لا نرسله إلا عند وجود محتوى
           const meta: Record<string, unknown> = {};
+          /**
+           * v0.8.0 — نسب الرد إلى مزوّده ونموذجه.
+           *
+           * `provider.id` رمز داخلي آمن (openrouter | nine_router) لا عنوان
+           * ولا مفتاح. requested_model هو ما طلبه المستخدم/المحادثة،
+           * actual_model هو ما خدم الرد فعلًا — وهما متطابقان بلا fallback،
+           * ويفترقان حين تنتقل السلسلة **قبل** أول نص. بلا هذين الحقلين لا
+           * يمكن لاحقًا معرفة أي مزوّد أنتج ردًّا بعينه، وهو ما احتجناه
+           * أصلًا لتشخيص فروق السلوك بين المزوّدين.
+           */
+          meta.provider = provider.id;
+          meta.requested_model = modelId;
+          meta.actual_model = actualModelId ?? modelId;
           if (ragSnippets.length > 0) {
             meta.sources = ragSnippets.map((s) => ({
               fileId: s.fileId,
@@ -689,6 +746,9 @@ export async function POST(req: NextRequest) {
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
             `protected_short_circuit=${shortCircuit} provider_calls=${providerCalls} ` +
+            // عدد إطارات usage مقابل صفّ واحد يُكتب — الإشارة التي كشفت
+            // المحاسبة المضاعفة. رقم فقط، بلا أي محتوى.
+            `usage_frames=${usageFrameCount} usage_rows=${pendingUsage ? 1 : 0} ` +
             `auth_ms=${authMs} database_ms=${dbMs} rag_ms=${ragMs} ` +
             `conversation_lookup_ms=${conversationLookupMs} ` +
             `user_message_insert_ms=${userMessageInsertMs} ` +
