@@ -414,10 +414,17 @@ test("ز) زر الإيقاف — يُلغي بلا حفظ رد جزئي", async
   // لا رد جزئي محفوظ، ولا علامة نقص بسبب إيقاف المستخدم
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.locator("[data-incomplete]"), "لا علامة نقص من الإيقاف").toHaveCount(0);
-  expect(
-    await page.evaluate(() => document.body.innerText.includes("جزء أول من الرد")),
-    "لا رد جزئي محفوظ",
-  ).toBe(false);
+  /**
+   * العقد بعد إصلاح cancel-safe (v0.7.0 RC8): الإيقاف **يستعيد** الرد السابق
+   * سليمًا — لا يترك المحادثة برسالة مستخدم وحدها. فلا نفحص غياب نصّ (المزوّد
+   * الوهمي حتمي فنصّ القديم والجديد متطابقان)، بل نفحص أن ردًّا واحدًا نشطًا
+   * موجود وأن زر إعادة التوليد عاد — وهو ما يراه المستخدم فعلًا.
+   * حفظ الرد الجزئي منفيٌّ بالقاعدة في مجموعة cancel-safe (12/12).
+   */
+  await expect(
+    page.getByRole("button", { name: /إعادة توليد|regenerate/i }),
+    "زر إعادة التوليد عاد ⇒ الرد السابق مستعاد",
+  ).toHaveCount(1);
   expect(
     await page.evaluate(() => document.body.innerText.includes("سيناريو-ممسوك-مفتوح")),
     "رسالة المستخدم باقية",

@@ -149,6 +149,12 @@ export async function POST(req: NextRequest) {
   let assistantMessageInsertMs = 0;
   // عنوان تلقائي مؤجَّل — يُدمج في تحديث المحادثة المتوازي بدل استعلام منفصل
   let newTitle: string | null = null;
+  /**
+   * هدف إعادة التوليد (v0.7.0 RC8): معرّف رسالة المساعد التي سيحلّ البديل
+   * محلّها **بالتحديث في مكانها**. تبقى سليمة في القاعدة حتى نجاح الحفظ، فلا
+   * يخسر المستخدم رده عند الإيقاف أو المهلة أو انقطاع المزوّد.
+   */
+  let regenerateTargetId: string | null = null;
 
   if (editMessageId) {
     // تعديل رسالة مستخدم سابقة: حدّث النص واحذف (ناعمًا) كل ما بعدها
@@ -214,13 +220,30 @@ export async function POST(req: NextRequest) {
       return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
     }
 
-    await supabase
+    /**
+     * v0.7.0 RC8 — إعادة توليد آمنة عند الإلغاء.
+     *
+     * كان الحذف الناعم يقع **هنا**، قبل أن يوجد بديل محفوظ. فإن أوقف المستخدم
+     * التوليد (أو وقعت مهلة أو انقطع المزوّد قبل نص قابل للحفظ) يخسر رده
+     * السابق بلا مقابل: رُصد حيًّا user=1 assistant=0، ومعه يغيب زر إعادة
+     * التوليد لأنه يُرسم على آخر رسالة مساعد.
+     *
+     * الآن: لا تُمسّ الرسالة القديمة إطلاقًا. نحتفظ بمعرّفها، وعند اكتمال
+     * نتيجة **قابلة للحفظ** نُحدّث الصف نفسه في مكانه — عملية UPDATE واحدة،
+     * ذرّية بطبيعتها وبلا migration. فلا نافذة تُظهر ردّين ولا نافذة يُفقد
+     * فيها الرد الوحيد.
+     */
+    const { data: prevAsst } = await supabase
       .from("messages")
-      .update({ deleted_at: new Date().toISOString() })
+      .select("id")
       .eq("conversation_id", conversationId)
       .eq("role", "assistant")
       .gt("created_at", lastUser.created_at)
-      .is("deleted_at", null);
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    regenerateTargetId = prevAsst?.id ?? null;
     userMessageId = lastUser.id;
   } else {
     // رسالة جديدة — بحارس ازدواج: الطلب نفسه (client_request_id) لا يُحفظ مرتين
@@ -606,11 +629,26 @@ export async function POST(req: NextRequest) {
           }
           if (Object.keys(meta).length > 0) insertRow.metadata = meta;
           const tAsstInsert = Date.now();
-          const { data: saved } = await supabase
-            .from("messages")
-            .insert(insertRow)
-            .select("id")
-            .single();
+          /**
+           * إعادة التوليد تُبدّل **في مكانها** (v0.7.0 RC8): تحديث واحد على
+           * الصف نفسه بدل «إدراج ثم حذف ناعم» بخطوتين. الخطوتان بلا معاملة
+           * تعني أن فشل الثانية يُبقي ردّين نشطين، وأن الإلغاء بين الأولى
+           * والثانية يُفقد الرد الوحيد. التحديث الواحد ذرّي ويحفظ message_id.
+           * metadata تُستبدل كليًا فلا تبقى completion قديمة على رد جديد مكتمل.
+           */
+          const { data: saved } = regenerateTargetId
+            ? await supabase
+                .from("messages")
+                .update({
+                  content: assistantText,
+                  model_id: actualModelId ?? modelId,
+                  metadata: Object.keys(meta).length > 0 ? meta : {},
+                })
+                .eq("id", regenerateTargetId)
+                .eq("conversation_id", conversationId)
+                .select("id")
+                .single()
+            : await supabase.from("messages").insert(insertRow).select("id").single();
           assistantMessageInsertMs = Date.now() - tAsstInsert;
           assistantMessageId = saved?.id ?? null;
         }
