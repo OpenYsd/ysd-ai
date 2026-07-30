@@ -49,6 +49,14 @@ docs
 *.md
 !README.md
 
+# ---------- مخلفات اختبار حسّاسة ----------
+# .playwright/.auth يحمل حالة جلسة حساب E2E (كوكيز مصادقة). الـDockerfile
+# ينفّذ COPY . . فبدون هذا السطر تدخل الجلسة الصورة — سرّ فعلي لا مجرد مخلّف.
+.playwright/
+playwright-report/
+test-results/
+blob-report/
+
 # ---------- سجلات ومخلفات ----------
 *.log
 npm-debug.log*
