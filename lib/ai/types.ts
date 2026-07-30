@@ -142,8 +142,11 @@ export interface AIProviderAdapter {
   /**
    * اكتشاف النماذج من المزوّد عبر الشبكة (مثل GET /models).
    * غيابها يعني قائمة ثابتة لا تحتاج اكتشافًا.
+   *
+   * `force` يتخطّى الكاش. لازم لزرّ «تحديث القائمة» الإداري: زرٌّ يعيد الكاش
+   * صامتًا يكذب على من ضغطه — وهو يضغطه تحديدًا ليُجبر إعادة الجلب.
    */
-  discoverModels?(signal?: AbortSignal): Promise<ModelInfo[]>;
+  discoverModels?(signal?: AbortSignal, force?: boolean): Promise<ModelInfo[]>;
 
   /** فحص اتصال مصنَّف — لزر «اختبار الاتصال» في لوحة الإدارة */
   healthCheck?(signal?: AbortSignal): Promise<ProviderHealth>;

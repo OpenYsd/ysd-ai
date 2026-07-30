@@ -24,6 +24,7 @@ import {
 } from "../lib/ai/provider-actions";
 import { aiProviderActionSchema, aiSettingsPatchSchema } from "../lib/validation/admin";
 import { NineRouterProvider, _resetNineRouterCache } from "../lib/ai/nine-router";
+import { _resetAdminClient } from "../lib/supabase/admin";
 import { listModelOptions } from "../lib/ai/registry";
 
 /** عميل قاعدة في الذاكرة يكفي لعقود platform_settings المستعملة هنا */
@@ -113,20 +114,41 @@ describe("★ A — الصلاحيات", () => {
 });
 
 describe("★ B — الحفظ والاسترجاع", () => {
-  it("★ حفظ المزوّد والنموذج الافتراضيين ثم قراءتهما", async () => {
+  /**
+   * القراءة وحدها تُختبر هنا. الكتابة تمرّ بعميل الخدمة عمدًا (RLS على
+   * platform_settings تسمح بالقراءة فقط)، فلا تقبل عميلًا وهميًا — ولا يجوز
+   * إضافة ثغرة اختبارية في مسار كتابة إداري لمجرد تسهيل الاختبار. مسار
+   * الكتابة الحقيقي مغطّى في اختبار التكامل مقابل Supabase الفعلي.
+   */
+  it("★ قراءة المزوّد والنموذج الافتراضيين", async () => {
     const db = memoryDb();
-    await setAiSetting(asClient(db), AI_SETTING_KEYS.defaultProvider, "nine_router", "admin-1");
-    await setAiSetting(asClient(db), AI_SETTING_KEYS.defaultModel, "oc/north-mini-code-free", "admin-1");
+    db.rows.set(AI_SETTING_KEYS.defaultProvider, "nine_router");
+    db.rows.set(AI_SETTING_KEYS.defaultModel, "oc/north-mini-code-free");
     const s = await getAiSettings(asClient(db));
     expect(s.defaultProvider).toBe("nine_router");
     expect(s.defaultModel).toBe("oc/north-mini-code-free");
   });
 
-  it("★ القيَم تبقى بعد قراءة جديدة (تحديث قسري)", async () => {
+  it("★ القيَم تبقى ثابتة عبر قراءات متتالية (تحديث قسري)", async () => {
     const db = memoryDb();
-    await setAiSetting(asClient(db), AI_SETTING_KEYS.allowedModels, ["ysd/free"], null);
+    db.rows.set(AI_SETTING_KEYS.allowedModels, ["ysd/free"]);
     expect((await getAiSettings(asClient(db))).allowedModels).toEqual(["ysd/free"]);
     expect((await getAiSettings(asClient(db))).allowedModels).toEqual(["ysd/free"]);
+  });
+
+  it("★ الكتابة ترفض العمل بلا عميل خدمة — لا نجاح كاذب", async () => {
+    const saved = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    _resetAdminClient();
+    try {
+      const wrote = await setAiSetting(
+        asClient(memoryDb()), AI_SETTING_KEYS.defaultProvider, "nine_router", null,
+      );
+      expect(wrote).toBe(false);
+    } finally {
+      if (saved) process.env.SUPABASE_SERVICE_ROLE_KEY = saved;
+      _resetAdminClient();
+    }
   });
 
   it("★ لا إعداد محفوظ ⇒ قيَم آمنة لا انهيار", async () => {
@@ -244,15 +266,25 @@ describe("★ E — تحديث النماذج وحارس التزامن", () => 
       updatedAt: "2026-07-30T00:00:00.000Z",
       count: 1,
     };
-    await setAiSetting(asClient(db), AI_SETTING_KEYS.modelsCache, { nine_router: previous }, null);
+    db.rows.set(AI_SETTING_KEYS.modelsCache, { nine_router: previous });
     // اكتشاف فاشل ⇒ المسار يعيد السابقة بعَلَم stale ولا يمسحها
     modelsMode = "empty";
-    const discovered = await new NineRouterProvider().discoverModels();
+    const discovered = await new NineRouterProvider().discoverModels(undefined, true);
     const stale = discovered.length === 0;
     const s = await getAiSettings(asClient(db));
     expect(stale).toBe(true);
     expect(s.modelsCache.nine_router?.count).toBe(1);
     expect(s.modelsCache.nine_router?.models[0]?.id).toBe("oc/north-mini-code-free");
+  });
+
+  it("★ زرّ التحديث يتخطّى الكاش (force) فلا يعيد نتيجة قديمة", async () => {
+    modelsMode = "ok";
+    const p = new NineRouterProvider();
+    expect((await p.discoverModels()).length).toBe(2);
+    modelsMode = "empty";
+    // بلا force يعيد الكاش؛ ومع force يعيد الجلب فعلًا
+    expect((await p.discoverModels()).length).toBe(2);
+    expect((await p.discoverModels(undefined, true)).length).toBe(0);
   });
 
   it("★ النقر المكرر لا يطلق طلبين متوازيين", () => {
@@ -285,12 +317,12 @@ describe("★ E — تحديث النماذج وحارس التزامن", () => 
 
   it("★ اللقطة المحفوظة آمنة — بلا عنوان أو مفتاح", async () => {
     const db = memoryDb();
-    const models = (await new NineRouterProvider().discoverModels()).map((m) => ({
+    const models = (await new NineRouterProvider().discoverModels(undefined, true)).map((m) => ({
       id: m.id, name: m.displayNameAr, providerId: "nine_router",
     }));
-    await setAiSetting(asClient(db), AI_SETTING_KEYS.modelsCache, {
+    db.rows.set(AI_SETTING_KEYS.modelsCache, {
       nine_router: { models, updatedAt: new Date().toISOString(), count: models.length },
-    }, null);
+    });
     const blob = JSON.stringify((await getAiSettings(asClient(db))).modelsCache);
     for (const bad of ["127.0.0.1", "Bearer", "apiKey", "baseUrl", "test-key"]) {
       expect(blob).not.toContain(bad);

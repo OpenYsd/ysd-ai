@@ -47,16 +47,20 @@ export async function POST(req: NextRequest) {
         providerId: provider.id,
       }));
       const snapshot = { models, updatedAt: new Date().toISOString(), count: models.length };
-      await setAiSetting(
+      const wrote = await setAiSetting(
         ctx.supabase,
         AI_SETTING_KEYS.modelsCache,
         { ...settings.modelsCache, [provider.id]: snapshot },
         ctx.userId,
       );
+      // كتابة فاشلة لا تُعلَن نجاحًا — تُقدَّم القائمة قديمة بصدق
+      if (!wrote) {
+        return json({ provider: provider.id, count: models.length, updatedAt: null, stale: true }, 200);
+      }
       return json({ provider: provider.id, count: models.length, updatedAt: snapshot.updatedAt, stale: false }, 200);
     }
 
-    const discovered = await provider.discoverModels();
+    const discovered = await provider.discoverModels(undefined, true);
     if (discovered.length === 0) {
       // فشل أو قائمة فارغة — نُبقي السابقة ونَسِمها قديمة، ولا نمسح شيئًا
       console.error(`[admin] ai_provider_refresh provider=${provider.id} outcome=empty kept_previous=${previous ? 1 : 0}`);
@@ -77,12 +81,16 @@ export async function POST(req: NextRequest) {
       providerId: provider.id,
     }));
     const snapshot = { models, updatedAt: new Date().toISOString(), count: models.length };
-    await setAiSetting(
+    const wrote = await setAiSetting(
       ctx.supabase,
       AI_SETTING_KEYS.modelsCache,
       { ...settings.modelsCache, [provider.id]: snapshot },
       ctx.userId,
     );
+    if (!wrote) {
+      console.error(`[admin] ai_provider_refresh provider=${provider.id} outcome=write_failed`);
+      return json({ provider: provider.id, count: previous?.count ?? 0, updatedAt: previous?.updatedAt ?? null, stale: true }, 200);
+    }
     await writeAudit(
       ctx,
       {

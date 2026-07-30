@@ -79,11 +79,22 @@ export async function PATCH(req: NextRequest) {
   const before = await getAiSettings(ctx.supabase);
   const { defaultProvider, defaultModel, allowedModels } = parsed.data;
 
+  /**
+   * كل كتابة **يُفحص نجاحها**. إهمال القيمة كان يجعل المسار يرد 200 على كتابة
+   * رفضتها RLS — رُصد حيًّا: 200 مع صفر صفوف في platform_settings. نجاح كاذب
+   * أسوأ من فشل صريح لأنه يبدو سليمًا في كل اختبار سطحي.
+   */
+  const failed = (what: string) =>
+    json({ error: `تعذّر حفظ ${what}.`, code: "settings_write_failed" }, 500);
+
   if (defaultProvider !== undefined) {
     if (!listAdminProviders().some((p) => p.id === defaultProvider)) {
       return json({ error: "المزوّد غير معروف أو غير مهيّأ." }, 400);
     }
-    await setAiSetting(ctx.supabase, AI_SETTING_KEYS.defaultProvider, defaultProvider, ctx.userId);
+    const wrote = await setAiSetting(
+      ctx.supabase, AI_SETTING_KEYS.defaultProvider, defaultProvider, ctx.userId,
+    );
+    if (!wrote) return failed("المزوّد الافتراضي");
   }
 
   // القائمة المسموحة تُكتب قبل النموذج الافتراضي: الافتراضي يُتحقَّق ضدّها
@@ -91,7 +102,10 @@ export async function PATCH(req: NextRequest) {
   if (allowedModels !== undefined) {
     const unknown = allowedModels.filter((id) => !listModelOptions().some((o) => o.id === id));
     if (unknown.length > 0) return json({ error: "القائمة تحوي نماذج غير معروفة." }, 400);
-    await setAiSetting(ctx.supabase, AI_SETTING_KEYS.allowedModels, allowedModels, ctx.userId);
+    const wrote = await setAiSetting(
+      ctx.supabase, AI_SETTING_KEYS.allowedModels, allowedModels, ctx.userId,
+    );
+    if (!wrote) return failed("القائمة المسموحة");
   }
 
   if (defaultModel !== undefined) {
@@ -100,7 +114,10 @@ export async function PATCH(req: NextRequest) {
     if (!isModelAllowed(defaultModel, nextAllowed)) {
       return json({ error: "النموذج غير متاح أو خارج القائمة المسموحة." }, 400);
     }
-    await setAiSetting(ctx.supabase, AI_SETTING_KEYS.defaultModel, defaultModel, ctx.userId);
+    const wrote = await setAiSetting(
+      ctx.supabase, AI_SETTING_KEYS.defaultModel, defaultModel, ctx.userId,
+    );
+    if (!wrote) return failed("النموذج الافتراضي");
   }
 
   const after = await getAiSettings(ctx.supabase);

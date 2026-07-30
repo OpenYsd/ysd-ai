@@ -134,10 +134,11 @@ export class NineRouterProvider implements AIProviderAdapter {
       : [];
   }
 
-  async discoverModels(signal?: AbortSignal): Promise<ModelInfo[]> {
+  async discoverModels(signal?: AbortSignal, force = false): Promise<ModelInfo[]> {
     const cfg = this.config();
     if (!cfg) return [];
-    if (cache && Date.now() - cache.at < cfg.cacheSeconds * 1000) return cache.models;
+    // `force` للزرّ الإداري: الكاش يخدم مسار العرض، لا طلبَ تحديثٍ صريحًا
+    if (!force && cache && Date.now() - cache.at < cfg.cacheSeconds * 1000) return cache.models;
 
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), DISCOVERY_TIMEOUT_MS);

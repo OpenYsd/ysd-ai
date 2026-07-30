@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAdminClient } from "../supabase/admin";
 import { getConfiguredProviders, listModelOptions } from "./registry";
 
 /**
@@ -103,18 +104,45 @@ export function listAdminProviders(): { id: string; displayName: string }[] {
   return getConfiguredProviders().map((p) => ({ id: p.id, displayName: p.displayName }));
 }
 
-/** كتابة إعداد واحد — upsert، فلا يحتاج المفتاح وجودًا مسبقًا */
+/**
+ * كتابة إعداد واحد.
+ *
+ * **لا تُستعمل عميل الطلب**: على platform_settings سياسة قراءة فقط
+ * (`settings_read_all`) وبلا سياسة كتابة، فأي upsert بعميل المستخدم يُرفض
+ * صامتًا بـRLS. رُصد حيًّا: PATCH كان يرد 200 وصفر صفوف تُكتب.
+ *
+ * والمسار الإداري القائم يكتب عبر RPC ‏`admin_set_platform_setting`، لكنه
+ * `UPDATE ... where key = p_key` ويرد `not_found` لمفتاح غير موجود — فلا
+ * يُنشئ مفاتيح `ai.*` الجديدة إلا بـmigration تُدرجها.
+ *
+ * فنكتب بعميل الخدمة **بعد** اجتياز حارس الإدارة في المسار: صلاحية مُتحقَّقة،
+ * نطاق محصور في مفاتيح ai.* الأربعة، وبلا تغيير مخطط.
+ *
+ * ويُعاد النجاح صراحةً — والمستدعي **ملزم** بفحصه. الصيغة الأولى أهملت القيمة
+ * فأعلن المسار نجاحًا على كتابة لم تقع، وهو أسوأ من الفشل لأنه يبدو سليمًا.
+ */
 export async function setAiSetting(
   supabase: SupabaseClient,
   key: (typeof AI_SETTING_KEYS)[keyof typeof AI_SETTING_KEYS],
   value: unknown,
   updatedBy: string | null,
 ): Promise<boolean> {
-  const { error } = await supabase
+  const admin = getAdminClient();
+  if (!admin) {
+    console.error("[ai-settings] service role غير مهيّأ — تعذّرت الكتابة");
+    return false;
+  }
+  const { error } = await admin
     .from("platform_settings")
     .upsert(
       { key, value, owner_only: false, updated_by: updatedBy, updated_at: new Date().toISOString() },
       { onConflict: "key" },
     );
-  return !error;
+  if (error) {
+    // رمز الخطأ فقط — لا نصّ القاعدة
+    console.error(`[ai-settings] write failed key=${key} code=${error.code ?? "?"}`);
+    return false;
+  }
+  void supabase; // عميل الطلب يبقى للقراءة الخاضعة لـRLS
+  return true;
 }
