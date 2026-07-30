@@ -245,6 +245,19 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
     regenerateTargetId = prevAsst?.id ?? null;
     userMessageId = lastUser.id;
+
+    /**
+     * إنهاء الحجز — كان مفقودًا في هذا الفرع وحده.
+     *
+     * فرع الرسالة الجديدة يُنهي حجزه بعد حفظ الرسالة (أدناه)، أما إعادة التوليد
+     * فكانت تحجز ولا تُنهي: يبقى الصف `in_progress` أبدًا ولا يُربط
+     * user_message_id. رصدته بوابة Smoke للحاوية (فحص «لا صف عالق»).
+     *
+     * الازدواج نفسه لم يكن مكسورًا — كشفه من وجود الصف لا من حالته، وقد ثبت
+     * حيًّا [200, 409] — لكن الصف العالق يُفسد قراءة الحالة والمراقبة. وهنا
+     * رسالة المستخدم موجودة أصلًا، فحالتها النهائية معروفة لحظة تحديدها.
+     */
+    await finalizeRequest(supabase as never, userId, clientRequestId, "completed", userMessageId);
   } else {
     // رسالة جديدة — بحارس ازدواج: الطلب نفسه (client_request_id) لا يُحفظ مرتين
     // مهما تكرر إرساله من نقر مزدوج أو إعادة اتصال.
