@@ -64,6 +64,9 @@ interface Counters {
   active_sockets: number;
   chunks_sent: number;
   released: boolean;
+  /** نبضات الإبقاء على الاتصال — تعليق SSE لا حدث نص */
+  heartbeat_sent: number;
+  client_aborted: number;
 }
 
 async function allCounters(api: APIRequestContext): Promise<Counters> {
@@ -225,22 +228,25 @@ test("هـ) رسالة ناقصة قديمة — زر إعادة التوليد 
   await expect(buttons).toHaveCount(1);
 });
 
-test("و) إعادة التوليد — إعادة دخول أثناء بثّ حيّ لا تُنشئ طلبًا", async ({
+
+/**
+ * F — إعادة التوليد، اختبار **صندوق أسود** بحتة (v0.7.0 RC8).
+ *
+ * لا جسر ولا hook ولا عدّاد داخل كود المنتج: Playwright يرى ما يراه المستخدم.
+ * والعقد الذي يمنع إعادة الدخول هو **تعطيل الزر** أثناء التوليد — وهو سلوك
+ * واجهة حقيقي، لا سيناريو أبيض الصندوق. أما التزامن الحقيقي على الخادم فله
+ * اختباره المستقل بمفتاح واحد ([200,409]) ولا يحتاج واجهة أصلًا.
+ *
+ * ملاحظة على الأدوات: لا force:true ولا dispatchEvent على زر معطَّل — ثبت أن
+ * النقر أثناء بثّ SSE مفتوح يحجب حتى استقرار الصفحة، فيصل بعد انتهاء البثّ
+ * ويُقاس خطأً. الزر المعطَّل نفسه هو الإثبات.
+ */
+test("و) إعادة التوليد — طلب واحد، زر معطَّل، ثم محاولة جديدة بعد الاكتمال", async ({
   page,
   request,
 }) => {
-  /**
-   * harness مُصحَّح (v0.7.0 RC8). ثلاثة أخطاء في الصيغة السابقة:
-   *   • الحاجز كان `chunks_sent>=1` وحده، و`active_sockets` يقرأ 0 عنده — فلم
-   *     يُثبت قط أن إعادة الدخول وقعت أثناء بثّ حيّ. الآن hold_open يُمسك
-   *     الاتصال مفتوحًا فيصير active_sockets=1 قابلًا للإثبات.
-   *   • خلط click مع dispatchEvent يولّد **نقرتين مستقلتين**، فالنداء الثاني
-   *     كان مشروعًا لا خرقًا. الآن حدث واحد فقط.
-   *   • القياس بالرقم الإجمالي كان يخلط طلب التجهيز. الآن بالفرق عن baseline.
-   */
   const cid = await newConversation(request);
 
-  // كل POST إلى /api/chat مع حالته — لتشخيص أي طلب متأخر
   const posts: { t: number; crid: string; regen: boolean; status?: number }[] = [];
   page.on("request", (r) => {
     if (r.url().includes("/api/chat") && r.method() === "POST") {
@@ -261,7 +267,7 @@ test("و) إعادة التوليد — إعادة دخول أثناء بثّ ح
     }
   });
 
-  // تجهيز: hold_open ثم إطلاقه ليكتمل التبادل (فيظهر زر إعادة التوليد)
+  // تجهيز: تبادل ممسوك ثم إطلاقه ليكتمل، فيظهر زر إعادة التوليد
   const seed = request.post("/api/chat", {
     data: {
       conversationId: cid,
@@ -280,53 +286,148 @@ test("و) إعادة التوليد — إعادة دخول أثناء بثّ ح
   const base = await allCounters(request);
   posts.length = 0;
 
-  const btn = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
-  await expect(btn).toHaveCount(1);
+  const regenBtn = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
+  await expect(regenBtn).toHaveCount(1);
+  await expect(regenBtn).toBeEnabled();
 
-  // ١) حدث واحد يبدأ المحاولة الأولى
-  await btn.click();
+  // ═══ أ) ضغطة عادية واحدة ═══
+  await regenBtn.click();
   const reached = await untilCounters(
     request,
-    (c) => c.provider_calls >= 1 && c.active_sockets >= 1 && c.chunks_sent >= 1,
+    (c) =>
+      c.provider_calls >= 1 &&
+      c.active_sockets >= 1 &&
+      c.chunks_sent >= 1 &&
+      c.heartbeat_sent >= 1,
   );
   const atBarrier = await allCounters(request);
-  expect(reached, "الحاجز ببثّ حيّ").toBe(true);
-  expect(atBarrier.active_sockets, "socket مفتوح فعلًا").toBe(1);
+  expect(reached, "الحاجز ببثّ حيّ مع نبضة").toBe(true);
+  expect(atBarrier.active_sockets).toBe(1);
   expect(atBarrier.released).toBe(false);
 
-  // ٢) إعادة دخول بحدث **واحد** أثناء البثّ الحيّ
-  await btn.click({ force: true }).catch(() => undefined);
-  await page.waitForTimeout(1500);
+  /**
+   * عقد الواجهة الفعلي — أقوى من مجرد `disabled`: الزر **يغيب** أثناء التوليد.
+   * السبب: البثّ يُضيف رسالة مساعد مؤقتة تصير هي آخر رسالة، وصفوف البثّ لا
+   * تحمل شريط أفعال. فلا وجود لزر يُنقر أصلًا، ومعه يستحيل إعادة الدخول من
+   * الواجهة. (كنت أتوقّع `disabled` فصحّحت التوقّع على السلوك المرصود.)
+   */
+  await expect(regenBtn, "زر إعادة التوليد يغيب أثناء التوليد").toHaveCount(0);
+  const stopBtn = page.getByRole("button", { name: /إيقاف|stop/i });
+  await expect(stopBtn, "زر الإيقاف ظاهر").toBeVisible();
+
+  expect(posts.filter((p) => p.regen).length, "POST واحدة").toBe(1);
+  expect(new Set(posts.map((p) => p.crid)).size, "مفتاح واحد").toBe(1);
+  expect(atBarrier.provider_calls - base.provider_calls).toBe(1);
+  expect(atBarrier.client_aborted).toBe(0);
+
+  // ═══ ب) الثبات أثناء النبضة ═══
+  const postsAtBarrier = posts.length;
+  await page.waitForTimeout(9000);
   const during = await allCounters(request);
+  expect(during.active_sockets, "الاتصال باقٍ بفضل النبضة").toBe(1);
+  expect(during.provider_calls - base.provider_calls, "لا نداء جديد").toBe(1);
+  expect(posts.length, "لا POST تلقائية أثناء النبضة").toBe(postsAtBarrier);
+  expect(during.heartbeat_sent, "النبضة تعمل").toBeGreaterThan(0);
+  expect(
+    await page.evaluate(() => document.body.innerText.includes("heartbeat")),
+    "النبضة لا تظهر في DOM",
+  ).toBe(false);
 
-  expect(during.provider_calls - base.provider_calls, "نداء واحد أثناء التزامن").toBe(1);
-  expect(during.active_sockets, "الاتصال الأول لم يُجهض").toBe(1);
-  expect(posts.filter((p) => p.regen).length, "طلب regenerate واحد").toBe(1);
-
-  // ٣) إطلاق ← done ← تحرير القفل
+  // ═══ ج) الإطلاق والاكتمال ═══
   await releaseHeld(request);
   await untilCounters(request, (c) => c.active_sockets === 0);
-  await page.waitForTimeout(2000);
-  expect((await allCounters(request)).active_sockets).toBe(0);
+  await page.waitForTimeout(2500);
+  await expect(regenBtn, "الزر يعود مفعَّلًا بعد الاكتمال").toBeEnabled();
+  await expect(page.locator("[data-incomplete]"), "الرد الجديد مكتمل").toHaveCount(0);
 
-  // ٤) محاولة جديدة مقصودة بعد الاكتمال — القفل لم يبق عالقًا
-  await btn.click();
+  const bodyText = await page.evaluate(() => document.body.innerText);
+  expect(bodyText.split(NOTICE).length - 1, "لا تنبيه مكرر").toBe(0);
+  expect(bodyText.includes("سيناريو-ممسوك-مفتوح"), "رسالة المستخدم باقية").toBe(true);
+
+  // hard refresh لا يستدعي المزوّد
+  const beforeRefresh = await allCounters(request);
+  const postsBeforeRefresh = posts.length;
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  const afterRefresh = await allCounters(request);
+  expect(afterRefresh.provider_calls, "التحديث لا يستدعي المزوّد").toBe(
+    beforeRefresh.provider_calls,
+  );
+  expect(posts.length, "التحديث لا يُنشئ POST").toBe(postsBeforeRefresh);
+  await expect(page.locator("[data-incomplete]")).toHaveCount(0);
+
+  // ═══ د) محاولة جديدة مقصودة بعد الاكتمال ═══
+  const btn2 = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
+  await expect(btn2).toBeEnabled();
+  await btn2.click();
   await untilCounters(request, (c) => c.provider_calls - base.provider_calls >= 2);
   const after = await allCounters(request);
   expect(after.provider_calls - base.provider_calls, "محاولتان مقصودتان").toBe(2);
 
   const regenPosts = posts.filter((p) => p.regen);
-  expect(
-    new Set(regenPosts.map((p) => p.crid)).size,
-    "مفتاح مختلف لكل محاولة مقصودة",
-  ).toBe(regenPosts.length);
+  expect(regenPosts.length, "طلبان فقط — واحد لكل محاولة").toBe(2);
+  expect(regenPosts[0]?.crid).not.toBe(regenPosts[1]?.crid);
+  expect(regenPosts[0]?.status, "الأول 200").toBe(200);
 
-  // رسالة المستخدم باقية
+  console.log("POSTs: " + JSON.stringify(posts));
+  await releaseHeld(request);
+});
+
+test("ز) زر الإيقاف — يُلغي بلا حفظ رد جزئي", async ({ page, request }) => {
+  const cid = await newConversation(request);
+  const posts: string[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/chat") && r.method() === "POST") posts.push(String(Date.now()));
+  });
+
+  await resetCounters(request);
+  // نبدأ من صفحة المحادثة ونرسل من الواجهة كي يكون زر الإيقاف في سياقه
+  const seed = request.post("/api/chat", {
+    data: { conversationId: cid, modelId: "ysd/free", message: HOLD_PROMPT,
+      clientRequestId: `z-seed-${Date.now()}` }, timeout: 90_000 });
+  await untilCounters(request, (c) => c.chunks_sent >= 1 && c.active_sockets >= 1);
+  await releaseHeld(request);
+  await seed;
+
+  await page.goto(`/chat/${cid}`);
+  await resetCounters(request);
+  const base = await allCounters(request);
+
+  const regenBtn = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
+  await regenBtn.click();
+  await untilCounters(
+    request,
+    (c) => c.active_sockets >= 1 && c.heartbeat_sent >= 1,
+  );
+
+  // زر الإيقاف الحقيقي في شريط الإدخال — لا زر الرسالة
+  const stopBtn = page.getByRole("button", { name: /إيقاف|stop/i });
+  await expect(stopBtn).toBeVisible();
+  await stopBtn.click();
+  await page.waitForTimeout(2500);
+
+  const after = await allCounters(request);
+  expect(after.client_aborted, "client_aborted = 1").toBe(1);
+  expect(after.active_sockets, "الاتصال أُغلق").toBe(0);
+  expect(after.provider_calls - base.provider_calls, "لا نداء ثانٍ").toBe(1);
+
+  // لا رد جزئي محفوظ، ولا علامة نقص بسبب إيقاف المستخدم
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.locator("[data-incomplete]"), "لا علامة نقص من الإيقاف").toHaveCount(0);
+  expect(
+    await page.evaluate(() => document.body.innerText.includes("جزء أول من الرد")),
+    "لا رد جزئي محفوظ",
+  ).toBe(false);
   expect(
     await page.evaluate(() => document.body.innerText.includes("سيناريو-ممسوك-مفتوح")),
     "رسالة المستخدم باقية",
   ).toBe(true);
 
-  console.log("POSTs: " + JSON.stringify(posts));
+  // بعد التنظيف: محاولة جديدة تعمل
+  const btn = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
+  await expect(btn).toBeEnabled();
+  await btn.click();
+  await untilCounters(request, (c) => c.provider_calls - base.provider_calls >= 2);
+  expect((await allCounters(request)).provider_calls - base.provider_calls).toBe(2);
   await releaseHeld(request);
 });
