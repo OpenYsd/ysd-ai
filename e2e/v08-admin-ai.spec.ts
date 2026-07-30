@@ -92,7 +92,7 @@ test.describe("★ لوحة إدارة الذكاء الاصطناعي", () => {
     await btn.click();
     // الحالة تظهر كنصّ مترجَم من مجموعة مغلقة
     await expect(
-      page.getByText(/متصل|غير مصرح|لا توجد نماذج|تعذر الاتصال|غير مفعّل/).first(),
+      page.getByText(/متصل|غير مصرح|لا توجد نماذج|تعذر الاتصال|غير مفعّل|غير مدعوم لهذا المزوّد/).first(),
     ).toBeVisible({ timeout: 15_000 });
     const body = await page.locator("body").innerText();
     expect(body).not.toContain("8097");

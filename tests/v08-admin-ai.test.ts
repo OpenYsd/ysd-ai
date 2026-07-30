@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   AI_SETTING_KEYS,
+  ALLOWED_SETTING_KEYS,
   getAiSettings,
   isModelAllowed,
   listAdminProviders,
@@ -149,6 +150,25 @@ describe("★ B — الحفظ والاسترجاع", () => {
       if (saved) process.env.SUPABASE_SERVICE_ROLE_KEY = saved;
       _resetAdminClient();
     }
+  });
+
+  /**
+   * حارس وقت التشغيل. النوع يحصر المفتاح في الأربعة لكنه يتبخّر عند البناء،
+   * فأول مستدعٍ غير مُنمَّط يكتب أي مفتاح بعميل الخدمة — أي بتجاوز RLS.
+   */
+  it("★ مفتاح خارج القائمة البيضاء يُرفض قبل أي كتابة", async () => {
+    for (const bad of ["apiKey", "baseUrl", "token", "ai.evil", "maintenance_mode", ""]) {
+      const wrote = await setAiSetting(
+        asClient(memoryDb()), bad as never, "x", null,
+      );
+      expect(wrote, `المفتاح ${bad} كان يجب أن يُرفض`).toBe(false);
+    }
+  });
+
+  it("★ المفاتيح الأربعة وحدها في القائمة البيضاء", () => {
+    expect([...ALLOWED_SETTING_KEYS].sort()).toEqual(
+      ["ai.allowed_models", "ai.default_model", "ai.default_provider", "ai.models_cache"],
+    );
   });
 
   it("★ لا إعداد محفوظ ⇒ قيَم آمنة لا انهيار", async () => {

@@ -40,6 +40,12 @@ export interface AiSettings {
 
 const KEYS = Object.values(AI_SETTING_KEYS);
 
+/**
+ * القائمة البيضاء الوحيدة المسموح بكتابتها عبر setAiSetting.
+ * مُجمّدة عمدًا: تعديلها وقت التشغيل يُفرغ الحارس من معناه.
+ */
+export const ALLOWED_SETTING_KEYS = Object.freeze([...KEYS]) as readonly string[];
+
 /** يقرأ الإعدادات الأربعة ويطهّرها — قيمة تالفة في القاعدة لا تُسقط المسار */
 export async function getAiSettings(supabase: SupabaseClient): Promise<AiSettings> {
   const { data } = await supabase
@@ -127,6 +133,21 @@ export async function setAiSetting(
   value: unknown,
   updatedBy: string | null,
 ): Promise<boolean> {
+  /**
+   * قائمة بيضاء **وقت التشغيل**، لا نوعية فقط.
+   *
+   * توقيع TypeScript يحصر المفتاح في الأربعة، لكنه يتبخّر عند البناء: أول
+   * مستدعٍ غير مُنمَّط (قيمة من طلب، `as string`، جافاسكربت) يكتب أي مفتاح
+   * بعميل الخدمة — أي بتجاوز RLS كاملًا. الحارس هنا يبقى بعد التصريف.
+   *
+   * والرفض يقع **قبل** إنشاء عميل الخدمة: لا نُنشئ عميلًا متجاوزًا للسياسات
+   * من أجل طلب سنرفضه أصلًا.
+   */
+  if (!(ALLOWED_SETTING_KEYS as readonly string[]).includes(key)) {
+    // اسم المفتاح المرفوض فقط — لا قيمته: قد تكون هي ما حاول المهاجم تسريبه
+    console.error(`[ai-settings] rejected_key=${String(key).slice(0, 64)} reason=not_in_allowlist`);
+    return false;
+  }
   const admin = getAdminClient();
   if (!admin) {
     console.error("[ai-settings] service role غير مهيّأ — تعذّرت الكتابة");

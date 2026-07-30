@@ -20,8 +20,7 @@
 --   الحالي. أي أن التسجيل مستحيل تمامًا، لا صعب.
 --
 --   و0012 نفسه وثّق النيّة: «مرّر الكود إلى البوابة عبر متغيّر المعاملة قبل
---   تجريده» — فقد أنشأ الآلية ولم يُحدَّث القارئ ليستعملها. هذا الترحيل يُكمل
---   نصف الإصلاح الناقص.
+--   تجريده» — فقد أنشأ الآلية ولم يُحدَّث القارئ ليستعملها.
 --
 -- لماذا لزم ترحيل جديد: الخلل في جسم دالة مخزّنة في القاعدة، ولا يمكن إصلاحه
 -- من كود التطبيق. ولا نعدّل 0011 ولا 0012 — بيئات طُبِّقا فيها لن تعيد
@@ -29,9 +28,29 @@
 --
 -- ما لا يغيّره هذا الترحيل: الأدوار (profiles.role يبقى على default 'user'
 -- ولا تُسنده الدالة إطلاقًا، فلا يستطيع العميل طلب admin)، ولا سياسات RLS،
--- ولا صلاحيات، ولا أي مستخدم قائم. لا حذف بيانات.
+-- ولا أي مستخدم قائم. لا حذف بيانات.
 -- ============================================================
 
+-- ------------------------------------------------------------
+-- 1) المُحفّز BEFORE INSERT يعمل على **كل** إدراج
+--
+-- كان `when (new.raw_user_meta_data ? 'invite_code')` يمنع تشغيله حين يغيب
+-- المفتاح، فلا يُضبط ysd.invite_code إطلاقًا في ذلك الإدراج. وset_config
+-- محلّي بالمعاملة، فإن أدرجت معاملة واحدة مستخدمَين — الأول بكود والثاني
+-- بلا كود — ورث الثاني كود الأول واستهلك دعوة ليست له.
+--
+-- الشرط يبقى على مُحفّز UPDATE: هناك لا يوجد ما يُمرَّر، والغرض التنظيف وحده،
+-- فالشرط يُبقيه بلا كلفة على مسار المصادقة العادي.
+-- ------------------------------------------------------------
+drop trigger if exists trg_strip_invite_code_ins on auth.users;
+create trigger trg_strip_invite_code_ins
+  before insert on auth.users
+  for each row
+  execute function strip_invite_code();
+
+-- ------------------------------------------------------------
+-- 2) البوابة تقرأ الكود من متغيّر المعاملة
+-- ------------------------------------------------------------
 create or replace function handle_new_user() returns trigger
 language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 declare
@@ -51,12 +70,14 @@ begin
   end if;
 
   select (value #>> '{}')::boolean into v_require
-    from platform_settings where key = 'require_invite';
+    from public.platform_settings where key = 'require_invite';
 
   -- ===== استهلاك ذري: UPDATE مشروط واحد + RETURNING =====
+  -- كل الشروط داخل WHERE؛ لا select-ثم-update. طلبان متزامنان: الأول يقفل الصف،
+  -- والثاني يُعاد تقييمه بعد الالتزام فلا يتجاوز max_uses أبدًا.
   if v_code is not null then
     v_hash := encode(digest(v_code, 'sha256'), 'hex');
-    update beta_invites
+    update public.beta_invites
       set used_count = used_count + 1
       where code_hash = v_hash
         and revoked_at is null
@@ -74,20 +95,20 @@ begin
     raise exception 'consent_required';
   end if;
   select value #>> '{}' into v_terms_version
-    from platform_settings where key = 'terms_version';
+    from public.platform_settings where key = 'terms_version';
 
   -- الدور لا يُسنَد هنا عمدًا: profiles.role على default 'user'، فلا سبيل
-  -- لعميل أن يطلب admin أو owner عبر بيانات التسجيل.
-  insert into profiles (id, display_name)
+  -- لعميل أن يطلب admin أو owner عبر بيانات التسجيل مهما أرسل فيها.
+  insert into public.profiles (id, display_name)
     values (new.id, coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)));
-  insert into subscriptions (user_id, tier) values (new.id, 'free');
+  insert into public.subscriptions (user_id, tier) values (new.id, 'free');
 
   if v_invite_id is not null then
-    insert into beta_invite_uses (invite_id, user_id) values (v_invite_id, new.id)
+    insert into public.beta_invite_uses (invite_id, user_id) values (v_invite_id, new.id)
       on conflict (invite_id, user_id) do nothing;
   end if;
 
-  insert into user_consents (user_id, document, version)
+  insert into public.user_consents (user_id, document, version)
     values (new.id, 'terms',   coalesce(v_terms_version, 'unversioned')),
            (new.id, 'privacy', coalesce(v_terms_version, 'unversioned'))
     on conflict do nothing;
@@ -99,3 +120,15 @@ begin
 
   return new;
 end $$;
+
+-- ------------------------------------------------------------
+-- 3) لا EXECUTE عام على دالة مُحفّز
+--
+-- دوال المُحفّزات ينفّذها المحرّك نفسه، فلا يحتاجها أي دور تطبيقي. وهي
+-- SECURITY DEFINER، فتركها قابلة للاستدعاء من anon/authenticated منح بلا
+-- مقابل. (استدعاؤها مباشرةً يفشل أصلًا لغياب سياق المُحفّز، لكن المنع أوضح
+-- من الاعتماد على ذلك.)
+-- ------------------------------------------------------------
+revoke all on function handle_new_user() from public;
+revoke all on function handle_new_user() from anon;
+revoke all on function handle_new_user() from authenticated;
