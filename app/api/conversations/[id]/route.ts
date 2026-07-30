@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { updateConversationSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
+import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 
 export const runtime = "nodejs";
 
@@ -50,6 +51,12 @@ export async function PATCH(
      */
     const owner = resolveProviderForModel(parsed.data.modelId);
     if (!owner) return json({ error: "النموذج غير متاح حاليًا." }, 400);
+    // v0.8.0: القائمة المسموحة تُفرض هنا أيضًا — المستخدم لا يحفظ نموذجًا
+    // خارجها ولو صاغ الطلب يدويًا
+    const aiSettings = await getAiSettings(supabase);
+    if (!isModelAllowed(parsed.data.modelId, aiSettings.allowedModels)) {
+      return json({ error: "النموذج غير متاح حاليًا." }, 400);
+    }
     update.model_id = parsed.data.modelId;
   }
 

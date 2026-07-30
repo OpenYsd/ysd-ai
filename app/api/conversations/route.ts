@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { createConversationSchema } from "@/lib/validation/chat";
+import { getAiSettings, isModelAllowed, resolveDefaultModel } from "@/lib/ai/ai-settings";
 
 export const runtime = "nodejs";
 
@@ -52,13 +53,28 @@ export async function POST(req: NextRequest) {
     projectModelId = settings?.default_model_id ?? null;
   }
 
+  /**
+   * v0.8.0 — النموذج الافتراضي للمحادثة الجديدة.
+   *
+   * الأولوية: نموذج المشروع (إن وُجد ومسموح)، ثم الافتراضي الإداري، ثم أول
+   * مسموح من السجل. الترتيب مقصود: إعداد المشروع أخصّ من إعداد المنصة.
+   *
+   * إعدادٌ إداريٌّ يشير إلى نموذج اختفى لا يمنع الإنشاء — يسقط إلى بديل صالح.
+   * والمحادثات القائمة لا تتأثر: هذا المسار يعمل عند الإنشاء وحده.
+   */
+  const aiSettings = await getAiSettings(supabase);
+  const effectiveModelId =
+    projectModelId && isModelAllowed(projectModelId, aiSettings.allowedModels)
+      ? projectModelId
+      : resolveDefaultModel(aiSettings);
+
   const { data, error } = await supabase
     .from("conversations")
     .insert({
       user_id: ctx.userId,
       title: parsed.data.title ?? "محادثة جديدة",
       project_id: parsed.data.projectId ?? null,
-      model_id: projectModelId,
+      model_id: effectiveModelId,
     })
     .select("id, title")
     .single();

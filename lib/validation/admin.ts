@@ -33,3 +33,30 @@ export const settingSchema = z.object({
   ]),
   value: z.unknown(),
 });
+
+/**
+ * إعدادات الذكاء الاصطناعي (v0.8.0) — **strict** عمدًا.
+ *
+ * `.strict()` يرفض أي حقل زائد بدل تجاهله. الجسم هنا قد يحمل apiKey أو baseUrl
+ * — خطأً من عميل أو محاولةً — والتجاهل الصامت يخفي الحالتين. الرفض يجعلهما
+ * مرئيَّين، والمفاتيح والعناوين تبقى في البيئة وحدها.
+ */
+export const aiSettingsPatchSchema = z
+  .object({
+    defaultProvider: z.string().min(1).max(64).optional(),
+    defaultModel: z.string().min(1).max(120).optional(),
+    allowedModels: z.array(z.string().min(1).max(120)).max(500).optional(),
+  })
+  .strict()
+  .refine(
+    (d) =>
+      d.defaultProvider !== undefined ||
+      d.defaultModel !== undefined ||
+      d.allowedModels !== undefined,
+    { message: "لا يوجد ما يُحدّث" },
+  );
+
+/** جسم اختبار الاتصال/تحديث النماذج — معرّف المزوّد وحده */
+export const aiProviderActionSchema = z
+  .object({ provider: z.string().min(1).max(64) })
+  .strict();

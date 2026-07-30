@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
+import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import {
@@ -139,6 +140,21 @@ export async function POST(req: NextRequest) {
   // 6) اختيار الموفر عبر الطبقة الموحدة
   const provider = resolveProviderForModel(modelId);
   if (!provider) return json({ error: "النموذج المطلوب غير متاح." }, 400);
+
+  /**
+   * v0.8.0 — القائمة المسموحة تُفرض على الخادم.
+   *
+   * الواجهة ترشّح الخيارات، لكن الترشيح في الواجهة تجميل لا حراسة: الطلب
+   * يُصاغ يدويًا. وحين يخرج نموذج من القائمة **لا نمسح model_id** من المحادثة
+   * — المسح الصامت يفقد اختيار المستخدم بلا أثر. يصير غير متاح، ويُطلب بديل.
+   */
+  const aiSettings = await getAiSettings(supabase);
+  if (!isModelAllowed(modelId, aiSettings.allowedModels)) {
+    return json(
+      { error: "النموذج غير متاح حاليًا. اختر نموذجًا آخر.", code: "model_not_allowed" },
+      400,
+    );
+  }
 
   // 7) تجهيز الرسائل حسب نوع العملية
   let userMessageId: string | null = null;
