@@ -38,8 +38,14 @@ export async function POST(req: NextRequest) {
 
   try {
     if (!provider.healthCheck) {
+      // غياب الفاحص حالة صادقة قائمة بذاتها — لا نجاح
       return json(
-        { provider: provider.id, status: "connected", modelCount: provider.listModels().length },
+        {
+          provider: provider.id,
+          status: "unsupported",
+          modelCount: provider.listModels().length,
+          latencyMs: null,
+        },
         200,
       );
     }

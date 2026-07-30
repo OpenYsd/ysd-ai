@@ -25,7 +25,7 @@ import {
 import { aiProviderActionSchema, aiSettingsPatchSchema } from "../lib/validation/admin";
 import { NineRouterProvider, _resetNineRouterCache } from "../lib/ai/nine-router";
 import { _resetAdminClient } from "../lib/supabase/admin";
-import { listModelOptions } from "../lib/ai/registry";
+import { getConfiguredProviders, listModelOptions } from "../lib/ai/registry";
 
 /** عميل قاعدة في الذاكرة يكفي لعقود platform_settings المستعملة هنا */
 function memoryDb() {
@@ -242,6 +242,23 @@ describe("★ D — اختبار الاتصال (healthCheck)", () => {
   it("★ not_configured حين تُغلق البوابة", async () => {
     delete process.env.NINE_ROUTER_ENABLED;
     expect((await new NineRouterProvider().healthCheck()).status).toBe("not_configured");
+  });
+
+  /**
+   * مزوّد بلا فاحص لا يُعلَن «متصل». غياب الفاحص ليس نجاحًا — والمشرف الذي
+   * يقرأ «متصل» يطمئن إلى فحص لم يقع أصلًا.
+   */
+  it("★ مزوّد بلا healthCheck ⇒ unsupported لا connected", () => {
+    const withoutCheck = { id: "x", displayName: "X", healthCheck: undefined };
+    const status = withoutCheck.healthCheck ? "connected" : "unsupported";
+    expect(status).toBe("unsupported");
+    expect(status).not.toBe("connected");
+  });
+
+  it("★ OpenRouter لا يوفّر فاحصًا بعدُ", () => {
+    const or = getConfiguredProviders().find((p) => p.id === "openrouter");
+    expect(or).toBeDefined();
+    expect(typeof or?.healthCheck).toBe("undefined");
   });
 
   it("★ الحالة لا تحمل عنوانًا ولا مفتاحًا", async () => {

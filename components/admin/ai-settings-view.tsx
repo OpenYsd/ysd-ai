@@ -44,6 +44,7 @@ const HEALTH_LABEL: Record<string, { text: string; tone: "ok" | "warn" | "bad" }
   no_models: { text: "لا توجد نماذج", tone: "warn" },
   unreachable: { text: "تعذر الاتصال", tone: "bad" },
   not_configured: { text: "غير مفعّل", tone: "warn" },
+  unsupported: { text: "اختبار الاتصال غير مدعوم لهذا المزوّد", tone: "warn" },
 };
 
 const toneClass = (tone: "ok" | "warn" | "bad") =>

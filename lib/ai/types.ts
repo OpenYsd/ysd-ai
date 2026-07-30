@@ -89,7 +89,12 @@ export type ProviderHealthStatus =
   | "unauthorized"
   | "no_models"
   | "unreachable"
-  | "not_configured";
+  | "not_configured"
+  /**
+   * المزوّد لا يوفّر فاحص اتصال. كان يُعرض "connected" — وهو ادّعاء بفحص لم
+   * يقع: غياب الفاحص ليس نجاحًا، والمشرف يقرأ «متصل» فيطمئن بلا دليل.
+   */
+  | "unsupported";
 
 export interface ProviderHealth {
   status: ProviderHealthStatus;
