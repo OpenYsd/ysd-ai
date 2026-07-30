@@ -11,6 +11,11 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     exclude: ["node_modules", ".next", "e2e/**"],
+    /**
+     * «بلا شبكة» أعلاه كان وصفًا لا إنفاذًا — ومرّ اختبار يستدعي مضيفًا بعيدًا
+     * فعلًا. هذا الحارس يجعل القاعدة قابلة للتنفيذ: 127.0.0.1 وlocalhost فقط.
+     */
+    setupFiles: ["tests/setup/no-external-network.ts"],
   },
   resolve: {
     alias: [

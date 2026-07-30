@@ -149,14 +149,45 @@ describe("★ مهلة الخمول — مزوّد يتوقف بعد أول دف
 });
 
 describe("★ بوابة منافذ الاختبار مغلقة في الإنتاج", () => {
+  /**
+   * كان هذا الاختبار ينفّذ الطلب فعلًا: البوابة مغلقة ⇒ يذهب إلى عنوان
+   * OpenRouter الحقيقي ⇒ يعتمد على أن الشبكة سترفضه (رُصد 401). ثلاثة عيوب:
+   * اتصال خارجي في مجموعة يُفترض أنها حتمية، ونتيجة تتغيّر بتغيّر البيئة
+   * (بلا إنترنت: انتظار؛ بمفتاح صالح: طلب حيّ مدفوع)، وتأكيد **سلبي** فقط —
+   * «لم يصل شيء إلى الخادم الوهمي» لا يقول إلى أين ذهب الطلب حقًّا.
+   *
+   * الآن نعترض fetch (نمط المشروع المعتمد في سبعة ملفات اختبار) فنقرأ العنوان
+   * المختار دون إرساله. التأكيد صار **إيجابيًا**: العنوان هو ثابت الإنتاج
+   * بالضبط، لا عنوان الاختبار — وهو عين العقد المطلوب إثباته، وبصفر اتصال.
+   */
   it("★ YSD_TEST_PROVIDER_URL يُتجاهل بلا البوابة", async () => {
     mode = "clean";
     vi.stubEnv("NODE_ENV", "production");
     delete process.env.YSD_ENABLE_TEST_PROVIDER;
-    // العنوان الوهمي مضبوط، لكن البوابة مغلقة ⇒ يذهب للمزوّد الحقيقي
-    // (سيفشل بالشبكة/المفتاح، والمهم أنه **لم** يستعمل عنوان الاختبار)
+
+    const calls: string[] = [];
+    const spy = vi.fn(async (input: unknown) => {
+      calls.push(
+        typeof input === "string" ? input : ((input as { url?: string })?.url ?? String(input)),
+      );
+      // نرفض محليًا بدل الإرسال: المزوّد يعامله كعطل شبكة ويكمل مساره الطبيعي
+      throw new TypeError("fetch failed");
+    });
     const before = totalConnections;
-    await collect(new OpenRouterProvider().streamChat(req()));
-    expect(totalConnections).toBe(before); // لم يُفتح أي اتصال جديد بالخادم الوهمي
+    vi.stubGlobal("fetch", spy);
+    try {
+      await collect(new OpenRouterProvider().streamChat(req()));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(calls.length).toBeGreaterThan(0);
+    // العنوان المستعمل هو ثابت الإنتاج — والبوابة المغلقة تجاهلت عنوان الاختبار
+    for (const url of calls) {
+      expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+      expect(url).not.toContain(baseUrl);
+    }
+    // ولا اتصال فعلي بالخادم الوهمي المحلي
+    expect(totalConnections).toBe(before);
   }, 60_000);
 });
