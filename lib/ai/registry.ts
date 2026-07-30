@@ -1,5 +1,6 @@
 import type { AIProviderAdapter, ModelInfo } from "./types";
 import { AnthropicProvider } from "./anthropic";
+import { NineRouterProvider } from "./nine-router";
 import { OpenRouterProvider } from "./openrouter";
 
 /**
@@ -11,9 +12,14 @@ import { OpenRouterProvider } from "./openrouter";
 const providers: AIProviderAdapter[] = [
   new OpenRouterProvider(),
   new AnthropicProvider(),
+  /**
+   * v0.8.0: 9Router — متوافق مع OpenAI، **مغلق افتراضيًا**.
+   * `isConfigured()` يرد false بلا NINE_ROUTER_ENABLED=1، وgetConfiguredProviders
+   * يرشّحه، فوجوده هنا لا يغيّر سلوك الإنتاج القائم بشيء.
+   */
+  new NineRouterProvider(),
   // new OpenAIProvider(),
   // new GoogleProvider(),
-  // new YSDProvider(),
 ];
 
 export function getConfiguredProviders(): AIProviderAdapter[] {

@@ -77,6 +77,46 @@ export interface ModelInfo {
   enabled: boolean;
 }
 
+/**
+ * نتيجة فحص اتصال المزوّد (v0.8.0) — **مصنَّفة، لا نصّية**.
+ *
+ * الحالة رمز مغلق تعرضه الواجهة برسالة عربية جاهزة. لا يعبر من هنا نصّ خطأ
+ * المزوّد ولا عنوانه ولا أي ترويسة: رسالة خطأ خام قد تحمل العنوان الداخلي
+ * أو جزءًا من المفتاح، ولوحة الإدارة تُعرض في متصفح.
+ */
+export type ProviderHealthStatus =
+  | "connected"
+  | "unauthorized"
+  | "no_models"
+  | "unreachable"
+  | "not_configured";
+
+export interface ProviderHealth {
+  status: ProviderHealthStatus;
+  /** عدد النماذج المكتشفة — رقم فقط */
+  modelCount?: number;
+  /** زمن الاستجابة بالميلي ثانية — للتشخيص */
+  latencyMs?: number;
+}
+
+/** تصنيف موحّد لأخطاء المزوّدين — رموز فقط، بلا نصوص المزوّد */
+export type ProviderErrorKind =
+  | "auth"
+  | "payment"
+  | "rate_limit"
+  | "not_found"
+  | "server"
+  | "network"
+  | "unknown";
+
+export interface NormalizedProviderError {
+  kind: ProviderErrorKind;
+  /** رمز HTTP إن وُجد — بلا جسم الرد */
+  status?: number;
+  /** هل يستحق تهدئة النموذج؟ */
+  cooldown: boolean;
+}
+
 export interface AIProviderAdapter {
   /** معرّف ثابت: "anthropic" | "openai" | "google" | "ysd" ... */
   readonly id: string;
@@ -85,8 +125,31 @@ export interface AIProviderAdapter {
   /** هل مفتاح الموفر متوفر في البيئة؟ */
   isConfigured(): boolean;
 
-  /** النماذج التي يقدّمها هذا الموفر */
+  /**
+   * النماذج التي يقدّمها هذا الموفر — من قائمة ثابتة أو كاش الاكتشاف.
+   * تبقى **متزامنة** عمدًا: كل المستدعين الحاليين متزامنون، وجعلها async
+   * كان سيفرض تعديلًا واسعًا بلا مقابل. الاكتشاف الشبكي في discoverModels.
+   */
   listModels(): ModelInfo[];
+
+  // ── إضافات v0.8.0 — كلها اختيارية حفاظًا على توافق المزوّدين القائمين ──
+
+  /** قدرات المزوّد — الغياب يعني البثّ مدعوم وما عداه غير مدعوم */
+  readonly supportsStreaming?: boolean;
+  readonly supportsTools?: boolean;
+  readonly supportsVision?: boolean;
+
+  /**
+   * اكتشاف النماذج من المزوّد عبر الشبكة (مثل GET /models).
+   * غيابها يعني قائمة ثابتة لا تحتاج اكتشافًا.
+   */
+  discoverModels?(signal?: AbortSignal): Promise<ModelInfo[]>;
+
+  /** فحص اتصال مصنَّف — لزر «اختبار الاتصال» في لوحة الإدارة */
+  healthCheck?(signal?: AbortSignal): Promise<ProviderHealth>;
+
+  /** تصنيف خطأ المزوّد إلى رمز موحّد — بلا تسريب نصّ المزوّد */
+  normalizeError?(status: number | null, err?: unknown): NormalizedProviderError;
 
   /**
    * بث الرد قطعةً قطعة.
