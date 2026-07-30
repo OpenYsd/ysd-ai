@@ -22,11 +22,14 @@ const stats = {
   client_aborted: 0,
   chunks_sent: 0,
   released: false,
+  heartbeat_sent: 0,
   requests_by_scenario: {},
 };
 
 /** استجابات ممسوكة تنتظر أمر /إطلاق — لإثبات القفل أثناء بثّ حيّ فعلًا */
 const held = new Set();
+/** موقّتات النبضة — تُوقف حتمًا عند الإطلاق أو التصفير أو الإغلاق */
+const heartbeats = new Set();
 
 /** كلمات عربية تختار السيناريو — لا حرف لاتيني فيها */
 const SCENARIOS = {
@@ -88,6 +91,7 @@ const server = http.createServer((req, res) => {
     stats.client_aborted = 0;
     stats.chunks_sent = 0;
     stats.released = false;
+    stats.heartbeat_sent = 0;
     stats.requests_by_scenario = {};
     res.writeHead(200).end("ok");
     return;
@@ -96,6 +100,8 @@ const server = http.createServer((req, res) => {
   /** يُطلق الاستجابات الممسوكة: تُكمل بثّها ثم done ثم إغلاق */
   if (req.url === "/إطلاق" || req.url === encodeURI("/إطلاق")) {
     stats.released = true;
+    for (const stop of heartbeats) stop();
+    heartbeats.clear();
     const n = held.size;
     for (const fn of held) fn();
     held.clear();
@@ -200,16 +206,39 @@ const server = http.createServer((req, res) => {
        * أمر /إطلاق. هذا وحده يجعل الحاجز قاطعًا: active_sockets=1 حقيقية أثناء
        * النقرة الثانية، فيصير إثبات القفل أثناء بثّ حيّ لا استنتاجًا.
        */
-      case "hold_open_after_first_chunk":
+      case "hold_open_after_first_chunk": {
         res.write(sse("**بداية**\n\nجزء أول من الرد "));
         stats.chunks_sent++;
+        /**
+         * نبضة heartbeat كل 5 ثوانٍ (v0.7.0 RC8 — إصلاح harness).
+         *
+         * بلا نبضة كان الاتصال الممسوك يبقى بلا بايت واحد، فتعمل مهلة الخمول
+         * (YSD_TEST_IDLE_MS) **بحق** وتُنهي البثّ عند 30 ثانية — فظهر ذلك في
+         * القياس كأنه إجهاض غامض، وكـPOST متأخر عند ~33 ثانية.
+         *
+         * النبضة **تعليق SSE** لا حدث نص: لا تدخل النص المبثوث ولا المحفوظ،
+         * ولا تمسّ حارس اللغة ولا حالة السياج، ولا تزيد chunks_sent.
+         */
+        const hb = setInterval(() => {
+          if (closed || res.writableEnded) {
+            clearInterval(hb);
+            return;
+          }
+          res.write(": heartbeat\n\n");
+          stats.heartbeat_sent++;
+        }, 5000);
+        const stopHb = () => clearInterval(hb);
+        res.on("close", stopHb);
+        heartbeats.add(stopHb);
         held.add(() => {
+          stopHb();
           if (closed) return;
           res.write(sse("وبقيته بعد الإطلاق بعبارة عربية مكتملة."));
           stats.chunks_sent++;
           finish();
         });
         break;
+      }
       case "timeout_before_text":
         // اتصال مفتوح بلا أي نص — حتى تنتهي مهلة التطبيق
         break;
