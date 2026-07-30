@@ -65,3 +65,9 @@ Thumbs.db
 .cache
 Dockerfile
 .dockerignore
+
+# ---------- 9Router (v0.8.0) ----------
+# بيانات 9Router المحلية قد تحوي مفاتيح مزوّدين — لا تصل daemon البناء أصلًا.
+.9router/
+9router-data/
+.ninerouter/

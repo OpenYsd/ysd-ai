@@ -23,3 +23,10 @@ scripts/.tmp-*.mjs
 .env.e2e.local
 .playwright/
 .playwright/.auth/
+
+# ---------- 9Router (v0.8.0) — بيانات محلية لا تدخل المستودع ----------
+# مجلد بيانات/إعدادات 9Router المحلي قد يحوي مفاتيح مزوّدين أدخلها المشغّل
+# في لوحته. لا يُتتبع إطلاقًا.
+.9router/
+9router-data/
+.ninerouter/
