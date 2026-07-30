@@ -222,6 +222,24 @@ async function postChecks(label) {
   expect(`${label}: لا نبضات معلّقة`, after.active_sockets === 0, `sockets=${after.active_sockets}`);
 }
 
+/**
+ * دور تمهيدي لسيناريوهات إعادة التوليد — مع تأكيد شرطه المسبق.
+ *
+ * السيناريوهات التالية تفترض وجود ردّ مساعد واحد لتعيد توليده. لو فشل هذا
+ * الدور بصمت لصار المعرّف undefined، فتسقط تأكيدات لاحقة برسالة لا علاقة لها
+ * بالسبب — عطل يبدو في مكان وسببه في مكان آخر. نثبّت الشرط هنا.
+ */
+async function seedTurn(cid, label, message = P.normal) {
+  const res = await chat({ conversationId: cid, message, clientRequestId: crypto.randomUUID() });
+  const rows = await rowsOf(cid);
+  const asst = activeOf(rows, "assistant");
+  const ok = expect(`${label}: تمهيد — ردّ مساعد واحد`, asst.length === 1,
+    `= ${asst.length} · HTTP ${res.status ?? "aborted"} · sse=${JSON.stringify(res.events)}`);
+  if (!ok) throw new Error(`تعذّر تمهيد ${label}: الشرط المسبق غير متحقق`);
+  await resetMock();
+  return { rows, asst: asst[0], user: activeOf(rows, "user")[0] };
+}
+
 const P = {
   normal: "سيناريو-عادي اشرح لي",
   split: "سيناريو-سياج-مشطور اكتب دالة",
@@ -318,9 +336,7 @@ async function run() {
   // ٦) regenerate مكتملة — تحديث في مكانه
   {
     const cid = await isolate("regenerate_complete");
-    await chat({ conversationId: cid, message: P.normal, clientRequestId: crypto.randomUUID() });
-    const oldId = activeOf(await rowsOf(cid), "assistant")[0]?.id;
-    await resetMock();
+    const oldId = (await seedTurn(cid, "regenerate_complete")).asst.id;
     const crid = crypto.randomUUID();
     const res = await chat({ conversationId: cid, regenerate: true, clientRequestId: crid });
     const { rows, asst } = await logContract("regenerate_complete", crid, res, cid);
@@ -335,12 +351,9 @@ async function run() {
   // ٧) regenerate ⇒ ناقصة
   {
     const cid = await isolate("regenerate_incomplete");
-    await chat({ conversationId: cid, message: P.normal, clientRequestId: crypto.randomUUID() });
-    const rows0 = await rowsOf(cid);
-    const oldId = activeOf(rows0, "assistant")[0]?.id;
-    const userRow = activeOf(rows0, "user")[0];
-    await db.from("messages").update({ content: P.timeoutMid }).eq("id", userRow.id);
-    await resetMock();
+    const seed = await seedTurn(cid, "regenerate_incomplete");
+    const oldId = seed.asst.id;
+    await db.from("messages").update({ content: P.timeoutMid }).eq("id", seed.user.id);
     const crid = crypto.randomUUID();
     const res = await chat({ conversationId: cid, regenerate: true, clientRequestId: crid });
     const { rows, asst, comp } = await logContract("regenerate_incomplete", crid, res, cid);
@@ -355,12 +368,10 @@ async function run() {
   // ٨) regenerate + إجهاض ⇒ الرد القديم يبقى
   {
     const cid = await isolate("regenerate_stop");
-    await chat({ conversationId: cid, message: P.normal, clientRequestId: crypto.randomUUID() });
-    const rows0 = await rowsOf(cid);
-    const old = activeOf(rows0, "assistant")[0];
+    const seed = await seedTurn(cid, "regenerate_stop");
+    const old = seed.asst;
     const oldMeta = JSON.stringify(old.metadata ?? {});
-    await db.from("messages").update({ content: P.split }).eq("id", activeOf(rows0, "user")[0].id);
-    await resetMock();
+    await db.from("messages").update({ content: P.split }).eq("id", seed.user.id);
     const crid = crypto.randomUUID();
     const res = await chat({ conversationId: cid, regenerate: true, clientRequestId: crid,
       abortWhen: (c) => c.chunks_sent >= 1 && c.active_sockets >= 1 });
@@ -377,9 +388,7 @@ async function run() {
   // ٩) duplicate بنفس المفتاح
   {
     const cid = await isolate("duplicate");
-    await chat({ conversationId: cid, message: P.normal, clientRequestId: crypto.randomUUID() });
-    const oldId = activeOf(await rowsOf(cid), "assistant")[0]?.id;
-    await resetMock();
+    const oldId = (await seedTurn(cid, "duplicate")).asst.id;
     const usageBefore = (await db.from("usage_events")
       .select("*", { count: "exact", head: true }).eq("user_id", uid)).count;
     const crid = crypto.randomUUID();
@@ -391,17 +400,25 @@ async function run() {
     await Promise.all([r1.text(), r2.text()]);
     await new Promise((r) => setTimeout(r, 1500));
     const c = await counters();
-    const asst = activeOf(await rowsOf(cid), "assistant");
+    const allRows = await rowsOf(cid);
+    const asst = activeOf(allRows, "assistant");
     const usageAfter = (await db.from("usage_events")
       .select("*", { count: "exact", head: true }).eq("user_id", uid)).count;
-    console.log(`    ↳ duplicate · crid=${crid.slice(0, 8)} · statuses=${JSON.stringify(statuses)}` +
-      ` · provider_calls=${c.provider_calls} · claim=${JSON.stringify(await claimOf(crid))}`);
     const claim = await claimOf(crid);
+    console.log(`    ↳ duplicate · crid=${crid.slice(0, 8)} · statuses=${JSON.stringify(statuses)}` +
+      ` · provider_calls=${c.provider_calls} · claim=${JSON.stringify(claim)}`);
+    console.log(`      old_id=${oldId?.slice(0, 8)} · صفوف المساعد=${JSON.stringify(
+      allRows.filter((r) => r.role === "assistant")
+        .map((r) => `${r.id.slice(0, 8)}${r.deleted_at ? "(محذوف)" : ""}`))}`);
     expect("statuses=[200,409]", statuses[0] === 200 && statuses[1] === 409, JSON.stringify(statuses));
     expect("صف حجز واحد لا صفّان", claim.length === 1, `= ${claim.length}`);
     expect("الحجز غير عالق", claim[0]?.status !== "in_progress", `status=${claim[0]?.status}`);
     expect("provider_calls=1", c.provider_calls === 1, `= ${c.provider_calls}`);
-    expect("mutation واحدة", asst.length === 1 && asst[0]?.id === oldId);
+    // تأكيدان منفصلان لا واحد مركّب: التأكيد المركّب يسقط بلا أن يقول أيّ شقّيه
+    // سقط، فيدفع إلى تخمين السبب — وهو بالضبط ما يجب أن تمنعه بوابة تشخيصية.
+    expect("صف مساعد فعّال واحد", asst.length === 1, `= ${asst.length}`);
+    expect("تحديث في مكانه لا صف جديد", asst[0]?.id === oldId,
+      `${asst[0]?.id?.slice(0, 8)} مقابل ${oldId?.slice(0, 8)}`);
     expect("usage ≤ 1", usageAfter - usageBefore <= 1, `= ${usageAfter - usageBefore}`);
     await postChecks("duplicate");
   }
