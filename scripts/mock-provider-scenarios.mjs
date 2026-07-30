@@ -21,8 +21,12 @@ const stats = {
   active_sockets: 0,
   client_aborted: 0,
   chunks_sent: 0,
+  released: false,
   requests_by_scenario: {},
 };
+
+/** استجابات ممسوكة تنتظر أمر /إطلاق — لإثبات القفل أثناء بثّ حيّ فعلًا */
+const held = new Set();
 
 /** كلمات عربية تختار السيناريو — لا حرف لاتيني فيها */
 const SCENARIOS = {
@@ -35,6 +39,7 @@ const SCENARIOS = {
   "سيناريو-عادي": "normal_complete",
   "سيناريو-متابعة-ناجحة": "continuation_success",
   "سيناريو-متابعة-فاشلة": "continuation_failure",
+  "سيناريو-ممسوك-مفتوح": "hold_open_after_first_chunk",
 };
 
 function pickScenario(prompt) {
@@ -82,8 +87,20 @@ const server = http.createServer((req, res) => {
     stats.active_sockets = 0;
     stats.client_aborted = 0;
     stats.chunks_sent = 0;
+    stats.released = false;
     stats.requests_by_scenario = {};
     res.writeHead(200).end("ok");
+    return;
+  }
+
+  /** يُطلق الاستجابات الممسوكة: تُكمل بثّها ثم done ثم إغلاق */
+  if (req.url === "/إطلاق" || req.url === encodeURI("/إطلاق")) {
+    stats.released = true;
+    const n = held.size;
+    for (const fn of held) fn();
+    held.clear();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ released: n }));
     return;
   }
 
@@ -177,6 +194,21 @@ const server = http.createServer((req, res) => {
       case "continuation_failure":
         // النداءان يسرّبان معًا ⇒ تُرفض المتابعة ويُعلَّم الرد ناقصًا
         emit(GUARD_CHUNKS, finish);
+        break;
+      /**
+       * دفعة واحدة ثم **إمساك** الاتصال مفتوحًا بلا done وبلا إغلاق، حتى يصل
+       * أمر /إطلاق. هذا وحده يجعل الحاجز قاطعًا: active_sockets=1 حقيقية أثناء
+       * النقرة الثانية، فيصير إثبات القفل أثناء بثّ حيّ لا استنتاجًا.
+       */
+      case "hold_open_after_first_chunk":
+        res.write(sse("**بداية**\n\nجزء أول من الرد "));
+        stats.chunks_sent++;
+        held.add(() => {
+          if (closed) return;
+          res.write(sse("وبقيته بعد الإطلاق بعبارة عربية مكتملة."));
+          stats.chunks_sent++;
+          finish();
+        });
         break;
       case "timeout_before_text":
         // اتصال مفتوح بلا أي نص — حتى تنتهي مهلة التطبيق
