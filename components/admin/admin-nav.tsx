@@ -12,6 +12,7 @@ import {
   ScrollText,
   Settings,
   Users,
+  Cpu,
 } from "lucide-react";
 import { Logo } from "@/components/logo";
 
@@ -19,6 +20,7 @@ const ITEMS = [
   { href: "/admin", label: "نظرة عامة", labelEn: "Overview", icon: BarChart3, exact: true },
   { href: "/admin/users", label: "المستخدمون", labelEn: "Users", icon: Users },
   { href: "/admin/models", label: "النماذج", labelEn: "Models", icon: Database },
+  { href: "/admin/ai", label: "إدارة الذكاء الاصطناعي", labelEn: "AI", icon: Cpu },
   { href: "/admin/rag", label: "RAG", labelEn: "RAG", icon: FileStack },
   { href: "/admin/usage", label: "الاستهلاك", labelEn: "Usage", icon: Gauge },
   { href: "/admin/health", label: "صحة المحادثة", labelEn: "Health", icon: Activity },
