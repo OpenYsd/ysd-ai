@@ -56,6 +56,40 @@ async function providerCalls(api: APIRequestContext): Promise<number> {
   return (await r.json()).provider_calls;
 }
 
+/** سيناريو يُمسك الاتصال مفتوحًا حتى أمر الإطلاق — يجعل active_sockets=1 مُثبتًا */
+const HOLD_PROMPT = "سيناريو-ممسوك-مفتوح اشرح لي";
+
+interface Counters {
+  provider_calls: number;
+  active_sockets: number;
+  chunks_sent: number;
+  released: boolean;
+}
+
+async function allCounters(api: APIRequestContext): Promise<Counters> {
+  return (await api.get(`${MOCK}/${encodeURIComponent("عدادات")}`)).json();
+}
+async function resetCounters(api: APIRequestContext): Promise<void> {
+  await api.get(`${MOCK}/${encodeURIComponent("تصفير")}`);
+}
+async function releaseHeld(api: APIRequestContext): Promise<void> {
+  await api.get(`${MOCK}/${encodeURIComponent("إطلاق")}`);
+}
+
+/** حاجز حتمي على عدّادات المزوّد — لا تأخير تخميني */
+async function untilCounters(
+  api: APIRequestContext,
+  pred: (c: Counters) => boolean,
+  ms = 30_000,
+): Promise<boolean> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (pred(await allCounters(api))) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
 /** يثبت بنيويًا أن التنبيه خارج code/pre وظاهر مرة واحدة */
 async function assertNoticeOutsideCode(page: Page, status: string) {
   const marker = page.locator(`[data-incomplete="${status}"]`);
@@ -191,31 +225,108 @@ test("هـ) رسالة ناقصة قديمة — زر إعادة التوليد 
   await expect(buttons).toHaveCount(1);
 });
 
-test("و) إعادة التوليد — ضغطة واحدة ونداء واحد", async ({ page, request }) => {
+test("و) إعادة التوليد — إعادة دخول أثناء بثّ حيّ لا تُنشئ طلبًا", async ({
+  page,
+  request,
+}) => {
+  /**
+   * harness مُصحَّح (v0.7.0 RC8). ثلاثة أخطاء في الصيغة السابقة:
+   *   • الحاجز كان `chunks_sent>=1` وحده، و`active_sockets` يقرأ 0 عنده — فلم
+   *     يُثبت قط أن إعادة الدخول وقعت أثناء بثّ حيّ. الآن hold_open يُمسك
+   *     الاتصال مفتوحًا فيصير active_sockets=1 قابلًا للإثبات.
+   *   • خلط click مع dispatchEvent يولّد **نقرتين مستقلتين**، فالنداء الثاني
+   *     كان مشروعًا لا خرقًا. الآن حدث واحد فقط.
+   *   • القياس بالرقم الإجمالي كان يخلط طلب التجهيز. الآن بالفرق عن baseline.
+   */
   const cid = await newConversation(request);
-  await send(request, cid, "سيناريو-مهلة-أثناء-البث اكتب دالة");
+
+  // كل POST إلى /api/chat مع حالته — لتشخيص أي طلب متأخر
+  const posts: { t: number; crid: string; regen: boolean; status?: number }[] = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/api/chat") && r.method() === "POST") {
+      let crid = "?";
+      let regen = false;
+      try {
+        const b = JSON.parse(r.postData() ?? "{}");
+        crid = String(b.clientRequestId ?? "none").slice(0, 8);
+        regen = b.regenerate === true;
+      } catch {}
+      posts.push({ t: Date.now(), crid, regen });
+    }
+  });
+  page.on("response", (r) => {
+    if (r.url().includes("/api/chat") && r.request().method() === "POST") {
+      const last = posts[posts.length - 1];
+      if (last && last.status === undefined) last.status = r.status();
+    }
+  });
+
+  // تجهيز: hold_open ثم إطلاقه ليكتمل التبادل (فيظهر زر إعادة التوليد)
+  const seed = request.post("/api/chat", {
+    data: {
+      conversationId: cid,
+      modelId: "ysd/free",
+      message: HOLD_PROMPT,
+      clientRequestId: `f-seed-${Date.now()}`,
+    },
+    timeout: 90_000,
+  });
+  await untilCounters(request, (c) => c.chunks_sent >= 1 && c.active_sockets >= 1);
+  await releaseHeld(request);
+  await seed;
 
   await page.goto(`/chat/${cid}`);
-  await expect(page.locator('[data-incomplete="incomplete_timeout"]')).toHaveCount(1);
+  await resetCounters(request);
+  const base = await allCounters(request);
+  posts.length = 0;
 
-  const before = await providerCalls(request);
   const btn = page.getByRole("button", { name: /إعادة توليد|regenerate/i });
+  await expect(btn).toHaveCount(1);
 
-  // نقر مزدوج سريع — القفل يجب أن يمنع طلبًا ثانيًا
+  // ١) حدث واحد يبدأ المحاولة الأولى
   await btn.click();
-  await btn.click({ force: true }).catch(() => undefined);
-  await page.waitForTimeout(9000);
-
-  const after = await providerCalls(request);
-  expect(after - before, "نداء مزوّد واحد لا اثنان").toBeLessThanOrEqual(1);
-
-  // رسالة المستخدم لم تُحذف
-  const userVisible = await page.evaluate(
-    () => document.body.innerText.includes("سيناريو-مهلة-أثناء-البث"),
+  const reached = await untilCounters(
+    request,
+    (c) => c.provider_calls >= 1 && c.active_sockets >= 1 && c.chunks_sent >= 1,
   );
-  expect(userVisible, "رسالة المستخدم باقية").toBe(true);
+  const atBarrier = await allCounters(request);
+  expect(reached, "الحاجز ببثّ حيّ").toBe(true);
+  expect(atBarrier.active_sockets, "socket مفتوح فعلًا").toBe(1);
+  expect(atBarrier.released).toBe(false);
 
-  // التنبيه لا يتكرر
-  const occ = await page.evaluate((n) => document.body.innerText.split(n).length - 1, NOTICE);
-  expect(occ, "لا تكرار للتنبيه").toBeLessThanOrEqual(1);
+  // ٢) إعادة دخول بحدث **واحد** أثناء البثّ الحيّ
+  await btn.click({ force: true }).catch(() => undefined);
+  await page.waitForTimeout(1500);
+  const during = await allCounters(request);
+
+  expect(during.provider_calls - base.provider_calls, "نداء واحد أثناء التزامن").toBe(1);
+  expect(during.active_sockets, "الاتصال الأول لم يُجهض").toBe(1);
+  expect(posts.filter((p) => p.regen).length, "طلب regenerate واحد").toBe(1);
+
+  // ٣) إطلاق ← done ← تحرير القفل
+  await releaseHeld(request);
+  await untilCounters(request, (c) => c.active_sockets === 0);
+  await page.waitForTimeout(2000);
+  expect((await allCounters(request)).active_sockets).toBe(0);
+
+  // ٤) محاولة جديدة مقصودة بعد الاكتمال — القفل لم يبق عالقًا
+  await btn.click();
+  await untilCounters(request, (c) => c.provider_calls - base.provider_calls >= 2);
+  const after = await allCounters(request);
+  expect(after.provider_calls - base.provider_calls, "محاولتان مقصودتان").toBe(2);
+
+  const regenPosts = posts.filter((p) => p.regen);
+  expect(
+    new Set(regenPosts.map((p) => p.crid)).size,
+    "مفتاح مختلف لكل محاولة مقصودة",
+  ).toBe(regenPosts.length);
+
+  // رسالة المستخدم باقية
+  expect(
+    await page.evaluate(() => document.body.innerText.includes("سيناريو-ممسوك-مفتوح")),
+    "رسالة المستخدم باقية",
+  ).toBe(true);
+
+  console.log("POSTs: " + JSON.stringify(posts));
+  await releaseHeld(request);
 });
