@@ -248,8 +248,41 @@ try {
         const { data: p } = await db.from("profiles").select("role").eq("id", r.data.user.id).maybeSingle();
         ok("role=user", p?.role === "user", `= ${p?.role}`);
         ok("used_count = 1", (await inviteUsed(inv.id)) === 1);
+        const { count: profCount } = await db.from("profiles")
+          .select("*", { count: "exact", head: true }).eq("id", r.data.user.id);
+        ok("profile واحد فقط", profCount === 1, `= ${profCount}`);
+        const { data: uu } = await db.auth.admin.getUserById(r.data.user.id);
+        const md = uu?.user?.user_metadata ?? {};
+        ok("invite_ticket وinvite_code غير مخزّنين",
+          !("invite_ticket" in md) && !("invite_code" in md));
         // العقد مع تأكيد البريد: جلسة أو لا، المهم ألّا يُدَّعى وجودها كذبًا
         console.log(`     العقد: user=${Boolean(r.data.user)} session=${Boolean(r.data.session)}`);
+        ok("لا جلسة تُدَّعى قبل التأكيد",
+          Boolean(r.data.session) === Boolean(uu?.user?.email_confirmed_at));
+
+        /**
+         * تعداد الحسابات: بريد قائم يجب ألّا يكشف نفسه. GoTrue يردّ بنجاح
+         * ظاهري وidentities فارغة بدل خطأ صريح، فلا يستطيع مجهول أن يعرف من
+         * يملك حسابًا. نباعد المحاولة ٨ ثوانٍ احترامًا لحدّ الإرسال.
+         */
+        await new Promise((res) => setTimeout(res, 65000)); // ننتظر مدة الحد لا نلتف عليه
+        const dupInv = await makeInvite(1);
+        const dup = await anon.auth.signUp({
+          email: r.email,
+          password: qaPass(),
+          options: { data: { invite_ticket: await issueTicket(dupInv.code), terms_accepted: true } },
+        });
+        if (dup.error && isRateLimit(dup.error)) {
+          skip("بريد قائم على المسار العام", "حدّ إرسال GoTrue");
+        } else {
+          ok("بريد قائم ⇒ لا 500", dup.error?.status !== 500,
+            dup.error ? `status=${dup.error.status}` : `identities=${dup.data?.user?.identities?.length ?? "—"}`);
+          ok("لا رسالة تكشف وجود الحساب",
+            !/exists|registered|already|مسجّل|موجود/i.test(String(dup.error?.message ?? "")),
+            String(dup.error?.message ?? "").slice(0, 40));
+          ok("لا يُنشأ حساب ثانٍ بالبريد نفسه",
+            !dup.data?.user?.id || dup.data.user.id === r.data.user.id);
+        }
       }
     }
   }
