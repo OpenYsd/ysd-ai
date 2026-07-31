@@ -3,4 +3,4 @@
  * يُحدَّث يدويًا مع package.json عند الإصدار (لا نقرأ package.json وقت التشغيل:
  * standalone قد لا ينسخه، والقراءة من القرص في مسار حيّ كلفة بلا داعٍ).
  */
-export const APP_VERSION = "0.8.0-dev";
+export const APP_VERSION = "0.8.0-rc1";
