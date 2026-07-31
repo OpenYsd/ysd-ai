@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  deriveRegistrationMode,
+  REGISTRATION_MODE_HINT,
+  REGISTRATION_MODE_LABEL,
+} from "@/lib/auth/registration-mode";
 
 interface Setting { key: string; value: unknown; owner_only: boolean }
 
 const LABELS: Record<string, string> = {
   maintenance_mode: "وضع الصيانة",
-  allow_registration: "السماح بالتسجيل",
+  // «السماح بالتسجيل» كان يوحي بأنه المفتاح الوحيد للتسجيل، بينما
+  // require_invite يعلوه: مفعّلًا يبقى التسجيل بالدعوة مهما كانت قيمته.
+  allow_registration: "السماح بالتسجيل المفتوح دون دعوة",
+  require_invite: "اشتراط دعوة للتسجيل",
   rag_enabled: "تفعيل RAG",
   default_model_id: "النموذج الافتراضي",
   announcement: "إعلان عام",
@@ -27,6 +35,19 @@ export function AdminSettingsView({ isOwner }: { isOwner: boolean }) {
   }
   useEffect(() => { void load(); }, []);
 
+  /**
+   * الحالة النهائية المشتقّة — لا يُترك المشرف يستنتجها من منطقيّتين.
+   * تركيبة require_invite=false مع allow_registration=false تعني «مغلق»،
+   * وهو معنى لا يقوله أي من الاسمين وحده.
+   */
+  const mode = useMemo(() => {
+    const val = (k: string) => {
+      const v = settings.find((s) => s.key === k)?.value;
+      return typeof v === "boolean" ? v : v === "true" ? true : v === "false" ? false : undefined;
+    };
+    return deriveRegistrationMode(val("require_invite"), val("allow_registration"));
+  }, [settings]);
+
   async function save(key: string, value: unknown, ownerOnly: boolean) {
     if (ownerOnly && !window.confirm("إعداد حرج — تأكيد الحفظ؟")) return;
     setError(null);
@@ -45,6 +66,23 @@ export function AdminSettingsView({ isOwner }: { isOwner: boolean }) {
       <h1 className="text-[17px] font-semibold text-ink-strong">إعدادات المنصة</h1>
       {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2.5 text-[13px] text-red-300">{error}</div>}
       {toast && <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-[13px] text-emerald-300">{toast}</div>}
+
+      {/* الحالة النهائية للتسجيل — مشتقّة من المفتاحين معًا */}
+      <div
+        data-registration-mode={mode}
+        className={`rounded-2xl border px-4 py-3 ${
+          mode === "open"
+            ? "border-emerald-500/30 bg-emerald-500/10"
+            : mode === "invite_only"
+              ? "border-amber-500/30 bg-amber-500/10"
+              : "border-red-500/30 bg-red-500/10"
+        }`}
+      >
+        <div className="text-[13.5px] text-ink-strong">
+          حالة التسجيل الحالية: {REGISTRATION_MODE_LABEL[mode]}
+        </div>
+        <div className="text-[12px] text-ink-faint mt-0.5">{REGISTRATION_MODE_HINT[mode]}</div>
+      </div>
 
       <div className="rounded-2xl border border-line/70 divide-y divide-line/40">
         {settings.map((st) => {

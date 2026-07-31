@@ -29,6 +29,35 @@ for (const l of fs.readFileSync(".env.local", "utf8").split(/\r?\n/)) {
   const m = l.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim();
 }
+/**
+ * حواجز أمان — هذا السكربت ينشئ ويحذف في قاعدة حقيقية عبر Auth.
+ * لا يعمل إلا بتفعيل صريح، ولا يُضاف إلى npm test العادي.
+ */
+if (process.env.YSD_RUN_SIGNUP_INTEGRATION !== "1") {
+  console.error("متوقف: يلزم YSD_RUN_SIGNUP_INTEGRATION=1 — هذا اختبار يكتب في قاعدة حقيقية.");
+  process.exit(2);
+}
+const QA_PREFIX = process.env.YSD_QA_PREFIX ?? "ysd.qa.";
+if (!QA_PREFIX || QA_PREFIX.length < 5) {
+  console.error("متوقف: YSD_QA_PREFIX قصيرة أو غائبة — بادئة QA واضحة شرط للتشغيل.");
+  process.exit(2);
+}
+if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("متوقف: بيئة Supabase غير مكتملة.");
+  process.exit(2);
+}
+/**
+ * تأكيد المشروع المستهدف قبل أي عملية مدمّرة: مرجع المشروع من العنوان
+ * (لا المفتاح) يجب أن يطابق YSD_EXPECTED_PROJECT_REF إن ضُبط. يمنع تشغيل
+ * اختبار يكتب في مشروع غير المقصود.
+ */
+const PROJECT_REF = new URL(env.NEXT_PUBLIC_SUPABASE_URL).hostname.split(".")[0];
+if (env.YSD_EXPECTED_PROJECT_REF && env.YSD_EXPECTED_PROJECT_REF !== PROJECT_REF) {
+  console.error("متوقف: المشروع المستهدف لا يطابق YSD_EXPECTED_PROJECT_REF.");
+  process.exit(2);
+}
+console.log(`المشروع المستهدف: ${PROJECT_REF.slice(0, 6)}… · بادئة QA: ${QA_PREFIX}`);
+
 const db = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
@@ -63,8 +92,19 @@ const isRateLimit = (err) =>
   err?.status === 429 || String(err?.code ?? "").includes("rate_limit");
 
 let seq = 0;
-const qaEmail = (tag) => `ysd.qa.${tag}.${STAMP}.${++seq}@${DOMAIN}`;
-const qaPublicEmail = (tag) => `ysd.qa.${tag}.${STAMP}.${++seq}@${PUBLIC_DOMAIN}`;
+const qaEmail = (tag) => `${QA_PREFIX}${tag}.${STAMP}.${++seq}@${DOMAIN}`;
+/**
+ * بريد عام قابل للتسليم من البيئة وحدها — لا يُطبع كاملًا أبدًا.
+ * YSD_QA_PUBLIC_EMAIL_BASE مثل: name@example.org (يُستعمل alias بـ+).
+ */
+const PUBLIC_BASE = env.YSD_QA_PUBLIC_EMAIL_BASE ?? process.env.YSD_QA_PUBLIC_EMAIL_BASE ?? "";
+const qaPublicEmail = (tag) => {
+  if (!PUBLIC_BASE.includes("@")) return null;
+  const [lp, dom] = PUBLIC_BASE.split("@");
+  return `${lp}+ysdqa.${tag}.${STAMP}.${++seq}@${dom}`;
+};
+/** لا يُطبع بريد كامل — النطاق وطول الجزء المحلي فقط */
+const emailShape = (e) => (e ? `…@${e.split("@")[1]}` : "—");
 const qaPass = () => `Qa!${crypto.randomBytes(6).toString("hex")}Zx9`;
 
 async function makeInvite(maxUses = 1, opts = {}) {
@@ -81,6 +121,21 @@ async function makeInvite(maxUses = 1, opts = {}) {
   createdInvites.push(data.id);
   return { code, id: data.id };
 }
+/**
+ * إصدار تذكرة كما يفعل /api/invite/claim تمامًا: العميل يولّد التذكرة ويرسل
+ * تجزئتها، فلا يعبر الكود الخام إلى بيانات التسجيل. هذا هو المسار الحقيقي
+ * منذ 0013 — واختبار invite_code الخام كان يختبر مسارًا لا يستعمله المنتج.
+ */
+async function issueTicket(code) {
+  const ticket = crypto.randomBytes(24).toString("hex");
+  const hash = crypto.createHash("sha256").update(ticket).digest("hex");
+  const r = await anon.rpc("beta_claim_invite", {
+    p_code: code, p_ticket_hash: hash, p_ttl_seconds: 600,
+  });
+  if (r.error || r.data !== true) return null;
+  return ticket;
+}
+
 const inviteUsed = async (id) =>
   (await db.from("beta_invites").select("used_count").eq("id", id).single()).data?.used_count;
 
@@ -95,6 +150,7 @@ async function adminCreate(tag, meta) {
 }
 async function publicSignUp(tag, meta, password = qaPass()) {
   const email = qaPublicEmail(tag);
+  if (!email) return { error: { code: "no_public_mailbox" }, data: null, email: null };
   const r = await anon.auth.signUp({ email, password, options: { data: meta } });
   if (r.data?.user) createdUsers.push(r.data.user.id);
   return { ...r, email };
@@ -130,12 +186,14 @@ try {
   console.log("── ١) التحقق السلوكي: هل الدالة الفعّالة هي نسخة 0020؟ ──");
   {
     const inv = await makeInvite(1);
-    const r = await adminCreate("v0020", {
-      invite_code: inv.code, terms_accepted: true, display_name: "QA 0020",
+    const ticket = await issueTicket(inv.code);
+    ok("إصدار تذكرة من الكود (beta_claim_invite)", Boolean(ticket));
+    const r = await adminCreate("gate", {
+      invite_ticket: ticket, terms_accepted: true, display_name: "QA Gate",
     });
-    ok("تسجيل بكود صالح + موافقة ينجح", !r.error, r.error ? `status=${r.error.status}` : "");
+    ok("تسجيل بتذكرة صالحة + موافقة ينجح", !r.error, r.error ? `status=${r.error.status}` : "");
     const used = await inviteUsed(inv.id);
-    ok("used_count = 1 (البوابة رأت الكود ← تعريف 0020)", used === 1, `= ${used}`);
+    ok("used_count = 1 (البوابة استهلكت التذكرة والدعوة)", used === 1, `= ${used}`);
     if (r.data?.user) {
       const { data: p } = await db.from("profiles").select("id, role, display_name")
         .eq("id", r.data.user.id).maybeSingle();
@@ -150,8 +208,9 @@ try {
         .select("*", { count: "exact", head: true }).eq("user_id", r.data.user.id);
       ok("موافقتان محفوظتان (terms + privacy)", cons === 2, `= ${cons}`);
       const { data: uu } = await db.auth.admin.getUserById(r.data.user.id);
-      ok("invite_code غير محفوظ في metadata",
-        !("invite_code" in (uu?.user?.user_metadata ?? {})));
+      ok("invite_code وinvite_ticket غير محفوظين في metadata",
+        !("invite_code" in (uu?.user?.user_metadata ?? {})) &&
+        !("invite_ticket" in (uu?.user?.user_metadata ?? {})));
       const { count: uses } = await db.from("beta_invite_uses")
         .select("*", { count: "exact", head: true }).eq("invite_id", inv.id);
       ok("ربط الدعوة بالمستخدم مرة واحدة", uses === 1, `= ${uses}`);
@@ -162,9 +221,13 @@ try {
   console.log("\n── ٢) signUp العام (عقد الواجهة) ──");
   {
     const inv = await makeInvite(1);
+    const ticket = await issueTicket(inv.code);
     const r = await publicSignUp("pub", {
-      invite_code: inv.code, terms_accepted: true, privacy_accepted: true, display_name: "QA Pub",
+      invite_ticket: ticket, terms_accepted: true, privacy_accepted: true, display_name: "QA Pub",
     });
+    if (r.error?.code === "no_public_mailbox") {
+      skip("signUp العام", "YSD_QA_PUBLIC_EMAIL_BASE غير مضبوط — لا صندوق بريد قابل للتسليم");
+    } else
     /**
      * مُصنِّفان لا نتيجة واحدة: حدّ بريد GoTrue، و**رفض النطاق**. هذا المشروع
      * يتحقق من قابلية تسليم البريد في مسار العموم (لا في admin)، فيرفض
@@ -196,7 +259,8 @@ try {
   for (const wanted of ["admin", "owner"]) {
     const inv = await makeInvite(1);
     const r = await adminCreate(`role${wanted}`, {
-      invite_code: inv.code, terms_accepted: true, role: wanted, user_role: wanted,
+      invite_ticket: await issueTicket(inv.code), terms_accepted: true,
+      role: wanted, user_role: wanted,
     });
     if (r.error) {
       ok(`طلب role=${wanted}: لم يُنشئ حسابًا`, true, `status=${r.error.status}`);
@@ -213,17 +277,17 @@ try {
   const exhausted = await makeInvite(1);
   {
     // استنفاد الدعوة أولًا باستعمال مشروع
-    const r = await adminCreate("exhaust", { invite_code: exhausted.code, terms_accepted: true });
+    const r = await adminCreate("exhaust", { invite_ticket: await issueTicket(exhausted.code), terms_accepted: true });
     ok("تجهيز: دعوة max_uses=1 استُهلكت", !r.error && (await inviteUsed(exhausted.id)) === 1);
   }
   const goodInv = await makeInvite(1);
   const rejectCases = [
-    ["بلا invite_code", { terms_accepted: true }],
-    ["كود غير صحيح", { invite_code: "لا-يوجد-هكذا-كود", terms_accepted: true }],
-    ["كود منتهٍ", { invite_code: expiredInv.code, terms_accepted: true }],
-    ["كود معطّل", { invite_code: revokedInv.code, terms_accepted: true }],
-    ["دعوة استنفدت max_uses", { invite_code: exhausted.code, terms_accepted: true }],
-    ["بلا موافقة الشروط", { invite_code: goodInv.code }],
+    ["بلا تذكرة", { terms_accepted: true }],
+    ["تذكرة غير صحيحة", { invite_ticket: "0".repeat(48), terms_accepted: true }],
+    ["كود منتهٍ", { invite_ticket: await issueTicket(expiredInv.code), terms_accepted: true }],
+    ["كود معطّل", { invite_ticket: await issueTicket(revokedInv.code), terms_accepted: true }],
+    ["دعوة استنفدت max_uses", { invite_ticket: await issueTicket(exhausted.code), terms_accepted: true }],
+    ["بلا موافقة الشروط", { invite_ticket: await issueTicket(goodInv.code) }],
   ];
   for (const [label, meta] of rejectCases) {
     const before = await counts();
@@ -245,7 +309,7 @@ try {
   // بريد غير صالح / كلمة مرور ضعيفة / بريد مكرر
   {
     const inv = await makeInvite(3);
-    const base = { invite_code: inv.code, terms_accepted: true };
+    const base = { invite_ticket: await issueTicket(inv.code), terms_accepted: true };
     const rBadEmail = await db.auth.admin.createUser({
       email: "ليس-بريدًا", password: qaPass(), email_confirm: true, user_metadata: base,
     });
@@ -287,7 +351,7 @@ try {
      */
     const inv = await makeInvite(1);
     const before = await counts();
-    const r = await adminCreate("rollback", { invite_code: inv.code }); // بلا موافقة
+    const r = await adminCreate("rollback", { invite_ticket: await issueTicket(inv.code) }); // بلا موافقة
     ok("فشل متعمّد بعد الاستهلاك", Boolean(r.error), r.error ? `status=${r.error.status}` : "❌ نجح");
     const after = await counts();
     ok("تراجع كامل: لا auth user", after.authUsers === before.authUsers,
@@ -302,12 +366,14 @@ try {
   console.log("\n── ٦) التزامن: max_uses=1 وطلبان متزامنان ──");
   {
     const inv = await makeInvite(1);
-    const meta = { invite_code: inv.code, terms_accepted: true };
-    const mk = () =>
+    // تذكرتان من دعوة max_uses=1 — التنافس على آخر استخدام
+    const meta1 = { invite_ticket: await issueTicket(inv.code), terms_accepted: true };
+    const meta2 = { invite_ticket: await issueTicket(inv.code), terms_accepted: true };
+    const mk = (meta) =>
       db.auth.admin.createUser({
         email: qaEmail("conc"), password: qaPass(), email_confirm: true, user_metadata: meta,
       });
-    const [a, b] = await Promise.all([mk(), mk()]);
+    const [a, b] = await Promise.all([mk(meta1), mk(meta2)]);
     for (const r of [a, b]) if (r.data?.user) createdUsers.push(r.data.user.id);
     const wins = [a, b].filter((r) => !r.error).length;
     const fails = [a, b].filter((r) => r.error).length;
@@ -330,6 +396,7 @@ try {
     await db.auth.admin.deleteUser(id).catch(() => undefined);
   }
   for (const id of createdInvites) {
+    await db.from("invite_tickets").delete().eq("invite_id", id);
     await db.from("beta_invite_uses").delete().eq("invite_id", id);
     await db.from("beta_invites").delete().eq("id", id);
   }

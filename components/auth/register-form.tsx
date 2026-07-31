@@ -6,6 +6,10 @@ import { useForm } from "react-hook-form";
 import { createClient } from "@/lib/supabase/client";
 import { useI18n } from "@/lib/i18n";
 import { AuthButton, AuthError, AuthInput, AuthNotice } from "@/components/auth/fields";
+import {
+  classifySignupError,
+  SIGNUP_ERROR_MESSAGE,
+} from "@/lib/auth/registration-mode";
 
 type FormValues = { displayName: string; email: string; password: string };
 
@@ -103,8 +107,17 @@ export function RegisterForm({
     });
     setLoading(false);
     if (error) {
-      // خطأ المُحفّز (invite_required/invalid) يظهر كخطأ قاعدة بيانات
-      setError(requireInvite ? t("inviteInvalid") : t("registerFailed"));
+      /**
+       * كل حالة متوقّعة رسالتها الخاصة.
+       *
+       * كانت الرسالة تُختار من requireInvite وحدها: فيقال «رمز الدعوة غير
+       * صالح» لكلمة مرور ضعيفة أو بريد مسجَّل مسبقًا، ويقال «تعذّر التسجيل»
+       * لتسجيل مغلق. المستخدم يصحّح ما ليس خطأ ولا يعرف ما الخطأ.
+       *
+       * والتصنيف يقع في وحدة واحدة تُخرج رمزًا من مجموعة مغلقة — فلا يظهر
+       * اسم دالة ولا قيد ولا SQL ولا stack trace مهما كان نصّ المزوّد.
+       */
+      setError(SIGNUP_ERROR_MESSAGE[classifySignupError(error)]);
       return;
     }
     if (!data.session) {
