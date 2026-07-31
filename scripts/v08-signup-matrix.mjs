@@ -9,9 +9,9 @@
  *
  * **لماذا تحقّق سلوكي لا قراءة تعريف**: pg_catalog غير متاح عبر PostgREST
  * (PGRST205)، فلا سبيل لقراءة جسم الدالة من هنا. والمميّز الحاسم متاح:
- * قبل 0020 كان تسجيلٌ بكود **صالح** يترك used_count = 0 لأن البوابة لا ترى
- * الكود أصلًا. فارتفاعه إلى 1 يثبت أن الدالة الفعّالة هي نسخة 0020، وأن
- * المُحفّزين BEFORE ثم AFTER يعملان بالترتيب الصحيح.
+ * تسجيلٌ بتذكرة صالحة يرفع used_count إلى 1. وقد كان 0 حين استبدل 0020
+ * الدالة بنسخة لا تفهم التذاكر — فارتفاعه يثبت أن نسخة 0021 هي الفعّالة
+ * وأن المُحفّزين BEFORE ثم AFTER يعملان بالترتيب الصحيح.
  *
  * حدّ بريد GoTrue: نستعمل admin.createUser مع email_confirm للحالات الكثيرة
  * (لا يُرسل بريدًا فلا يصطدم بالحدّ)، وsignUp العام لعقد الواجهة وحده. وأي
@@ -183,7 +183,7 @@ console.log(`الإعدادات: ${JSON.stringify(SETTINGS0)} · دعوات قا
 
 try {
   // ══════════ ١) التحقق السلوكي من تعريف 0020 ══════════
-  console.log("── ١) التحقق السلوكي: هل الدالة الفعّالة هي نسخة 0020؟ ──");
+  console.log("── ١) التحقق السلوكي: هل مسار التذاكر (0013/0021) فعّال؟ ──");
   {
     const inv = await makeInvite(1);
     const ticket = await issueTicket(inv.code);
@@ -321,8 +321,18 @@ try {
      * صلاحية المشرف لا العقد الذي يحمي المستخدمين.
      */
     const rWeak = await publicSignUp("weak", base, "123");
-    if (rWeak.error && (isRateLimit(rWeak.error) || String(rWeak.error.code) === "email_address_invalid")) {
-      skip("كلمة مرور ضعيفة", "مسار العموم غير متاح في هذه البيئة (رفض النطاق أو حدّ البريد)");
+    /**
+     * غياب صندوق البريد ليس رفضًا. الصيغة الأولى كانت تعدّه نجاحًا لأن
+     * publicSignUp تُرجع خطأً اصطناعيًا (no_public_mailbox) والفحص كان
+     * `Boolean(error)` — فيمرّ الاختبار دون أن يُختبر شيء. نجاحٌ كاذب أخطر
+     * من فشل، وهو بالضبط ما وقعتُ فيه حين اختبرت مسار invite_code المهجور.
+     */
+    if (
+      rWeak.error &&
+      (isRateLimit(rWeak.error) ||
+        ["email_address_invalid", "no_public_mailbox"].includes(String(rWeak.error.code)))
+    ) {
+      skip("كلمة مرور ضعيفة", "مسار العموم غير متاح في هذه البيئة");
     } else {
       ok("كلمة مرور ضعيفة على مسار العموم ⇒ مرفوضة",
         Boolean(rWeak.error), rWeak.error ? `code=${rWeak.error.code}` : "❌ قُبلت");
@@ -386,6 +396,80 @@ try {
       .select("*", { count: "exact", head: true }).eq("invite_id", inv.id);
     ok("ربط واحد فقط", uses === 1, `= ${uses}`);
   }
+
+  // ══════════ ٧) حالات التسجيل الثلاث ══════════
+  const setMode = async (req, allow) => {
+    await db.from("platform_settings").update({ value: req }).eq("key", "require_invite");
+    await db.from("platform_settings").update({ value: allow }).eq("key", "allow_registration");
+  };
+
+  console.log("\n── ٧أ) invite_only (require=true · allow=false) ──");
+  await setMode(true, false);
+  {
+    const before = await counts();
+    const noTicket = await adminCreate("m_io_no", { terms_accepted: true });
+    ok("بلا تذكرة ⇒ مرفوض", Boolean(noTicket.error), `status=${noTicket.error?.status}`);
+    const inv = await makeInvite(1);
+    const withTicket = await adminCreate("m_io_yes", {
+      invite_ticket: await issueTicket(inv.code), terms_accepted: true, role: "admin",
+    });
+    ok("بتذكرة صالحة ⇒ ينجح (admin.createUser يحتاج تذكرة)", !withTicket.error,
+      withTicket.error ? `status=${withTicket.error.status}` : "");
+    if (withTicket.data?.user) {
+      const { data: pr } = await db.from("profiles").select("role")
+        .eq("id", withTicket.data.user.id).maybeSingle();
+      ok("الدور user رغم role=admin في metadata", pr?.role === "user", `= ${pr?.role}`);
+    }
+    ok("used_count = 1", (await inviteUsed(inv.id)) === 1);
+    const after = await counts();
+    ok("لا صفوف يتيمة", after.orphanAuth === 0 && after.orphanProfile === 0);
+    ok("زاد مستخدم واحد فقط", after.authUsers === before.authUsers + 1,
+      `${before.authUsers} → ${after.authUsers}`);
+  }
+
+  console.log("\n── ٧ب) open (require=false · allow=true) ──");
+  await setMode(false, true);
+  {
+    const inv = await makeInvite(1);
+    const r = await adminCreate("m_open", { terms_accepted: true, role: "owner" });
+    ok("admin.createUser ينجح دون تذكرة", !r.error, r.error ? `status=${r.error.status}` : "");
+    if (r.data?.user) {
+      const { data: pr } = await db.from("profiles").select("role").eq("id", r.data.user.id).maybeSingle();
+      ok("الدور user رغم role=owner في metadata", pr?.role === "user", `= ${pr?.role}`);
+      const { count: subs } = await db.from("subscriptions")
+        .select("*", { count: "exact", head: true }).eq("user_id", r.data.user.id);
+      ok("اشتراك أُنشئ", subs === 1);
+    }
+    const withTicket = await adminCreate("m_open_tk", {
+      invite_ticket: await issueTicket(inv.code), terms_accepted: true,
+    });
+    ok("تسجيل بتذكرة في وضع open ينجح", !withTicket.error);
+    ok("لا تُستهلك دعوة في وضع open", (await inviteUsed(inv.id)) === 0,
+      `= ${await inviteUsed(inv.id)}`);
+    const noConsent = await adminCreate("m_open_nc", {});
+    ok("بلا موافقة يبقى مرفوضًا في open", Boolean(noConsent.error));
+  }
+
+  console.log("\n── ٧ج) closed (require=false · allow=false) ──");
+  await setMode(false, false);
+  {
+    const before = await counts();
+    const inv = await makeInvite(1);
+    const ticket = await issueTicket(inv.code);
+    const r = await adminCreate("m_closed", { terms_accepted: true });
+    ok("admin.createUser مرفوض", Boolean(r.error), `status=${r.error?.status}`);
+    const rT = await adminCreate("m_closed_tk", { invite_ticket: ticket, terms_accepted: true });
+    ok("حتى بتذكرة صالحة ⇒ مرفوض", Boolean(rT.error), `status=${rT.error?.status}`);
+    ok("لا دعوة تُستهلك", (await inviteUsed(inv.id)) === 0, `= ${await inviteUsed(inv.id)}`);
+    const after = await counts();
+    ok("لا مستخدم جزئي", after.authUsers === before.authUsers,
+      `${before.authUsers} → ${after.authUsers}`);
+    ok("لا profile", after.profiles === before.profiles);
+    ok("لا صفوف يتيمة", after.orphanAuth === 0 && after.orphanProfile === 0);
+    const msg = String(r.error?.message ?? "");
+    ok("لا تسريب في رسالة الرفض",
+      !/insert|constraint|pg_|handle_new_user|SQLSTATE/i.test(msg), msg.slice(0, 40));
+  }
 } catch (err) {
   bad++;
   console.log(`\n  ❌ استثناء: ${err instanceof Error ? err.message : String(err)}`);
@@ -422,10 +506,22 @@ try {
   console.log(`  ${leftQa === 0 ? "✅" : "❌"} لا دعوات QA متبقية (فرق=${leftQa})`);
   if (leftQa !== 0) bad++;
 
+  // استعادة حرفية — الأوضاع الثلاثة بدّلت المفتاحين
+  for (const [k, v] of Object.entries(SETTINGS0)) {
+    await db.from("platform_settings").update({ value: v }).eq("key", k);
+  }
+  // استعادة حرفية — قسم الأوضاع بدّل المفتاحين
+  for (const [k, v] of Object.entries(SETTINGS0)) {
+    await db.from("platform_settings").update({ value: v }).eq("key", k);
+  }
   const { data: ps1 } = await db.from("platform_settings").select("key,value")
     .in("key", ["require_invite", "allow_registration"]);
   const S1 = Object.fromEntries((ps1 ?? []).map((r) => [r.key, r.value]));
-  const settingsSame = JSON.stringify(S1) === JSON.stringify(SETTINGS0);
+  // مقارنة مفتاحًا بمفتاح: JSON.stringify حسّاس لترتيب المفاتيح، وترتيب صفوف
+  // القاعدة يتغيّر بعد التحديث — فكانت المقارنة تُعلن اختلافًا والقيَم متطابقة.
+  const settingsSame =
+    Object.keys(SETTINGS0).length === Object.keys(S1).length &&
+    Object.entries(SETTINGS0).every(([k, v]) => JSON.stringify(S1[k]) === JSON.stringify(v));
   console.log(`  ${settingsSame ? "✅" : "❌"} الإعدادات كما كانت — ${JSON.stringify(S1)}`);
   if (!settingsSame) bad++;
 
