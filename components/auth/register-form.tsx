@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { createClient } from "@/lib/supabase/client";
 import { useI18n } from "@/lib/i18n";
 import { AuthButton, AuthError, AuthInput, AuthNotice } from "@/components/auth/fields";
+import { GoogleButton } from "@/components/auth/google-button";
 import {
   classifySignupError,
   SIGNUP_ERROR_MESSAGE,
@@ -190,6 +191,20 @@ export function RegisterForm({
       <AuthButton disabled={loading || (requireInvite && inviteOk !== true) || !agree}>
         {loading ? t("registering") : t("register")}
       </AuthButton>
+
+      {/*
+        Google يُنشئ حسابًا بلا كود دعوة **بشروط** يفرضها ترحيل 0022 في القاعدة:
+        المزوّد google من بيانات التطبيق، وبريد مُتحقَّق، وتسجيل عام مفتوح. أمّا
+        البريد وكلمة المرور فيبقيان على نظام الدعوة كما هو. والموافقة تُطلب بعد
+        أول دخول في /accept-terms — لا تُتخطّى، بل تُؤجَّل إلى موضعها الصحيح.
+      */}
+      <GoogleButton />
+      <p className="text-[11.5px] text-ink-faint text-center leading-relaxed">
+        {requireInvite
+          ? "التسجيل بالبريد يحتاج كود دعوة. والدخول عبر Google متاح حسب إعدادات المنصّة، ويُطلب قبول الشروط بعده."
+          : "يُطلب قبول الشروط بعد الدخول عبر Google."}
+      </p>
+
       <div className="pt-1 text-center text-[13px] text-ink-dim">
         {t("haveAccount")}{" "}
         <Link href="/login" className="text-primary-glow hover:brightness-125">{t("login")}</Link>

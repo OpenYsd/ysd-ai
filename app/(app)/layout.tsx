@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { AppShell } from "@/components/shell/app-shell";
+import { hasAcceptedCurrentTerms } from "@/lib/auth/consent";
 
 export default async function AppLayout({
   children,
@@ -15,6 +16,13 @@ export default async function AppLayout({
   const ctx = await getRequestContext(await headers(), supabase);
   if (!ctx) redirect("/login");
   const userId = ctx.userId;
+
+  /**
+   * بوابة الموافقة (v0.8.0). مستخدم Google يُنشأ حسابه بلا صفوف موافقة عمدًا
+   * (المُحفّز يؤجّلها)، فيُحجز هنا قبل أي صفحة تطبيق حتى يقبل الشروط. مسار
+   * البريد وكلمة المرور يقبلها قبل الإنشاء فيمرّ بلا أثر.
+   */
+  if (!(await hasAcceptedCurrentTerms(supabase, userId))) redirect("/accept-terms");
 
   const [{ data: profile }, { data: sub }, { data: conversations }] =
     await Promise.all([

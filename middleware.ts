@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { relativePath, relativeRedirect } from "@/lib/http/redirect";
 import { INTERNAL_HEADERS, TIMING_HEADER, stripInternalHeaders } from "@/lib/auth/request-context";
 import { getCachedSettings } from "@/lib/settings";
 
@@ -101,9 +102,10 @@ export async function middleware(request: NextRequest) {
     const expired = hasAuthCookie(request);
     if (isApi) return finalize(expired ? json401Expired() : undefined);
     if (!isPublic && path !== "/") {
-      const url = new URL("/login", request.url);
-      if (expired) url.searchParams.set("reason", "session_expired");
-      return finalize(NextResponse.redirect(url));
+      // مسار نسبي: عنوان الطلب خلف الوكيل قد يكون عنوان الربط الداخلي
+      return finalize(
+        relativeRedirect(expired ? relativePath("/login", { reason: "session_expired" }) : "/login"),
+      );
     }
     return finalize();
   }
@@ -121,7 +123,7 @@ export async function middleware(request: NextRequest) {
   if (!profile) {
     if (isApi) return finalize();
     if (!isPublic && path !== "/") {
-      return finalize(NextResponse.redirect(new URL("/login", request.url)));
+      return finalize(relativeRedirect("/login"));
     }
     return finalize();
   }
@@ -138,7 +140,7 @@ export async function middleware(request: NextRequest) {
   // محظور: يُمنع من كل الصفحات والـAPIs الخاصة
   if (status === "banned") {
     if (isApi) return finalize(json403());
-    if (!isPublic) return finalize(NextResponse.redirect(new URL("/suspended", request.url)));
+    if (!isPublic) return finalize(relativeRedirect("/suspended"));
     return finalize();
   }
 
@@ -150,14 +152,14 @@ export async function middleware(request: NextRequest) {
     mark("settings", Date.now() - tSettings);
     if (settings.maintenance_mode === true) {
       return finalize(
-        isApi ? json503() : NextResponse.redirect(new URL("/maintenance", request.url)),
+        isApi ? json503() : relativeRedirect("/maintenance"),
       );
     }
   }
 
   // لوحة الإدارة — حتى بكتابة الرابط يدويًا
   if (path.startsWith("/admin") && !isStaff) {
-    return finalize(NextResponse.redirect(new URL("/chat", request.url)));
+    return finalize(relativeRedirect("/chat"));
   }
 
   return finalize();
