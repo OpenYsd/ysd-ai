@@ -1,17 +1,24 @@
 /**
- * عقد تسجيل Google بلا كود دعوة (v0.8.0) — ترحيل 0022.
+ * عقد تسجيل Google بلا كود دعوة (v0.8.0) — **ترحيل 0023** (يستبدل شرط 0022).
  *
  * الاختبارات هنا **بنيوية على نصّ الترحيل** إلى جانب محاكاة منطق البوابة.
  * السبب: الشرط الأمني الحاسم هو من **أي حقل** يُقرأ اسم المزوّد، وذلك لا
  * يظهر في أي اختبار سلوكي — دالة تقرأ الحقل الخطأ تتصرّف تصرّفًا سليمًا
  * تمامًا في كل حالة اختبار، ثم تنهار أمام مهاجم يرسل الحقل بنفسه.
+ *
+ * وحدُّ المحاكاة تبيّن بثمن: 0022 اشترط `email_confirmed_at is not null`،
+ * والمحاكاة كانت **تُملي** تلك القيمة فتمرّ. لكن العمود null فعليًا داخل
+ * مُحفِّز AFTER INSERT، فلم يعمل تسجيل Google ولا مرة. لذلك يفحص هذا الملف
+ * الآن **غياب** ذلك الشرط من النصّ صراحةً: ما لا تراه المحاكاة يجب أن يمسكه
+ * فحصٌ بنيوي.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+/** 0023 هو التعريف السارية للدالة؛ 0022 مطبَّق ولا يُعدَّل */
 const MIGRATION = fs.readFileSync(
-  path.resolve("supabase/migrations/0022_google_signup_without_invite.sql"),
+  path.resolve("supabase/migrations/0023_fix_google_oauth_signup_timing.sql"),
   "utf8",
 );
 /** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
@@ -20,7 +27,7 @@ const sqlCode = MIGRATION.split("\n")
   .join("\n");
 
 /**
- * محاكاة قرار البوابة كما في 0022 — **بترتيب الفحوص نفسه**.
+ * محاكاة قرار البوابة كما في 0023 — **بترتيب الفحوص نفسه**.
  *
  * الترتيب جزء من العقد: `registration_closed` قبل أي استهلاك، ثم الاستهلاك
  * المشروط، ثم بوابة الدعوة. محاكاةٌ ترتّبها غير ذلك تمرّ على خلل ترتيبي حقيقي
@@ -32,7 +39,13 @@ const sqlCode = MIGRATION.split("\n")
 function gate(input: {
   appMetaProvider?: string | null;
   userMetaProvider?: string | null;
+  /**
+   * يبقى في الواجهة عمدًا رغم أن 0023 لا يقرؤه: اختبارٌ صريح يثبت أن قيمته —
+   * بما فيها null، وهي القيمة الفعلية داخل AFTER INSERT — لا تغيّر النتيجة.
+   */
   emailConfirmedAt?: string | null;
+  /** البريد نفسه؛ موجود منذ الإدراج بخلاف عمود تأكيده */
+  email?: string | null;
   allowRegistration?: boolean | null;
   requireInvite?: boolean | null;
   /** تذكرة صالحة مرسَلة مع الطلب */
@@ -47,10 +60,10 @@ function gate(input: {
   invitesConsumed: number;
 } {
   const provider = input.appMetaProvider ?? null; // ← بيانات التطبيق وحدها
+  const email = input.email === undefined ? "user@example.com" : input.email;
+  // 0023: المزوّد + وجود بريد + التسجيل مفتوح. لا ذكر لـemail_confirmed_at.
   const googleSignup =
-    provider === "google" &&
-    input.emailConfirmedAt != null &&
-    (input.allowRegistration ?? false) === true;
+    provider === "google" && email != null && (input.allowRegistration ?? false) === true;
 
   const requireInvite = input.requireInvite ?? true;
   const allowRegistration = input.allowRegistration ?? false;
@@ -91,7 +104,7 @@ function gate(input: {
   };
 }
 
-describe("★ 0022 — الحقل الذي يُقرأ منه المزوّد", () => {
+describe("★ 0023 — الحقل الذي يُقرأ منه المزوّد", () => {
   /**
    * محور الأمان كله. raw_user_meta_data يكتبه العميل: لو قُرئ منه، لأمكن أي
    * مستخدم أن يرسل {"provider":"google"} في تسجيل عادي فيتخطّى الدعوة.
@@ -105,14 +118,22 @@ describe("★ 0022 — الحقل الذي يُقرأ منه المزوّد", ()
     expect(sqlCode).not.toMatch(/v_provider\s*:=\s*[^;]*raw_user_meta_data/);
   });
 
-  it("★ يعتمد email_confirmed_at لا حقل email_verified في بيانات المستخدم", () => {
-    expect(sqlCode).toMatch(/new\.email_confirmed_at is not null/);
+  /**
+   * ★ جوهر 0023. العمود null داخل AFTER INSERT — يكتبه GoTrue بعد الإدراج —
+   * فاشتراطه في 0022 جعل كل تسجيل Google ينتهي بـinvite_required_or_invalid.
+   * أي عودة له تُعطّل الميزة كاملةً من جديد وبصمت.
+   */
+  it("★ لا يعتمد email_confirmed_at إطلاقًا — العمود null في هذه المرحلة", () => {
+    expect(sqlCode).not.toMatch(/email_confirmed_at/);
+  });
+
+  it("★ ولا يقرأ email_verified من بيانات المستخدم بديلًا عنه", () => {
     expect(sqlCode).not.toMatch(/raw_user_meta_data->>'email_verified'/);
   });
 
-  it("★ الشروط الثلاثة مجتمعة في شرط واحد", () => {
+  it("★ الشروط الثلاثة مجتمعة: المزوّد + بريد موجود + تسجيل مفتوح", () => {
     expect(sqlCode).toMatch(
-      /v_provider\s*=\s*'google'[\s\S]{0,200}email_confirmed_at is not null[\s\S]{0,200}v_allow_registration/,
+      /v_google_signup\s*:=\s*v_provider\s*=\s*'google'[\s\S]{0,200}new\.email is not null[\s\S]{0,200}coalesce\(v_allow_registration,\s*false\)/,
     );
   });
 
@@ -173,14 +194,18 @@ describe("★ ترتيب الفحوص — جزء من العقد", () => {
 });
 
 describe("★ تجاوز الدعوة — مسموح لـGoogle وحده وبشروطه", () => {
+  /**
+   * `emailConfirmedAt: null` **هو الواقع** داخل AFTER INSERT، لا حالة حدّية:
+   * GoTrue يكتب العمود بعد الإدراج. فتُبنى كل حالات Google عليه.
+   */
   const GOOGLE_OK = {
     appMetaProvider: "google",
-    emailConfirmedAt: "2026-07-31T00:00:00Z",
+    emailConfirmedAt: null,
     allowRegistration: true,
     requireInvite: true,
   };
 
-  it("★ Google + بريد مُتحقَّق + تسجيل مفتوح ⇒ يُنشأ بلا دعوة", () => {
+  it("★ Google + تسجيل مفتوح ⇒ يُنشأ بلا دعوة رغم email_confirmed_at=null", () => {
     expect(gate(GOOGLE_OK).outcome).toBe("created");
   });
 
@@ -188,8 +213,15 @@ describe("★ تجاوز الدعوة — مسموح لـGoogle وحده وبش�
     expect(gate(GOOGLE_OK).consentRows).toBe(0);
   });
 
-  it("★ بريد غير مُتحقَّق ⇒ لا تجاوز", () => {
-    expect(gate({ ...GOOGLE_OK, emailConfirmedAt: null }).outcome).toBe("invite_required");
+  /** العطل المُثبَت: هذه الحالة بالذات كانت تُرفض في 0022 فتعطّلت الميزة */
+  it("★ قيمة email_confirmed_at لا تغيّر النتيجة إطلاقًا", () => {
+    for (const v of [null, "2026-07-31T00:00:00Z", undefined]) {
+      expect(gate({ ...GOOGLE_OK, emailConfirmedAt: v }).outcome, `القيمة ${v}`).toBe("created");
+    }
+  });
+
+  it("★ بلا بريد ⇒ لا تجاوز", () => {
+    expect(gate({ ...GOOGLE_OK, email: null }).outcome).toBe("invite_required");
   });
 
   it("★ التسجيل العام مغلق ⇒ لا تجاوز حتى لـGoogle", () => {
@@ -206,11 +238,27 @@ describe("★ تجاوز الدعوة — مسموح لـGoogle وحده وبش�
       gate({
         appMetaProvider: null,
         userMetaProvider: "google",
-        emailConfirmedAt: "2026-07-31T00:00:00Z",
+        emailConfirmedAt: null,
         allowRegistration: true,
         requireInvite: true,
       }).outcome,
     ).toBe("invite_required");
+  });
+
+  /** ولا ينفع الادّعاء ولو رافقه بريد مؤكَّد ووضع مفتوح */
+  it("★ الادّعاء لا ينفع مهما رافقته قيم أخرى", () => {
+    for (const confirmed of [null, "2026-07-31T00:00:00Z"]) {
+      expect(
+        gate({
+          appMetaProvider: null,
+          userMetaProvider: "google",
+          emailConfirmedAt: confirmed,
+          allowRegistration: true,
+          requireInvite: true,
+          termsAccepted: true,
+        }).outcome,
+      ).toBe("invite_required");
+    }
   });
 
   it("★ لا مزوّد آخر يتجاوز تلقائيًا", () => {
@@ -220,6 +268,18 @@ describe("★ تجاوز الدعوة — مسموح لـGoogle وحده وبش�
         `المزوّد ${p} كان يجب أن يخضع للدعوة`,
       ).toBe("invite_required");
     }
+  });
+
+  /** مسار البريد صريحًا: provider=email لا يتجاوز ولو كان التسجيل مفتوحًا */
+  it("★ مزوّد email بلا دعوة ⇒ مرفوض", () => {
+    expect(
+      gate({
+        appMetaProvider: "email",
+        allowRegistration: true,
+        requireInvite: true,
+        termsAccepted: true,
+      }).outcome,
+    ).toBe("invite_required");
   });
 });
 
@@ -277,7 +337,7 @@ describe("★ العدّادات — لا يُستهلك إلا ما لزم", ()
   it("★ تجاوز Google لا يستهلك دعوة", () => {
     const r = gate({
       appMetaProvider: "google",
-      emailConfirmedAt: "2026-07-31T00:00:00Z",
+      emailConfirmedAt: null, // الواقع داخل AFTER INSERT
       allowRegistration: true,
       requireInvite: true,
       ticketAvailable: true,
