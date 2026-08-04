@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { rateLimit } from "@/lib/rate-limit";
 import {
   AUTHORIZATION_TTL_SECONDS,
@@ -26,8 +26,16 @@ const schema = z.object({
  * والاستهلاك يقع في `handle_new_user` عند عودة المستخدم بحساب Google مطابق.
  * فمن يبدأ التدفّق ثم ينصرف لا يحرق دعوة أحد.
  *
- * **ولا يُنشئ التصريح من العميل**: الدالة في القاعدة `SECURITY DEFINER`،
- * والجدول عليه RLS بلا سياسات — فلا يستطيع anon كتابة صفٍّ فيه ولا قراءته.
+ * **ولا يُنشئ التصريح من العميل**: الدالة في القاعدة `SECURITY DEFINER`
+ * ممنوحة لـ`service_role` **وحده**، والجدول عليه RLS بلا سياسات. فاستدعاؤها
+ * بمفتاح anon مباشرةً عبر REST يُردّ بـ`permission denied` من القاعدة نفسها.
+ *
+ * ولهذا يستعمل هذا المسار **عميل الخدمة** لا العميل المرتبط بالطلب. والفرق
+ * ليس تفصيلًا: لولاه لكان كل حدٍّ للمعدّل هنا قابلًا للتجاوز بحلقةٍ تنادي
+ * القاعدة رأسًا — والحدّ الذي يعيش في التطبيق وحده ليس حدًّا.
+ *
+ * ومفتاح الخدمة لا يبلغ المتصفح: `lib/supabase/admin.ts` يبدأ بـ
+ * `import "server-only"`، فاستيراده من أي مكوّن عميل **خطأ بناء** لا تحذير.
  *
  * ── ولا يفصح ──
  *
@@ -61,7 +69,16 @@ export async function POST(req: NextRequest) {
   if (!rateLimit(`gsa-email:${emailHash(email)}`, 5, 300_000)) return tooMany();
   if (!rateLimit(`gsa-code:${emailHash(code)}`, 15, 300_000)) return tooMany();
 
-  const supabase = await createClient();
+  /**
+   * غياب مفتاح الخدمة عطلٌ في الإعداد لا حالةٌ يُتعامل معها بهدوء: بدونه لا
+   * سبيل لإنشاء تصريح إطلاقًا. نردّ 503 بلا ذكر اسم متغيّر ولا سبب تقني.
+   */
+  const supabase = getAdminClient();
+  if (!supabase) {
+    console.error("[google-invite] service_client_unavailable");
+    return json({ error: "الخدمة غير متاحة حاليًا | Unavailable" }, 503);
+  }
+
   const { data, error } = await supabase.rpc("google_signup_authorize", {
     p_code: code,
     p_email: email,

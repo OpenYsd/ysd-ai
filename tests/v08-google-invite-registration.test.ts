@@ -95,9 +95,15 @@ class Db {
     const inv = this.liveInvite(sha256(code.trim()));
     if (!inv) return false;
 
-    // (٣) ألغِ تصاريح هذا البريد النشطة على هذه الدعوة
+    /**
+     * (٣) ألغِ تصاريح هذا البريد النشطة على **كل** الدعوات لا هذه وحدها.
+     *
+     * التقييد بالدعوة كان يترك البريد الواحد يحجز مقعدًا في دعوتين — وهو
+     * السباق الذي لا يمنعه قفل صفّ الدعوة أصلًا. والفهرس الفريد الجزئي في
+     * 0024 يجعل هذا ثابتًا في القاعدة لا عادةً في الشيفرة.
+     */
     for (const a of this.auths) {
-      if (a.inviteId === inv.id && a.emailHash === eh && !a.consumedAt && !a.revokedAt) {
+      if (a.emailHash === eh && !a.consumedAt && !a.revokedAt) {
         a.revokedAt = this.now;
       }
     }
@@ -107,6 +113,16 @@ class Db {
       (a) => a.inviteId === inv.id && !a.consumedAt && !a.revokedAt && a.expiresAt > this.now,
     ).length;
     if (inv.usedCount + reserved >= inv.maxUses) return false;
+
+    /**
+     * الفهرس الفريد الجزئي مُحاكًى صراحةً: تصريح نشط واحد لكل بريد **عبر كل
+     * الدعوات**. لو خرقه الإدراج لأُعيد `false` كما تفعل `unique_violation`
+     * في 0024 — ونؤكّده هنا كي لا تمرّ محاكاةٌ على خرقٍ تمنعه القاعدة.
+     */
+    const stillActive = this.auths.some(
+      (a) => a.emailHash === eh && !a.consumedAt && !a.revokedAt,
+    );
+    if (stillActive) return false;
 
     this.auths.push({
       id: `auth-${++this.seq}`,
@@ -118,6 +134,18 @@ class Db {
       revokedAt: null,
     });
     return true;
+  }
+
+  /** ثابت القاعدة: لا بريد له تصريحان نشطان — يُفحص بعد كل عملية */
+  assertOneActivePerEmail(): void {
+    const seen = new Set<string>();
+    for (const a of this.auths) {
+      if (a.consumedAt || a.revokedAt) continue;
+      if (seen.has(a.emailHash)) {
+        throw new Error(`خرق الفهرس الفريد: تصريحان نشطان لنفس البريد`);
+      }
+      seen.add(a.emailHash);
+    }
   }
 
   /**
@@ -335,7 +363,7 @@ describe("★ 0024 — بنية SQL", () => {
 
   it("★ استهلاك التصريح عبارة واحدة بـskip locked", () => {
     expect(sql).toMatch(
-      /update public\.google_signup_authorizations\s*set consumed_at = now\(\)\s*where id = \(\s*select id[\s\S]*?for update skip locked\s*\)\s*returning invite_id/,
+      /update public\.google_signup_authorizations\s*set consumed_at = pg_catalog\.now\(\)\s*where id = \(\s*select id[\s\S]*?for update skip locked\s*\)\s*returning invite_id/,
     );
   });
 
@@ -351,14 +379,25 @@ describe("★ 0024 — بنية SQL", () => {
     );
   });
 
-  it("★ التطبيع lower(btrim(...)) ثم sha256", () => {
-    expect(sql).toMatch(/encode\(digest\(lower\(btrim\(p_email\)\), 'sha256'\), 'hex'\)/);
+  /** الأسماء مؤهَّلة بالكامل — يفرضه `search_path = ''` (تفاصيله في اختبار التشديدات) */
+  it("★ التطبيع lower(btrim(...)) ثم sha256 بأسماء مؤهَّلة", () => {
+    expect(sql).toMatch(
+      /pg_catalog\.encode\(\s*extensions\.digest\(pg_catalog\.lower\(pg_catalog\.btrim\(p_email\)\), 'sha256'\),\s*'hex'\)/,
+    );
   });
 
-  it("★ الدوال محميّة والدالة العامة وحدها ممنوحة", () => {
+  it("★ الدوال محميّة والدالة ممنوحة لـservice_role وحده", () => {
     expect(sql).toMatch(
-      /grant execute on function public\.google_signup_authorize\(text, text, int\) to anon, authenticated/,
+      /grant execute on function public\.google_signup_authorize\(text, text, int\) to service_role/,
     );
+    // ولا يصلها أي دور عميل
+    for (const role of ["anon", "authenticated"]) {
+      expect(sql, role).toMatch(
+        new RegExp(
+          `revoke all on function public\\.google_signup_authorize\\(text, text, int\\) from ${role}`,
+        ),
+      );
+    }
     for (const role of ["public", "anon", "authenticated"]) {
       expect(sql).toMatch(
         new RegExp(`revoke all on function public\\.handle_new_user\\(\\) from ${role}`),
@@ -379,9 +418,11 @@ describe("★ تطابق الهاش بين TypeScript وSQL", () => {
   });
 
   it("★ SQL يستعمل الترتيب نفسه (lower ثم btrim داخلًا)", () => {
-    // لو صار SQL `btrim(lower(...))` لبقي النتيجة نفسها؛ الممنوع إسقاط أحدهما
-    expect(sql).toMatch(/lower\(btrim\(/);
-    expect(sql).toMatch(/digest\(lower\(btrim\(p_email\)\), 'sha256'\)/);
+    // لو صار SQL `btrim(lower(...))` لبقيت النتيجة نفسها؛ الممنوع إسقاط أحدهما
+    expect(sql).toMatch(/pg_catalog\.lower\(pg_catalog\.btrim\(/);
+    expect(sql).toMatch(
+      /extensions\.digest\(pg_catalog\.lower\(pg_catalog\.btrim\(p_email\)\), 'sha256'\)/,
+    );
   });
 });
 
@@ -393,9 +434,9 @@ describe("★ المسار السعيد", () => {
 
     const r = handleNewUser(db, GOOGLE("tester@gmail.com"));
     expect(r.outcome).toBe("created");
-    expect(db.invites[0].usedCount).toBe(1);
+    expect(db.invites[0]!.usedCount).toBe(1);
     expect(db.uses).toHaveLength(1);
-    expect(db.auths[0].consumedAt).not.toBeNull();
+    expect(db.auths[0]!.consumedAt).not.toBeNull();
   });
 
   it("★ البريد يُطبَّع — اختلاف الحالة والمسافات لا يمنع", () => {
@@ -420,7 +461,7 @@ describe("★ المسار السعيد", () => {
     db.addInvite({ code: "INVITE-1234", maxUses: 3 });
     db.authorize("INVITE-1234", "a@gmail.com");
     db.authorize("INVITE-1234", "b@gmail.com");
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 });
 
@@ -434,7 +475,7 @@ describe("★ الرفض — ولا استهلاك", () => {
     const r = handleNewUser(db, GOOGLE("someone.else@gmail.com"));
     expect(r.outcome).toBe("invite_required_or_invalid");
     expect(db.snapshot()).toBe(snap); // لا عدّاد تغيّر ولا تصريح استُهلك
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 
   it("★ تصريح منتهٍ ⇒ رفض", () => {
@@ -445,7 +486,7 @@ describe("★ الرفض — ولا استهلاك", () => {
 
     const r = handleNewUser(db, GOOGLE("t@gmail.com"));
     expect(r.outcome).toBe("invite_required_or_invalid");
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 
   it("★ إعادة استخدام التصريح ⇒ الثاني مرفوض", () => {
@@ -457,7 +498,7 @@ describe("★ الرفض — ولا استهلاك", () => {
     expect(handleNewUser(db, GOOGLE("t@gmail.com", "u2")).outcome).toBe(
       "invite_required_or_invalid",
     );
-    expect(db.invites[0].usedCount).toBe(1); // مرة واحدة لا مرتين
+    expect(db.invites[0]!.usedCount).toBe(1); // مرة واحدة لا مرتين
     expect(db.profiles).toEqual(["u1"]);
   });
 
@@ -466,19 +507,19 @@ describe("★ الرفض — ولا استهلاك", () => {
     db.addInvite({ code: "INVITE-1234" });
     const r = handleNewUser(db, GOOGLE("stranger@gmail.com"));
     expect(r.outcome).toBe("invite_required_or_invalid");
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 
   it("★ تصريح ملغى (بعد إعادة التحقق) لا يصلح", () => {
     const db = new Db();
     db.addInvite({ code: "INVITE-1234", maxUses: 2 });
     db.authorize("INVITE-1234", "t@gmail.com");
-    const first = db.auths[0].id;
+    const first = db.auths[0]!.id;
     db.authorize("INVITE-1234", "t@gmail.com"); // إعادة المحاولة تُلغي الأول
 
     expect(db.auths.find((a) => a.id === first)?.revokedAt).not.toBeNull();
     expect(handleNewUser(db, GOOGLE("t@gmail.com")).outcome).toBe("created");
-    expect(db.invites[0].usedCount).toBe(1); // مقعد واحد لا اثنان
+    expect(db.invites[0]!.usedCount).toBe(1); // مقعد واحد لا اثنان
   });
 
   it("★ الدعوة نفدت بين الحجز والعودة ⇒ رفض بلا حرق التصريح", () => {
@@ -490,7 +531,7 @@ describe("★ الرفض — ولا استهلاك", () => {
     const r = handleNewUser(db, GOOGLE("t@gmail.com"));
     expect(r.outcome).toBe("invite_required_or_invalid");
     expect(inv.usedCount).toBe(1); // لم تُزَد
-    expect(db.auths[0].consumedAt).toBeNull(); // التراجع أعاد التصريح
+    expect(db.auths[0]!.consumedAt).toBeNull(); // التراجع أعاد التصريح
     expect(db.profiles).toHaveLength(0);
   });
 });
@@ -510,7 +551,7 @@ describe("★ التزامن وحدود المقاعد", () => {
 
     const created = [a, b].filter((r) => r.outcome === "created");
     expect(created).toHaveLength(1);
-    expect(db.invites[0].usedCount).toBe(1);
+    expect(db.invites[0]!.usedCount).toBe(1);
     expect(db.uses).toHaveLength(1);
   });
 
@@ -527,8 +568,8 @@ describe("★ التزامن وحدود المقاعد", () => {
     expect(handleNewUser(db, GOOGLE("c@gmail.com", "u3")).outcome).toBe(
       "invite_required_or_invalid",
     );
-    expect(db.invites[0].usedCount).toBe(2);
-    expect(db.invites[0].usedCount).toBeLessThanOrEqual(db.invites[0].maxUses);
+    expect(db.invites[0]!.usedCount).toBe(2);
+    expect(db.invites[0]!.usedCount).toBeLessThanOrEqual(db.invites[0]!.maxUses);
   });
 
   it("★ الحجز يحسب المستهلَك أيضًا لا المحجوز وحده", () => {
@@ -536,6 +577,70 @@ describe("★ التزامن وحدود المقاعد", () => {
     db.addInvite({ code: "INVITE-1234", maxUses: 2, usedCount: 1 });
     expect(db.authorize("INVITE-1234", "a@gmail.com")).toBe(true);
     expect(db.authorize("INVITE-1234", "b@gmail.com")).toBe(false); // 1 مستهلَك + 1 محجوز
+  });
+
+  /**
+   * السباق الذي لا يمنعه قفل صفّ الدعوة: بريد واحد على **دعوتين مختلفتين**.
+   * كلٌّ يقفل صفًّا آخر فيتوازيان.
+   *
+   * ما يُثبَت هنا هو **منطق** الحلّ: الإلغاء يشمل كل الدعوات، والفهرس الفريد
+   * يرفض التصريح النشط الثاني. أمّا أن القفل الاستشاري يُسلسِل معاملتين
+   * متزامنتين فعلًا فلا يُثبته JavaScript أحادي الخيط — ذلك في
+   * scripts/v08-pg-concurrency.mjs باتصالَي PostgreSQL حقيقيين.
+   */
+  it("★ بريد واحد على دعوتين ⇒ تصريح نشط واحد ومقعد واحد", () => {
+    const db = new Db();
+    const a = db.addInvite({ code: "CODE-ALPHA-1", maxUses: 1 });
+    const b = db.addInvite({ code: "CODE-BETA-22", maxUses: 1 });
+
+    expect(db.authorize("CODE-ALPHA-1", "same@gmail.com")).toBe(true);
+    expect(db.authorize("CODE-BETA-22", "same@gmail.com")).toBe(true);
+    db.assertOneActivePerEmail();
+
+    const active = db.auths.filter((x) => !x.consumedAt && !x.revokedAt);
+    expect(active).toHaveLength(1);
+    expect(active[0]!.inviteId).toBe(b.id); // الأحدث يفوز والأول أُلغي
+    expect(a.usedCount).toBe(0);
+    expect(b.usedCount).toBe(0); // الحجز لا يستهلك
+  });
+
+  it("★ مقعد الدعوة الأولى يتحرّر عند التحوّل إلى الثانية", () => {
+    const db = new Db();
+    db.addInvite({ code: "CODE-ALPHA-1", maxUses: 1 });
+    db.addInvite({ code: "CODE-BETA-22", maxUses: 1 });
+
+    db.authorize("CODE-ALPHA-1", "same@gmail.com");
+    db.authorize("CODE-BETA-22", "same@gmail.com");
+
+    // مقعد ألفا تحرّر، فيمكن لشخص آخر حجزه
+    expect(db.authorize("CODE-ALPHA-1", "another@gmail.com")).toBe(true);
+    db.assertOneActivePerEmail();
+    expect(db.auths.filter((x) => !x.consumedAt && !x.revokedAt)).toHaveLength(2);
+  });
+
+  it("★ التسجيل يستهلك دعوة واحدة فقط بعد التحوّل", () => {
+    const db = new Db();
+    const a = db.addInvite({ code: "CODE-ALPHA-1", maxUses: 1 });
+    const b = db.addInvite({ code: "CODE-BETA-22", maxUses: 1 });
+    db.authorize("CODE-ALPHA-1", "same@gmail.com");
+    db.authorize("CODE-BETA-22", "same@gmail.com");
+
+    expect(handleNewUser(db, GOOGLE("same@gmail.com")).outcome).toBe("created");
+    expect(a.usedCount + b.usedCount).toBe(1);
+    expect(db.uses).toHaveLength(1);
+  });
+
+  it("★ الثابت محفوظ عبر تسلسل عمليات مختلط", () => {
+    const db = new Db();
+    db.addInvite({ code: "CODE-ALPHA-1", maxUses: 3 });
+    db.addInvite({ code: "CODE-BETA-22", maxUses: 3 });
+    const emails = ["a@gmail.com", "b@gmail.com", "a@gmail.com", "c@gmail.com", "b@gmail.com"];
+    const codes = ["CODE-ALPHA-1", "CODE-BETA-22"];
+    for (let i = 0; i < emails.length; i++) {
+      db.authorize(codes[i % 2]!, emails[i]!);
+      db.assertOneActivePerEmail(); // بعد كل خطوة لا في النهاية فقط
+    }
+    expect(db.auths.filter((x) => !x.consumedAt && !x.revokedAt)).toHaveLength(3);
   });
 
   it("★ إعادة المحاولة لا تستنزف المقاعد", () => {
@@ -572,8 +677,8 @@ describe("★ الحدود الأمنية", () => {
       termsAccepted: true,
     });
     expect(r.outcome).toBe("invite_required_or_invalid");
-    expect(db.auths[0].consumedAt).toBeNull();
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.auths[0]!.consumedAt).toBeNull();
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 
   it("★ لا مزوّد آخر يستفيد من التصريح", () => {
@@ -583,7 +688,7 @@ describe("★ الحدود الأمنية", () => {
       db.authorize("INVITE-1234", "t@gmail.com");
       const r = handleNewUser(db, { id: "u1", email: "t@gmail.com", appMetaProvider: p });
       expect(r.outcome, `المزوّد ${p}`).not.toBe("created");
-      expect(db.auths[0].consumedAt, `المزوّد ${p}`).toBeNull();
+      expect(db.auths[0]!.consumedAt, `المزوّد ${p}`).toBeNull();
     }
   });
 
@@ -671,7 +776,7 @@ describe("★ ما لم يتغيّر", () => {
     db.authorize("INVITE-1234", "t@gmail.com");
     const r = handleNewUser(db, GOOGLE("t@gmail.com"), { allowRegistration: true });
     expect(r.outcome).toBe("created");
-    expect(db.auths[0].consumedAt).toBeNull();
-    expect(db.invites[0].usedCount).toBe(0);
+    expect(db.auths[0]!.consumedAt).toBeNull();
+    expect(db.invites[0]!.usedCount).toBe(0);
   });
 });
