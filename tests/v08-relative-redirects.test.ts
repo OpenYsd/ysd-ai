@@ -17,9 +17,13 @@ import { absoluteRedirect, relativePath, relativeRedirect } from "../lib/http/re
 import { isValidAppOrigin } from "../lib/http/origin";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
-/** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
+/**
+ * يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله.
+ * التطبيع أولًا: مع CRLF لا يتحقّق `$` فيصير التجريد بلا أثر بصمت.
+ */
 const codeOnly = (s: string) =>
   s
+    .replace(/\r\n?/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .split("\n")
     .map((l) => l.replace(/(^|\s)\/\/.*$/, ""))
@@ -238,17 +242,22 @@ describe("★ زر Google يحترم نظام الدعوة", () => {
     expect(BTN).not.toMatch(/options:\s*\{[^}]*data:/);
   });
 
-  it("★ الزر موجود في صفحتَي الدخول والتسجيل", () => {
+  /** صفحة الدخول وحدها — تفصيل الحُجّة في tests/v08-google-login-only */
+  it("★ الزر في صفحة الدخول وحدها لا في التسجيل", () => {
     expect(read("app/(auth)/login/page.tsx")).toContain("<GoogleButton");
-    expect(read("components/auth/register-form.tsx")).toContain("<GoogleButton");
+    expect(read("components/auth/register-form.tsx")).not.toContain("<GoogleButton");
   });
 
+  /** الرموز انتقلت إلى وحدة مشتركة؛ التغطية التفصيلية في v08-google-login-only */
   it("★ نقطة الرجوع تصنّف رفض البوابة برمز مفهوم لا برسالة قاعدة", () => {
-    const cb = read("app/auth/callback/route.ts");
+    const errors = read("lib/auth/oauth-error.ts");
     for (const code of ["oauth_invite_required", "oauth_consent_required", "oauth_registration_closed"]) {
-      expect(cb).toContain(code);
+      expect(errors).toContain(code);
     }
-    // لا يخرج نصّ الخطأ الخام إلى المتصفح
-    expect(codeOnly(cb)).not.toMatch(/reason:\s*raw|error\.message\s*\)/);
+    const cb = codeOnly(read("app/auth/callback/route.ts"));
+    expect(cb).toMatch(/classifyOAuthFailure\(/);
+    // لا يخرج نصّ الخطأ الخام إلى المتصفح: يُصنَّف ولا يُمرَّر
+    expect(cb).not.toMatch(/reason:\s*raw/);
+    expect(cb).not.toMatch(/relativePath\([^)]*error\.message/);
   });
 });

@@ -21,8 +21,17 @@ const MIGRATION = fs.readFileSync(
   path.resolve("supabase/migrations/0023_fix_google_oauth_signup_timing.sql"),
   "utf8",
 );
-/** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
-const sqlCode = MIGRATION.split("\n")
+/**
+ * يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله.
+ *
+ * **تطبيع نهايات الأسطر أولًا**: كان التجريد `split("\n")` ثم `/--.*$/`. ومع
+ * CRLF يبقى `\r` في آخر كل سطر، و`.` لا تلتهم `\r` فلا يتحقّق `$` — فيصير
+ * التجريد بلا أثر بصمت. النتيجة: فحوص `not.toMatch` تُقاس على نصٍّ يشمل
+ * التعليقات، فتنقلب من حارسٍ إلى ضجيج. (وقع فعلًا: مرّ الملف بـLF ثم سقط بعد
+ * أن كتبه git بـCRLF.)
+ */
+const sqlCode = MIGRATION.replace(/\r\n?/g, "\n")
+  .split("\n")
   .map((l) => l.replace(/--.*$/, ""))
   .join("\n");
 

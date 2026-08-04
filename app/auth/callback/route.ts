@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { relativePath, relativeRedirect } from "@/lib/http/redirect";
+import { classifyOAuthFailure } from "@/lib/auth/oauth-error";
 
 /**
  * نقطة رجوع المصادقة: روابط البريد (تأكيد الحساب / استعادة كلمة المرور)
@@ -18,15 +19,22 @@ export async function GET(req: NextRequest) {
   const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/chat";
 
   /**
-   * خطأ من المزوّد قبل أي تبادل (رفض المستخدم الإذن مثلًا). لا نعرض نصّه —
-   * قد يحمل تفاصيل مزوّد — بل رمزًا مغلقًا تترجمه صفحة الدخول.
+   * خطأ من المزوّد قبل أي تبادل — رفض المستخدم الإذن، أو رفضت بوابة
+   * `handle_new_user` إنشاءه. الحالة الثانية لا تفشل بالضرورة في التبادل:
+   * GoTrue قد يعيدنا هنا مباشرةً بـ`error` و`error_description`.
+   *
+   * فيُصنَّف الوصف — ولا يُعرَض ولا يُمرَّر — كي يفهم مستخدم Google غير
+   * المسجَّل سببه الحقيقي بدل «تعذّر الدخول». الوصف قد يحمل «Database error
+   * saving new user» أو اسم الدالة أو SQLSTATE؛ لا شيء من ذلك يبلغ المتصفح.
    */
   const providerError = searchParams.get("error");
   if (providerError) {
-    const denied = providerError === "access_denied";
-    return relativeRedirect(
-      relativePath("/login", { reason: denied ? "oauth_cancelled" : "oauth_failed" }),
-    );
+    const reason =
+      providerError === "access_denied"
+        ? "oauth_cancelled"
+        : classifyOAuthFailure(searchParams.get("error_description"));
+    console.error(`[auth] oauth_provider_error reason=${reason}`);
+    return relativeRedirect(relativePath("/login", { reason }));
   }
 
   if (!code) return relativeRedirect(relativePath("/login", { reason: "oauth_failed" }));
@@ -45,14 +53,7 @@ export async function GET(req: NextRequest) {
    * نصنّف من رسالة Supabase دون عرضها: الرسالة قد تحمل اسم الدالة أو رمز
    * SQLSTATE، ولا شيء من ذلك يخرج إلى المتصفح.
    */
-  const raw = String(error.message ?? "");
-  const reason = /invite/i.test(raw)
-    ? "oauth_invite_required"
-    : /consent/i.test(raw)
-      ? "oauth_consent_required"
-      : /registration_closed/i.test(raw)
-        ? "oauth_registration_closed"
-        : "oauth_failed";
+  const reason = classifyOAuthFailure(error.message);
   console.error(`[auth] oauth_callback_failed reason=${reason}`);
   return relativeRedirect(relativePath("/login", { reason }));
 }
