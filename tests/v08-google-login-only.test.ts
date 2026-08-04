@@ -94,11 +94,18 @@ describe("★ تصنيف invite_required_or_invalid", () => {
     expect(classifyOAuthFailure("")).toBe("oauth_failed");
   });
 
+  /**
+   * فحص بنيوي خفيف فقط: أن الوصف يُقرأ ويُصنَّف ولا يُبنى منه رابط. السلوك
+   * نفسه — نظافة الرابط والتصنيف بالإعداد — مغطّى تشغيليًا في
+   * tests/v08-oauth-cleanup-signout باستدعاء المعالج الحقيقي.
+   */
   it("★ نقطة الرجوع تصنّف error_description ولا تمرّره", () => {
     const code = codeOnly(CALLBACK);
-    expect(code).toMatch(/classifyOAuthFailure\(\s*searchParams\.get\("error_description"\)\s*\)/);
-    // لا يُوضع الوصف في معاملات التحويل ولا في جسم استجابة
-    expect(code).not.toMatch(/description:\s*/);
+    expect(code).toMatch(/searchParams\.get\("error_description"\)/);
+    expect(code).toMatch(/classifyOAuthCallbackError\(/);
+    // الرابط يُبنى من باني الرمز المغلق لا من نصّ وارد
+    expect(code).toMatch(/loginRedirectPath\(/);
+    expect(code).not.toMatch(/relativePath\([^)]*error_description/);
     expect(code).not.toMatch(/reason:\s*(raw|desc|error_description)/);
   });
 });

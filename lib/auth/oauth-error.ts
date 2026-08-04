@@ -38,6 +38,62 @@ export function classifyOAuthFailure(raw: string | null | undefined): OAuthReaso
   return "oauth_failed";
 }
 
+/**
+ * الحالة المرصودة حيًّا: GoTrue **يحجب** سبب المُحفِّز ويرسل وصفًا عامًّا
+ * (`error=server_error`, `error_code=unexpected_failure`,
+ * `error_description=Database error saving new user`). فلا يُعرف من النصّ وحده
+ * أهو رفضُ دعوة أم عطلٌ حقيقي في القاعدة.
+ *
+ * لا نطابق `error_code` شرطًا لازمًا: GoTrue يغيّره بين الإصدارات، والوصف هو
+ * الإشارة الثابتة المرصودة.
+ */
+export function isGenericDatabaseError(raw: string | null | undefined): boolean {
+  return /database error saving new user/i.test(String(raw ?? ""));
+}
+
+/**
+ * تصنيف خطأ المزوّد الراجع في شريط العنوان.
+ *
+ * `allowRegistration` هو ما يفكّ الالتباس في الحالة العامة: التسجيل مغلق يعني
+ * أن كل مستخدم Google جديد يُرفض بالضرورة، فالوصف العام في هذا السياق رفضُ
+ * دعوة لا عطل. أمّا والتسجيل مفتوح — أو تعذّرت قراءة الإعداد — فيبقى
+ * `oauth_failed`: رسالةٌ مطمئنة خاطئة تُخفي عطلًا حقيقيًا أسوأ من رسالة عامة.
+ *
+ * `null` تعني «تعذّرت القراءة» لا «false» — والفرق مقصود.
+ */
+export function classifyOAuthCallbackError(params: {
+  error: string | null | undefined;
+  errorCode?: string | null;
+  errorDescription: string | null | undefined;
+  allowRegistration: boolean | null;
+}): OAuthReason {
+  if (params.error === "access_denied") return "oauth_cancelled";
+
+  // نصّ صريح من المُحفِّز حين لا يحجبه GoTrue
+  const explicit = classifyOAuthFailure(params.errorDescription);
+  if (explicit !== "oauth_failed") return explicit;
+
+  if (isGenericDatabaseError(params.errorDescription) && params.allowRegistration === false) {
+    return "oauth_invite_required";
+  }
+  return "oauth_failed";
+}
+
+/**
+ * مسار العودة إلى صفحة الدخول — **`reason` وحده لا غير**.
+ *
+ * يُبنى من الصفر ولا يُنسخ فيه شيء من شريط عنوان الوارد: لو مُرِّر
+ * `error_description` كما هو لظهر «Database error saving new user» في شريط
+ * عنوان المستخدم، ولحُفظ في سجلّ المتصفح وفي أي مشاركة للرابط. والرمز يُصفّى
+ * على المجموعة المغلقة، فلا يصل شريطَ العنوان نصٌّ من مصدر خارجي إطلاقًا.
+ */
+export function loginRedirectPath(reason: string): string {
+  const safe = (OAUTH_REASONS as readonly string[]).includes(reason)
+    ? reason
+    : "oauth_failed";
+  return `/login?reason=${safe}`;
+}
+
 /** الرسائل المعروضة — عربية، بلا أي تفصيل تقني */
 export const AUTH_REASON_MESSAGE: Record<OAuthReason, string> = {
   session_expired: "انتهت جلستك. سجّل الدخول من جديد.",
