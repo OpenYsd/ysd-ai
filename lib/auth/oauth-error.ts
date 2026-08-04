@@ -16,6 +16,7 @@ export const OAUTH_REASONS = [
   "session_expired",
   "oauth_cancelled",
   "oauth_invite_required",
+  "oauth_email_mismatch",
   "oauth_consent_required",
   "oauth_registration_closed",
   "oauth_failed",
@@ -80,6 +81,25 @@ export function classifyOAuthCallbackError(params: {
 }
 
 /**
+ * يرقّي رفضَ الدعوة إلى «البريد لا يطابق» لمن كان في تدفّق الدعوة فعلًا.
+ *
+ * القاعدة لا تفرّق بين الحالتين: كلتاهما «لا تصريح صالح لهذا البريد». لكن
+ * الفرق كبير عند المستخدم — من أدخل كودًا وبريدًا ثم اختار حساب Google آخر
+ * يحتاج أن يُقال له ذلك بالضبط، لا أن يُطلب منه دعوةٌ يملكها.
+ *
+ * والعلامة كوكي خادمي قصير الأجل لا شريط عنوان: انظر
+ * `GOOGLE_SIGNUP_PENDING_COOKIE`. ولا تُرقّى إلا حالة الدعوة تحديدًا — فشلٌ
+ * تقني يبقى تقنيًا مهما كانت العلامة حاضرة.
+ */
+export function refineWithPendingInvite(
+  reason: OAuthReason,
+  hasPendingGoogleInvite: boolean,
+): OAuthReason {
+  if (!hasPendingGoogleInvite) return reason;
+  return reason === "oauth_invite_required" ? "oauth_email_mismatch" : reason;
+}
+
+/**
  * جزءٌ فارغ المعنى يُلحق بوجهة التحويل — **حاجزُ توريث**، لا زينة.
  *
  * RFC 7231 §7.1.2: إذا خلا `Location` من جزء (fragment) **وجب** على المتصفح
@@ -125,6 +145,12 @@ export const AUTH_REASON_MESSAGE: Record<OAuthReason, string> = {
    */
   oauth_invite_required:
     "هذا الحساب غير مسجل أو لا يملك دعوة صالحة. استخدم حسابًا مسجلًا أو اطلب دعوة.",
+  /**
+   * لمن أكمل التحقق من الدعوة ثم اختار حساب Google آخر. الفرق عن الرسالة
+   * أعلاه عملي لا تجميلي: هذا المستخدم يملك دعوة صالحة، ونصحُه بطلب دعوة
+   * جديدة يرسله في الاتجاه الخطأ تمامًا.
+   */
+  oauth_email_mismatch: "حساب Google المختار لا يطابق البريد المرتبط بالدعوة.",
   oauth_consent_required: "يلزم قبول الشروط قبل المتابعة. أكمل التسجيل من صفحة التسجيل.",
   oauth_registration_closed: "التسجيل مغلق حاليًا.",
   oauth_failed: "تعذّر إكمال الدخول عبر Google. حاول مرة أخرى.",

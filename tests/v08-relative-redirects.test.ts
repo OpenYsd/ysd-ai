@@ -100,7 +100,8 @@ describe("★ التحويلات نسبية — لا عنوان خادم في ر
   it("★ نقطة الرجوع تحوّل إلى /chat افتراضيًا بعد النجاح", () => {
     const code = codeOnly(read("app/auth/callback/route.ts"));
     expect(code).toMatch(/searchParams\.get\("next"\)\s*\?\?\s*"\/chat"/);
-    expect(code).toMatch(/relativeRedirect\(safeNext\)/);
+    // الوجهة نفسها؛ الترويسات الإضافية تمسح كوكي «تدفّق الدعوة جارٍ» لا غير
+    expect(code).toMatch(/relativeRedirect\(safeNext[,)]/);
   });
 });
 

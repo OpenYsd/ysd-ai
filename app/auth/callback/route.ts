@@ -5,7 +5,9 @@ import {
   classifyOAuthCallbackError,
   classifyOAuthFailure,
   loginRedirectPath,
+  refineWithPendingInvite,
 } from "@/lib/auth/oauth-error";
+import { GOOGLE_SIGNUP_PENDING_COOKIE, pendingCookie } from "@/lib/auth/google-invite";
 
 /**
  * نقطة رجوع المصادقة: روابط البريد (تأكيد الحساب / استعادة كلمة المرور)
@@ -32,23 +34,38 @@ export async function GET(req: NextRequest) {
    * GoTrue قد يعيدنا هنا مباشرةً — وغالبًا يحجب سببها خلف وصف عام، فنستعين
    * بإعداد `allow_registration` لفكّ الالتباس.
    */
+  /**
+   * علامة «كان في تدفّق الدعوة» — كوكي خادمي قصير الأجل، لا بريد فيه ولا كود.
+   * تُقرأ مرة واحدة وتُمسح مع كل عودة، نجحت أو فشلت، فلا تبقى فتُفسِّر فشلًا
+   * لاحقًا بعد أسبوع على أنه اختلاف بريد.
+   */
+  const pendingInvite = req.cookies.get(GOOGLE_SIGNUP_PENDING_COOKIE)?.value === "1";
+  const clearPending = pendingInvite
+    ? { "Set-Cookie": pendingCookie("", 0) }
+    : undefined;
+
   const providerError = searchParams.get("error");
   if (providerError) {
-    const reason = classifyOAuthCallbackError({
-      error: providerError,
-      errorCode: searchParams.get("error_code"),
-      errorDescription: searchParams.get("error_description"),
-      allowRegistration: await readAllowRegistration(),
-    });
-    console.error(`[auth] oauth_provider_error reason=${reason}`);
-    return relativeRedirect(loginRedirectPath(reason));
+    const reason = refineWithPendingInvite(
+      classifyOAuthCallbackError({
+        error: providerError,
+        errorCode: searchParams.get("error_code"),
+        errorDescription: searchParams.get("error_description"),
+        allowRegistration: await readAllowRegistration(),
+      }),
+      pendingInvite,
+    );
+    console.error(`[auth] oauth_provider_error reason=${reason} pending=${pendingInvite}`);
+    return relativeRedirect(loginRedirectPath(reason), { headers: clearPending });
   }
 
-  if (!code) return relativeRedirect(loginRedirectPath("oauth_failed"));
+  if (!code) {
+    return relativeRedirect(loginRedirectPath("oauth_failed"), { headers: clearPending });
+  }
 
   const supabase = await createClient();
   const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (!error) return relativeRedirect(safeNext);
+  if (!error) return relativeRedirect(safeNext, { headers: clearPending });
 
   /**
    * فشل التبادل. أكثر أسبابه شيوعًا عندنا **ليس** عطلًا تقنيًا: بوابة
@@ -58,9 +75,9 @@ export async function GET(req: NextRequest) {
    *
    * نصنّف من رسالة Supabase دون عرضها: قد تحمل اسم الدالة أو رمز SQLSTATE.
    */
-  const reason = classifyOAuthFailure(error.message);
-  console.error(`[auth] oauth_callback_failed reason=${reason}`);
-  return relativeRedirect(loginRedirectPath(reason));
+  const reason = refineWithPendingInvite(classifyOAuthFailure(error.message), pendingInvite);
+  console.error(`[auth] oauth_callback_failed reason=${reason} pending=${pendingInvite}`);
+  return relativeRedirect(loginRedirectPath(reason), { headers: clearPending });
 }
 
 /**

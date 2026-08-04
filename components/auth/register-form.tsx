@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { createClient } from "@/lib/supabase/client";
 import { useI18n } from "@/lib/i18n";
 import { AuthButton, AuthError, AuthInput, AuthNotice } from "@/components/auth/fields";
+import { GoogleInviteForm } from "@/components/auth/google-invite-form";
 import {
   classifySignupError,
   SIGNUP_ERROR_MESSAGE,
@@ -138,7 +139,7 @@ export function RegisterForm({
     );
   }
 
-  return (
+  const form = (
     <form onSubmit={onSubmit} className="space-y-3">
       <h1 className="text-lg font-semibold text-ink-strong mb-1">{t("register")}</h1>
       {requireInvite && (
@@ -191,17 +192,30 @@ export function RegisterForm({
         {loading ? t("registering") : t("register")}
       </AuthButton>
 
-      {/*
-        لا زرّ Google هنا عمدًا. التسجيل عبر Google يتطلّب `allow_registration`
-        مفتوحًا (ترحيل 0023)، وهو مغلق؛ فكان الزر يقود إلى رفضٍ من القاعدة بعد
-        رحلة كاملة إلى المزوّد — وهي أسوأ تجربة ممكنة: يبدو الطريق مفتوحًا ثم
-        يُغلق في آخره. يبقى الزر في **صفحة الدخول** وحدها لأصحاب الحسابات
-        القائمة. وحين يُفتح التسجيل العام يعود إلى هنا.
-      */}
       <div className="pt-1 text-center text-[13px] text-ink-dim">
         {t("haveAccount")}{" "}
         <Link href="/login" className="text-primary-glow hover:brightness-125">{t("login")}</Link>
       </div>
     </form>
+  );
+
+  return (
+    <div className="space-y-4">
+      {form}
+
+      {/*
+        زرّ Google **العام** لا يعود إلى هنا: التسجيل العام مغلق، فكان يقود إلى
+        رفضٍ من القاعدة بعد رحلة كاملة إلى المزوّد — أسوأ تجربة ممكنة، طريقٌ
+        يبدو مفتوحًا ثم يُغلق في آخره.
+
+        وما يظهر بدله مسارٌ بالدعوة: يُتحقَّق من الكود والبريد أولًا فيُنشأ
+        تصريح خادمي مربوط بذلك البريد، ولا يظهر زرّ Google إلا بعده. الباب
+        نفسه، لكن بمفتاح — و`allow_registration` يبقى مغلقًا طوال الوقت.
+
+        ويُعرض في وضع الدعوة وحده: لو فُتح التسجيل العام يومًا لصار المسار
+        الطبيعي أبسط منه، فلا معنى لإبقائه.
+      */}
+      {requireInvite && <GoogleInviteForm />}
+    </div>
   );
 }

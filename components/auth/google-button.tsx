@@ -16,7 +16,21 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-export function GoogleButton({ next }: { next?: string }) {
+export function GoogleButton({
+  next,
+  label,
+  /**
+   * `select_account` يجبر Google على عرض قائمة الحسابات بدل الدخول الصامت
+   * بآخر حساب نشط. لازمٌ في مسار الدعوة تحديدًا: البريد مقيَّد بتصريح بعينه،
+   * ومن له أكثر من حساب Google كان سيُدخَل بالحساب الخطأ دون أن يُسأل، ثم
+   * يُرفض بلا أن يفهم أنه لم يُخيَّر أصلًا.
+   */
+  promptSelectAccount = false,
+}: {
+  next?: string;
+  label?: string;
+  promptSelectAccount?: boolean;
+}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,7 +44,10 @@ export function GoogleButton({ next }: { next?: string }) {
       const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent(safeNext)}`;
       const { error: err } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo },
+        options: {
+          redirectTo,
+          ...(promptSelectAccount ? { queryParams: { prompt: "select_account" } } : {}),
+        },
       });
       // النجاح يعني مغادرة الصفحة إلى Google، فلا نُطفئ التحميل هنا
       if (err) {
@@ -77,7 +94,7 @@ export function GoogleButton({ next }: { next?: string }) {
             d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571h.003l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"
           />
         </svg>
-        <span>{loading ? "جارٍ التحويل…" : "المتابعة باستخدام Google"}</span>
+        <span>{loading ? "جارٍ التحويل…" : (label ?? "المتابعة باستخدام Google")}</span>
       </button>
 
       {error && (
