@@ -2,6 +2,7 @@
  * فحص متغيرات البيئة — يتحقق من الوجود والصيغة دون طباعة أي قيمة.
  * يُستخدم عند بدء التشغيل وفي فحص الصحة.
  */
+import { isValidAppOrigin } from "@/lib/http/origin";
 
 interface EnvSpec {
   name: string;
@@ -30,6 +31,18 @@ const SPECS: EnvSpec[] = [
     required: true,
     validate: (v) => v.startsWith("sk-or-") || v.length > 20,
     note: "مفتاح OpenRouter (الموفر الافتراضي المجاني)",
+  },
+  {
+    /**
+     * منه وحده تُبنى تحويلات الوسيط. مطلوب لأن غيابه ليس تدهورًا جزئيًا:
+     * `absoluteRedirect` ترمي، فتردّ **كل صفحة محمية** 500 بدل التحويل إلى
+     * /login. وقع هذا حيًّا على staging؛ ووجوده هنا يجعل الخلل يظهر عند
+     * الإقلاع وفي /api/health بدل أن يُكتشف من تقرير مستخدم.
+     */
+    name: "APP_ORIGIN",
+    required: true,
+    validate: isValidAppOrigin,
+    note: "العنوان العام للمنصّة — أصل تحويلات الوسيط",
   },
   { name: "ANTHROPIC_API_KEY", required: false, note: "موفر Anthropic (اختياري)" },
   {

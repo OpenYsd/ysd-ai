@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseAppOrigin } from "@/lib/http/origin";
 
 /**
  * تحويلات المتصفح — عنوان الوجهة لا يُبنى من عنوان الطلب إطلاقًا.
@@ -54,19 +55,9 @@ export function absoluteRedirect(path: string, status: 302 | 303 | 307 = 307): N
   const configured = process.env.APP_ORIGIN;
   if (!configured) throw new Error("APP_ORIGIN is required");
 
-  let origin: URL;
-  try {
-    origin = new URL(configured);
-  } catch {
-    throw new Error("Invalid APP_ORIGIN");
-  }
-  if (
-    !["http:", "https:"].includes(origin.protocol) ||
-    origin.username ||
-    origin.password
-  ) {
-    throw new Error("Invalid APP_ORIGIN");
-  }
+  // الشرط نفسه الذي يفحصه checkEnv — من وحدة واحدة فلا يتباعدان
+  const origin = parseAppOrigin(configured);
+  if (!origin) throw new Error("Invalid APP_ORIGIN");
 
   // `origin.origin` يُسقط أي مسار أو معاملات في المتغيّر، وsafePath يمنع
   // `//evil.test` من الهروب بالمستخدم خارج الموقع عبر الأساس نفسه.

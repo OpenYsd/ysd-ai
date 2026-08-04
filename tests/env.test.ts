@@ -8,6 +8,7 @@ const KEYS = [
   "OPENROUTER_API_KEY",
   "ANTHROPIC_API_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "APP_ORIGIN",
 ];
 let saved: Record<string, string | undefined>;
 
@@ -26,6 +27,7 @@ function setValid() {
   process.env.NEXT_PUBLIC_SUPABASE_URL = "https://abcd1234.supabase.co";
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "a".repeat(40);
   process.env.OPENROUTER_API_KEY = "sk-or-" + "b".repeat(30);
+  process.env.APP_ORIGIN = "https://ysd-ai-production.up.railway.app";
 }
 
 describe("checkEnv", () => {
@@ -69,6 +71,63 @@ describe("checkEnv", () => {
   });
 });
 
+/**
+ * APP_ORIGIN مطلوب لا اختياري: بغيابه ترمي `absoluteRedirect` فتردّ كل صفحة
+ * محمية 500 — وهو ما وقع حيًّا. وجوده هنا ينقل الاكتشاف من تقرير مستخدم إلى
+ * سجلّ الإقلاع و/api/health.
+ */
+describe("checkEnv — APP_ORIGIN", () => {
+  it("غيابه يُبلَّغ كنقص مطلوب", () => {
+    setValid();
+    delete process.env.APP_ORIGIN;
+    const r = checkEnv();
+    expect(r.ok).toBe(false);
+    expect(r.missingRequired).toContain("APP_ORIGIN");
+  });
+
+  it("القيمة الفارغة تُعامل غيابًا", () => {
+    setValid();
+    process.env.APP_ORIGIN = "   ";
+    expect(checkEnv().missingRequired).toContain("APP_ORIGIN");
+  });
+
+  it("يقبل http وhttps ومنفذًا ومضيفًا محليًا", () => {
+    for (const good of [
+      "https://ysd-ai-production.up.railway.app",
+      "http://localhost:3000",
+      "https://ysd.example.com:8443",
+    ]) {
+      setValid();
+      process.env.APP_ORIGIN = good;
+      expect(checkEnv().invalidFormat, good).not.toContain("APP_ORIGIN");
+    }
+  });
+
+  it("يرفض البروتوكولات الأخرى وبيانات الاعتماد والنصّ الفاسد", () => {
+    for (const bad of [
+      "ftp://x.test",
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "https://user@evil.test",
+      "https://user:pass@evil.test",
+      "not a url",
+      "ysd-ai-production.up.railway.app",
+    ]) {
+      setValid();
+      process.env.APP_ORIGIN = bad;
+      const r = checkEnv();
+      expect(r.invalidFormat, bad).toContain("APP_ORIGIN");
+      expect(r.ok, bad).toBe(false);
+    }
+  });
+
+  it("لا تظهر قيمته في التقرير", () => {
+    setValid();
+    process.env.APP_ORIGIN = "https://secret-host-name.example.com";
+    expect(JSON.stringify(checkEnv())).not.toContain("secret-host-name");
+  });
+});
+
 describe("assertEnvAtStartup", () => {
   it("يرمي عند نقص متغير مطلوب", () => {
     setValid();
@@ -78,5 +137,10 @@ describe("assertEnvAtStartup", () => {
   it("لا يرمي عند الاكتمال", () => {
     setValid();
     expect(() => assertEnvAtStartup()).not.toThrow();
+  });
+  it("يرمي باسم APP_ORIGIN عند غيابه", () => {
+    setValid();
+    delete process.env.APP_ORIGIN;
+    expect(() => assertEnvAtStartup()).toThrow(/APP_ORIGIN/);
   });
 });

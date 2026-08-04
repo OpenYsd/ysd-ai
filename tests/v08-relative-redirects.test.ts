@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { absoluteRedirect, relativePath, relativeRedirect } from "../lib/http/redirect";
+import { isValidAppOrigin } from "../lib/http/origin";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
 /** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
@@ -175,6 +176,41 @@ describe("★ absoluteRedirect — العقد", () => {
     ]) {
       process.env.APP_ORIGIN = bad;
       expect(() => absoluteRedirect("/login"), bad).toThrow(/APP_ORIGIN/);
+    }
+  });
+
+  /**
+   * ★ الاتفاق بين الفحص الصحّي والحارس وقت التشغيل.
+   *
+   * لو تباعدا لأعلن /api/health أن البيئة سليمة بينما ترمي التحويلات عند كل
+   * طلب — تشخيصٌ يشهد بالعافية على خادم يردّ 500. الوحدة المشتركة تمنع ذلك،
+   * وهذا الاختبار يثبّتها فلا يُنسخ الشرط يومًا في موضع ثانٍ.
+   */
+  it("★ checkEnv وabsoluteRedirect يتفقان على كل قيمة", () => {
+    const values = [
+      "https://ysd-ai-production.up.railway.app",
+      "http://localhost:3000",
+      "https://ysd.example.com:8443",
+      `${ORIGIN}/path?q=1`,
+      "ftp://x.test",
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "https://user@evil.test",
+      "https://user:pass@evil.test",
+      "not a url",
+      "ysd-ai-production.up.railway.app",
+      "",
+    ];
+    for (const v of values) {
+      process.env.APP_ORIGIN = v;
+      const healthSaysValid = isValidAppOrigin(v);
+      let redirectWorks = true;
+      try {
+        absoluteRedirect("/login");
+      } catch {
+        redirectWorks = false;
+      }
+      expect(redirectWorks, `تباعد على القيمة: ${v || "(فارغة)"}`).toBe(healthSaysValid);
     }
   });
 });
