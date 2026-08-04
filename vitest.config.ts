@@ -26,6 +26,12 @@ export default defineConfig({
        * (اختبار rc3-db-gate يتحقق أن سطر الاستيراد ما زال موجودًا).
        */
       { find: /^server-only$/, replacement: path.resolve(__dirname, "tests/stubs/server-only.ts") },
+      /**
+       * `@/…` كما في tsconfig — يلزم لاستيراد وحدات تستورد بدورها بهذا الشكل
+       * (middleware.ts مثلًا). بدونه لا يمكن **تشغيل** الوسيط في اختبار، ولا
+       * يبقى إلا التفتيش النصّي — وهو ما مرّر انحدار Location النسبي.
+       */
+      { find: /^@\//, replacement: `${path.resolve(__dirname)}/` },
     ],
   },
 });

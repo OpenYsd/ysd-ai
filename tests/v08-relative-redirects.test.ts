@@ -12,8 +12,8 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { relativePath, relativeRedirect } from "../lib/http/redirect";
+import { afterEach, describe, expect, it } from "vitest";
+import { absoluteRedirect, relativePath, relativeRedirect } from "../lib/http/redirect";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
 /** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
@@ -53,6 +53,37 @@ describe("★ التحويلات نسبية — لا عنوان خادم في ر
       expect(code).not.toContain("process.env.PORT");
       expect(code).not.toContain("0.0.0.0");
     }
+  });
+
+  /**
+   * الوسيط حالة خاصة: محوّل Next يرفض Location النسبي بـTypeError فيسقط كل
+   * صفحة محمية إلى 500. هذه الحراسات تمنع عودة النمط تحديدًا في الوسيط.
+   */
+  describe("★ الوسيط — مطلق من APP_ORIGIN وحده", () => {
+    const MW = codeOnly(read("middleware.ts"));
+
+    it("★ لا relativeRedirect في الوسيط إطلاقًا", () => {
+      expect(MW).not.toMatch(/relativeRedirect/);
+    });
+
+    it("★ يستعمل absoluteRedirect للتحويلات الخمسة", () => {
+      expect(MW.match(/absoluteRedirect\(/g)?.length).toBe(5);
+    });
+
+    it("★ لا يأخذ الأصل من origin الطلب", () => {
+      expect(MW).not.toMatch(/nextUrl\.origin/);
+      expect(MW).not.toMatch(/request\.url/);
+    });
+
+    it("★ لا يقرأ host ولا x-forwarded-host مصدرًا للتحويل", () => {
+      expect(MW).not.toMatch(/x-forwarded-host/i);
+      expect(MW).not.toMatch(/x-forwarded-proto/i);
+      expect(MW).not.toMatch(/headers\.get\(\s*["']host["']\s*\)/i);
+    });
+
+    it("★ الأصل من APP_ORIGIN — وصولٌ ساكن ليحقنه Next في حزمة الوسيط", () => {
+      expect(codeOnly(read("lib/http/redirect.ts"))).toContain("process.env.APP_ORIGIN");
+    });
   });
 
   it("★ تسجيل الخروج يعود إلى /login بمسار نسبي و303", () => {
@@ -96,6 +127,55 @@ describe("★ relativeRedirect — العقد", () => {
     );
     expect(relativePath("/login")).toBe("/login");
     expect(relativePath("//evil.test")).toBe("/");
+  });
+});
+
+describe("★ absoluteRedirect — العقد", () => {
+  const ORIGIN = "https://ysd-ai-production.up.railway.app";
+  const prev = process.env.APP_ORIGIN;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.APP_ORIGIN;
+    else process.env.APP_ORIGIN = prev;
+  });
+
+  it("★ يبني عنوانًا مطلقًا من APP_ORIGIN", () => {
+    process.env.APP_ORIGIN = ORIGIN;
+    const r = absoluteRedirect("/login");
+    expect(r.status).toBe(307);
+    expect(r.headers.get("location")).toBe(`${ORIGIN}/login`);
+  });
+
+  it("★ يحترم الحالة الممرَّرة", () => {
+    process.env.APP_ORIGIN = ORIGIN;
+    expect(absoluteRedirect("/login", 303).status).toBe(303);
+  });
+
+  /**
+   * الخطر الخاص بالعنوان المطلق: `new URL("//evil.test", origin)` يُنتج
+   * `https://evil.test` — الأساس لا يحمي، والحارس هو ما يحمي.
+   */
+  it("★ يمنع التحويل الخارجي المفتوح رغم وجود أساس", () => {
+    process.env.APP_ORIGIN = ORIGIN;
+    for (const bad of ["//evil.test/x", "https://evil.test", "http://0.0.0.0:8080/login", "evil"]) {
+      expect(absoluteRedirect(bad).headers.get("location"), bad).toBe(`${ORIGIN}/`);
+    }
+  });
+
+  it("★ يرمي عند غياب APP_ORIGIN", () => {
+    delete process.env.APP_ORIGIN;
+    expect(() => absoluteRedirect("/login")).toThrow("APP_ORIGIN is required");
+  });
+
+  it("★ يرمي عند بروتوكول أو بيانات اعتماد غير مقبولة", () => {
+    for (const bad of [
+      "ftp://x.test",
+      "https://user@evil.test",
+      "https://user:pass@evil.test",
+      "not a url",
+    ]) {
+      process.env.APP_ORIGIN = bad;
+      expect(() => absoluteRedirect("/login"), bad).toThrow(/APP_ORIGIN/);
+    }
   });
 });
 
