@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useI18n } from "@/lib/i18n";
 import { AuthButton, AuthError, AuthInput } from "@/components/auth/fields";
 import { GoogleButton } from "@/components/auth/google-button";
+import { StripUrlFragment } from "@/components/auth/strip-url-fragment";
 import { AUTH_REASON_MESSAGE, type OAuthReason } from "@/lib/auth/oauth-error";
 
 type FormValues = { email: string; password: string };
@@ -50,6 +51,11 @@ export default function LoginPage() {
 
   return (
     <form onSubmit={onSubmit} className="space-y-3">
+      {/*
+        يمسح أي جزء ورّثه المتصفح من تحويل OAuth. الرسالة أعلاه تُقرأ من
+        `search` لا من الجزء، فالمسح لا يمسّها.
+      */}
+      <StripUrlFragment />
       <h1 className="text-lg font-semibold text-ink-strong mb-4">{t("login")}</h1>
       <AuthInput
         {...register("email", { required: true })}

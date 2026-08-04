@@ -83,6 +83,15 @@ function parseLocation(location: string | null) {
   return { pathname: url.pathname, params: [...url.searchParams.keys()], search: url.search };
 }
 
+/**
+ * الشكل المنتظَر لرابط العودة.
+ *
+ * الجزء `#oauth-clean` **حاجز توريث** لا زينة: RFC 7231 §7.1.2 يوجب على
+ * المتصفح توريث جزء الوارد إلى وجهةٍ بلا جزء، فكان نصّ GoTrue الخام يظهر في
+ * شريط العنوان رغم نظافة الرابط الذي نبنيه. انظر tests/v08-oauth-fragment.test.ts.
+ */
+const login = (reason: string) => `/login?reason=${reason}#oauth-clean`;
+
 describe("★ رابط العودة — reason وحده لا غير", () => {
   const DIRTY =
     "error=server_error&error_code=unexpected_failure" +
@@ -128,16 +137,14 @@ describe("★ رابط العودة — reason وحده لا غير", () => {
   });
 
   it("★ رمز غير معروف يسقط إلى oauth_failed", () => {
-    expect(loginRedirectPath("totally_made_up")).toBe("/login?reason=oauth_failed");
-    expect(loginRedirectPath("Database error saving new user")).toBe(
-      "/login?reason=oauth_failed",
-    );
-    expect(loginRedirectPath("../../etc/passwd")).toBe("/login?reason=oauth_failed");
+    expect(loginRedirectPath("totally_made_up")).toBe(login("oauth_failed"));
+    expect(loginRedirectPath("Database error saving new user")).toBe(login("oauth_failed"));
+    expect(loginRedirectPath("../../etc/passwd")).toBe(login("oauth_failed"));
   });
 
   it("★ كل رمز مسموح يُنتج رابطًا نظيفًا", () => {
     for (const reason of OAUTH_REASONS) {
-      expect(loginRedirectPath(reason)).toBe(`/login?reason=${reason}`);
+      expect(loginRedirectPath(reason)).toBe(login(reason));
     }
   });
 
@@ -156,21 +163,19 @@ describe("★ الوصف العام — يفكّه allow_registration وحده",
 
   it("★ التسجيل مغلق ⇒ oauth_invite_required", async () => {
     state.allowRegistration = false;
-    expect((await callback(dirty)).headers.get("location")).toBe(
-      "/login?reason=oauth_invite_required",
-    );
+    expect((await callback(dirty)).headers.get("location")).toBe(login("oauth_invite_required"));
   });
 
   it("★ التسجيل مفتوح ⇒ يبقى oauth_failed", async () => {
     state.allowRegistration = true;
-    expect((await callback(dirty)).headers.get("location")).toBe("/login?reason=oauth_failed");
+    expect((await callback(dirty)).headers.get("location")).toBe(login("oauth_failed"));
   });
 
   it("★ تعذّرت القراءة ⇒ يبقى oauth_failed", async () => {
     for (const s of ["error" as const, null]) {
       state.allowRegistration = s;
       expect((await callback(dirty)).headers.get("location"), String(s)).toBe(
-        "/login?reason=oauth_failed",
+        login("oauth_failed"),
       );
     }
   });
@@ -208,7 +213,7 @@ describe("★ الوصف العام — يفكّه allow_registration وحده",
     ]) {
       const loc = (await callback(`error=server_error&error_description=${encodeURIComponent(desc)}`))
         .headers.get("location");
-      expect(loc, desc).toBe("/login?reason=oauth_failed");
+      expect(loc, desc).toBe(login("oauth_failed"));
     }
   });
 
@@ -227,12 +232,12 @@ describe("★ الوصف العام — يفكّه allow_registration وحده",
       (await callback("error=server_error&error_description=invite_required_or_invalid")).headers.get(
         "location",
       ),
-    ).toBe("/login?reason=oauth_invite_required");
+    ).toBe(login("oauth_invite_required"));
     expect(
       (await callback("error=server_error&error_description=registration_closed")).headers.get(
         "location",
       ),
-    ).toBe("/login?reason=oauth_registration_closed");
+    ).toBe(login("oauth_registration_closed"));
   });
 
   it("★ إلغاء المستخدم يبقى مميَّزًا", async () => {
@@ -241,7 +246,7 @@ describe("★ الوصف العام — يفكّه allow_registration وحده",
       (await callback(`error=access_denied&error_description=${encodeURIComponent(GENERIC)}`)).headers.get(
         "location",
       ),
-    ).toBe("/login?reason=oauth_cancelled");
+    ).toBe(login("oauth_cancelled"));
   });
 });
 
