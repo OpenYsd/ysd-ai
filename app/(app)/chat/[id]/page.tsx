@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { listModelOptions } from "@/lib/ai/registry";
+import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 
 export default async function ConversationPage({
@@ -56,7 +57,16 @@ export default async function ConversationPage({
     ]);
   if (!conv) redirect("/chat");
 
-  const models: ChatModel[] = listModelOptions();
+  /**
+   * القائمة تُوسم بخطة المستخدم على الخادم: ما يظهر يجب أن يطابق ما يقبله
+   * /api/chat، وإلا اختار المستخدم ما سيُرفض أو يُخفَّض.
+   */
+  const policy = await loadModelPolicy(supabase, userId);
+  const minTierById = new Map(policy.models.map((m) => [m.id, m.min_tier]));
+  const models: ChatModel[] = listModelOptions().map((o) => {
+    const minTier = minTierById.get(o.id) ?? "free";
+    return { ...o, minTier, locked: !tierAllows(policy.userTier, minTier) };
+  });
 
   const initialAttachments = (convFiles ?? []).map((f) => ({
     id: f.id,
@@ -71,7 +81,7 @@ export default async function ConversationPage({
   const candidates = [conv.model_id, prefs?.default_model_id];
   const initialModelId =
     candidates.find((c) => c && models.some((m) => m.id === c)) ??
-    models[0]?.id ??
+    models.find((m) => !m.locked)?.id ??
     null;
 
   const initialMessages = (rows ?? [])

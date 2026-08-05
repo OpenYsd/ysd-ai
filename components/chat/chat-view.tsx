@@ -46,6 +46,16 @@ export interface ChatModel {
    * ترسل الحقل، واعتبار غيابه «غير متاح» كان سيُخفي نماذج عاملة.
    */
   available?: boolean;
+  /**
+   * v0.8.1 — النموذج يتجاوز خطة المستخدم.
+   *
+   * يُعرض **مقفولًا بشارة** لا مخفيًّا ولا قابلًا للاختيار: الإخفاء يمنع
+   * المستخدم من معرفة أن الترقية تمنحه شيئًا، والعرض بلا شارة يجعله يختاره
+   * ثم يُخفَّض بلا سبب ظاهر. والقفل في المعالِج لا في المظهر وحده.
+   */
+  locked?: boolean;
+  /** أدنى خطة تفتحه — لنصّ الشارة */
+  minTier?: string;
 }
 
 /** معرّف طلب فريد — يمنع ازدواج الحفظ عند تكرار الإرسال أو إعادة الاتصال */
@@ -97,6 +107,11 @@ interface Msg {
   model?: string;
   /** مصادر RAG المستند إليها الرد */
   sources?: MsgSource[];
+  /**
+   * v0.8.1 — إشعار من الخادم يُفسّر ما حدث (تخفيض النموذج بالخطة مثلًا).
+   * يبقى ملتصقًا بالرسالة لا كتنبيه عابر: المستخدم قد يقرأ الرد بعد دقائق.
+   */
+  notice?: string;
 }
 
 export interface Attachment {
@@ -128,7 +143,7 @@ interface ChatViewProps {
 }
 
 interface SSEEvent {
-  type: "text" | "error" | "done" | "meta" | "sources" | "status";
+  type: "text" | "error" | "done" | "meta" | "sources" | "status" | "notice";
   /** رمز تصنيف الخطأ (v0.6.6) */
   code?: string;
   text?: string;
@@ -139,6 +154,8 @@ interface SSEEvent {
   assistantMessageId?: string | null;
   /** حالة الاكتمال (RC8) — تصل مع done فتظهر فورًا بلا انتظار تحديث */
   completion?: MsgCompletion;
+  /** v0.8.1 — النموذج الفعلي بعد التخفيض (مع notice) */
+  effectiveModel?: string;
 }
 
 export function ChatView({
@@ -193,10 +210,13 @@ export function ChatView({
    * الحقل أصلًا، واعتبار غيابه «غير متاح» كان سيُخفي نماذج عاملة.
    */
   const orderedModels = useMemo(() => {
-    const available = models.filter((m) => m.available !== false);
-    const unavailable = models.filter((m) => m.available === false);
+    // المقفول أولًا خارج القائمة المتاحة: خطة المستخدم لا تشمله
+    const locked = models.filter((m) => m.locked === true);
+    const rest = models.filter((m) => m.locked !== true);
+    const available = rest.filter((m) => m.available !== false);
+    const unavailable = rest.filter((m) => m.available === false);
     available.sort((a, b) => (a.id === modelId ? -1 : b.id === modelId ? 1 : 0));
-    return { available, unavailable };
+    return { available, unavailable, locked };
   }, [models, modelId]);
 
   /**
@@ -349,6 +369,24 @@ export function ChatView({
             } else if (data.type === "meta" && data.model) {
               setMessages((prev) =>
                 prev.map((m) => (m.id === asstTempId ? { ...m, model: data.model } : m)),
+              );
+            } else if (data.type === "notice" && data.text) {
+              /**
+               * إشعار الخادم — التخفيض بالخطة أوّلها.
+               *
+               * يُعرض على الرسالة نفسها لا كتنبيه عابر: المستخدم قد يقرأ الرد
+               * بعد دقائق، والسبب يجب أن يبقى ملتصقًا بما يفسّره. ونثبّت
+               * `model` على النموذج الفعلي كي لا يُنسب الرد إلى Claude وقد
+               * أجابه ysd/free.
+               */
+              const noticeText = data.text;
+              const effective = data.effectiveModel;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === asstTempId
+                    ? { ...m, notice: noticeText, ...(effective ? { model: effective } : {}) }
+                    : m,
+                ),
               );
             } else if (data.type === "sources" && data.sources?.length) {
               setMessages((prev) =>
@@ -715,6 +753,44 @@ export function ChatView({
                 </button>
               ))}
               {/*
+                المقفول بالخطة — قسم مستقل و**غير قابل للاختيار** (v0.8.1).
+
+                لماذا يُعرض أصلًا: إخفاؤه يجعل المستخدم لا يعرف أن الترقية
+                تمنحه شيئًا. ولماذا لا يُختار: كان يُخفَّض صامتًا إلى ysd/free
+                فيرى ردًّا من نموذج آخر بلا تفسير، ويظنّ المنصّة معطوبة لا أن
+                خطته لا تشمله. الشارة تقول الحقيقة قبل أن يُنفق أحدٌ نقرة.
+              */}
+              {orderedModels.locked.length > 0 && (
+                <div className="mt-1.5 pt-1.5 border-t border-line">
+                  <div className="px-3 py-1 text-[10.5px] text-ink-faint">
+                    تتطلب ترقية الخطة
+                  </div>
+                  {orderedModels.locked.map((m) => (
+                    <div
+                      key={m.id}
+                      data-model-locked-tier={m.id}
+                      aria-disabled="true"
+                      title="هذا النموذج يتطلب خطة Plus"
+                      className="w-full text-start rounded-lg px-3 py-2.5 opacity-60 cursor-not-allowed"
+                    >
+                      <div className="text-[13px] text-ink flex items-center justify-between gap-2">
+                        <span className="truncate">
+                          {locale === "ar" ? m.nameAr : m.nameEn}
+                        </span>
+                        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none bg-primary/15 border border-primary/40 text-primary-glow">
+                          {m.minTier === "pro" ? "Pro" : m.minTier === "business" ? "Business" : "Plus"}
+                        </span>
+                      </div>
+                      {m.provider && (
+                        <span className="inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] leading-none bg-raised border border-line text-ink-faint">
+                          {m.provider}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/*
                 غير المتاح في قسم منفصل و**غير قابل للاختيار**: عرضه مختارًا
                 يعني رسالة تفشل بعد الإرسال. والقائمة القديمة (stale) تُعرض
                 موسومة بدل إخفائها — قائمة فارغة تبدو كعطل، والقديمة الموسومة
@@ -961,6 +1037,20 @@ export function ChatView({
                           ))}
                       </div>
                     </div>
+                  )}
+
+                  {/*
+                    إشعار الخادم — تخفيض النموذج بالخطة أوّلها. يُعرض تحت الرد
+                    وملتصقًا به: السبب يجب أن يبقى مع ما يفسّره، لا أن يمرّ
+                    كتنبيه عابر يفوت من يقرأ بعد دقيقة.
+                  */}
+                  {m.role === "assistant" && m.notice && (
+                    <p
+                      data-model-notice="1"
+                      className="mt-1.5 text-[12px] text-ink-faint"
+                    >
+                      {m.notice}
+                    </p>
                   )}
                 </div>
               ))}

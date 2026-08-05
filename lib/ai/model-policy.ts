@@ -51,15 +51,26 @@ export interface ModelPolicyRow {
 }
 
 export interface ResolvedModel {
-  /** النموذج الذي **سيُستعمل فعلًا** — لا الذي طُلب */
-  modelId: string;
+  /** النموذج الذي **سيُستعمل فعلًا** — لا الذي طُلب. `null` عند الرفض */
+  modelId: string | null;
   /** هل خُفِّض عن المطلوب؟ */
   downgraded: boolean;
+  /** هل يُرفض الطلب رأسًا بلا بديل؟ */
+  rejected: boolean;
   /** رمز من مجموعة مغلقة — لا نصّ حرّ ولا اسم جدول */
   reason: "ok" | "tier_too_low" | "model_disabled" | "model_unknown";
   /** سقف رموز الإخراج لهذه الخطة */
   maxOutputTokens: number;
 }
+
+/**
+ * رسالة التخفيض — تُعرض للمستخدم كما هي.
+ *
+ * الصمت هنا كان عيبًا حقيقيًا: من اختار Claude ثم رأى ردًّا من نموذج آخر بلا
+ * تفسير يظنّ المنصّة معطوبة، لا أن خطته لا تشمله.
+ */
+export const TIER_DOWNGRADE_MESSAGE =
+  "هذا النموذج يتطلب خطة Plus، تم استخدام YSD مجاني.";
 
 /** سقف افتراضي حين تتعذّر قراءة الحدود — الأقلّ كلفةً لا الأكثر */
 export const FALLBACK_MAX_OUTPUT_TOKENS = 1024;
@@ -83,20 +94,44 @@ export function resolveModelForUser(input: {
   const row = models.find((m) => m.id === requestedModelId);
 
   /**
-   * نموذج لا نعرفه: قد يكون معرّفًا ملفّقًا في طلب يدوي، وقد يكون نموذجًا
-   * حُذف من الجدول ومحادثةٌ قديمة ما زالت تحمل اسمه. الحالتان تُعاملان
-   * معاملةً واحدة — لا نُسقط الطلب على مجهول ولا نُمرّره.
+   * **المجهول والمعطَّل يُرفضان، ولا يُحوَّلان صامتًا.**
+   *
+   * التحويل الصامت كان خطأً: معرّفٌ لا نعرفه يعني إمّا طلبًا مُلفَّقًا وإمّا
+   * خللًا في العميل، وكلاهما يستحق أن يُقال. وتمريره تحت اسم آخر يُخفي
+   * الحالتين ويُنتج ردًّا لا يفهم المستخدم من أين جاء.
+   *
+   * والسقوط إلى البديل محفوظ لحالةٍ واحدة مشروعة: نموذجٌ **معروف ومفعّل**
+   * لا تبلغه خطة المستخدم. هذه وحدها لها معنى عند المستخدم ورسالةٌ تشرحها.
    */
   if (!row) {
-    return { modelId: YSD_FREE_MODEL_ID, downgraded: true, reason: "model_unknown", maxOutputTokens: cap };
+    return { modelId: null, downgraded: false, rejected: true, reason: "model_unknown", maxOutputTokens: cap };
   }
   if (!row.enabled) {
-    return { modelId: YSD_FREE_MODEL_ID, downgraded: true, reason: "model_disabled", maxOutputTokens: cap };
+    return { modelId: null, downgraded: false, rejected: true, reason: "model_disabled", maxOutputTokens: cap };
   }
   if (!tierAllows(userTier, row.min_tier)) {
-    return { modelId: YSD_FREE_MODEL_ID, downgraded: true, reason: "tier_too_low", maxOutputTokens: cap };
+    return {
+      modelId: YSD_FREE_MODEL_ID,
+      downgraded: true,
+      rejected: false,
+      reason: "tier_too_low",
+      maxOutputTokens: cap,
+    };
   }
-  return { modelId: requestedModelId, downgraded: false, reason: "ok", maxOutputTokens: cap };
+  return {
+    modelId: requestedModelId,
+    downgraded: false,
+    rejected: false,
+    reason: "ok",
+    maxOutputTokens: cap,
+  };
+}
+
+/** النماذج التي تتجاوز خطة المستخدم — للواجهة كي تعرضها مقفولة لا مخفية */
+export function lockedModelIds(models: ModelPolicyRow[], userTier: string | null | undefined): string[] {
+  return models
+    .filter((m) => m.enabled && !tierAllows(userTier, m.min_tier))
+    .map((m) => m.id);
 }
 
 /**

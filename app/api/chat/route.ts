@@ -6,8 +6,20 @@ import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
-import { loadModelPolicy, resolveModelForUser } from "@/lib/ai/model-policy";
-import { acquireGenerationSlot } from "@/lib/ai/concurrency";
+import {
+  loadModelPolicy,
+  resolveModelForUser,
+  TIER_DOWNGRADE_MESSAGE,
+} from "@/lib/ai/model-policy";
+import { acquireSlot } from "@/lib/ai/generation-slot";
+import {
+  BUDGET_DENY_MESSAGE,
+  estimateInputTokens,
+  finalizeChatBudget,
+  releaseChatBudget,
+  reserveChatBudget,
+  type BudgetDenyReason,
+} from "@/lib/ai/budget";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import {
   ambiguousCandidates,
@@ -157,6 +169,19 @@ export async function POST(req: NextRequest) {
     models: policy.models,
     maxOutputTokens: policy.maxOutputTokens,
   });
+
+  /**
+   * المجهول والمعطَّل يُرفضان صراحةً ولا يُحوَّلان صامتًا: معرّفٌ لا نعرفه
+   * يعني طلبًا مُلفَّقًا أو خللًا في العميل، وتمريره تحت اسم آخر يُخفي
+   * الحالتين. السقوط إلى البديل محفوظ لنموذجٍ معروف لا تبلغه الخطة وحده.
+   */
+  if (resolved.rejected || !resolved.modelId) {
+    console.log(`[chat] rid=${requestId} model_rejected reason=${resolved.reason}`);
+    return json(
+      { error: "النموذج المطلوب غير متاح. اختر نموذجًا آخر.", code: resolved.reason },
+      400,
+    );
+  }
   const effectiveModelId = resolved.modelId;
   if (resolved.downgraded) {
     // رمز فقط — لا معرّف مستخدم ولا محتوى
@@ -166,7 +191,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const slot = acquireGenerationSlot(userId, policy.userTier);
+  /**
+   * مقعد التوليد — مصدره القاعدة لا ذاكرة العملية (ترحيل 0030).
+   * `requestId` جزء من الحجز، فلا يحرّر طلبٌ مقعدَ طلبٍ آخر.
+   */
+  const slot = await acquireSlot(userId, requestId, policy.userTier);
   if (!slot) {
     return json(
       {
@@ -177,10 +206,34 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  /**
+   * حجز الميزانية **قبل** أي نداء للمزوّد (ترحيل 0029).
+   *
+   * `check_usage_allowed` أعلاه تفحص الرسائل وحدها؛ هذا يفرض `monthly_tokens`
+   * ذرّيًا: التحقق والحجز في معاملة واحدة تحت قفل صفّ المستخدم، فلا يمرّ
+   * عشرون طلبًا متزامنًا على عدّاد واحد.
+   */
+  const estimatedInput = estimateInputTokens([message ?? "", systemPrompt]);
+  const budget = await reserveChatBudget({
+    userId,
+    requestId,
+    estimatedInputTokens: estimatedInput,
+    maxOutputTokens: resolved.maxOutputTokens,
+  });
+  if (!budget.allowed) {
+    await slot.release();
+    const reason = (budget.reason === "ok" || budget.reason === "already_reserved"
+      ? "unavailable"
+      : budget.reason) as BudgetDenyReason;
+    console.log(`[chat] rid=${requestId} budget_denied reason=${reason}`);
+    return json({ error: BUDGET_DENY_MESSAGE[reason], code: reason }, 403);
+  }
+
   // 6) اختيار الموفر عبر الطبقة الموحدة
   const provider = resolveProviderForModel(effectiveModelId);
   if (!provider) {
-    slot.release();
+    await slot.release();
+    await releaseChatBudget(requestId);
     return json({ error: "النموذج المطلوب غير متاح." }, 400);
   }
 
@@ -193,7 +246,8 @@ export async function POST(req: NextRequest) {
    */
   const aiSettings = await getAiSettings(supabase);
   if (!isModelAllowed(effectiveModelId, aiSettings.allowedModels)) {
-    slot.release();
+    await slot.release();
+    await releaseChatBudget(requestId);
     return json(
       { error: "النموذج غير متاح حاليًا. اختر نموذجًا آخر.", code: "model_not_allowed" },
       400,
@@ -226,7 +280,7 @@ export async function POST(req: NextRequest) {
       .is("deleted_at", null)
       .single();
     if (!target || target.role !== "user")
-      { slot.release(); return json({ error: "الرسالة غير موجودة." }, 404); }
+      { await slot.release(); await releaseChatBudget(requestId); return json({ error: "الرسالة غير موجودة." }, 404); }
 
     await supabase
       .from("messages")
@@ -258,7 +312,8 @@ export async function POST(req: NextRequest) {
     );
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true path=regenerate`);
-      slot.release();
+      await slot.release();
+      await releaseChatBudget(requestId);
       return json(
         { error: "هذه الرسالة أُرسلت بالفعل.", code: "duplicate_request" },
         409,
@@ -278,7 +333,8 @@ export async function POST(req: NextRequest) {
     if (!lastUser) {
       // نحرّر الحجز كي لا يبقى in_progress فيمنع محاولة لاحقة مشروعة
       await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
-      slot.release();
+      await slot.release();
+      await releaseChatBudget(requestId);
       return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
     }
 
@@ -331,7 +387,8 @@ export async function POST(req: NextRequest) {
     );
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true`);
-      slot.release();
+      await slot.release();
+      await releaseChatBudget(requestId);
       return json(
         {
           error: "هذه الرسالة أُرسلت بالفعل.",
@@ -352,7 +409,8 @@ export async function POST(req: NextRequest) {
       console.log(
         `[chat] rid=${requestId} rate_limited=true backend=${rl.backend} remaining=${rl.remaining}`,
       );
-      slot.release();
+      await slot.release();
+      await releaseChatBudget(requestId);
       return json(
         { error: "تجاوزت حد الطلبات، حاول بعد قليل.", code: "rate_limit" },
         429,
@@ -371,7 +429,8 @@ export async function POST(req: NextRequest) {
     if (insertErr || !inserted) {
       // فشل الحفظ — علّم الحجز failed كي لا يبقى in_progress معلّقًا
       await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
-      slot.release();
+      await slot.release();
+      await releaseChatBudget(requestId);
       return json({ error: "تعذّر حفظ الرسالة." }, 500);
     }
     userMessageId = inserted.id;
@@ -481,6 +540,23 @@ export async function POST(req: NextRequest) {
           /* العميل أغلق الاتصال */
         }
       };
+
+      /**
+       * إشعار التخفيض — **أول ما يصل العميل**، قبل أي نصّ.
+       *
+       * الصمت هنا كان عيبًا: من اختار Claude ثم رأى ردًّا من نموذج آخر بلا
+       * تفسير يظنّ المنصّة معطوبة لا أن خطته لا تشمله. ونرسل `effectiveModel`
+       * كي تعرض الواجهة ما أجاب فعلًا لا ما طُلب.
+       */
+      if (resolved.downgraded) {
+        send({
+          type: "notice",
+          code: "model_downgraded",
+          text: TIER_DOWNGRADE_MESSAGE,
+          requestedModel: modelId,
+          effectiveModel: effectiveModelId,
+        });
+      }
 
       // مصادر الرد — للعرض تحت الإجابة (similarity في وضع التطوير فقط)
       if (ragSnippets.length > 0) {
@@ -685,6 +761,19 @@ export async function POST(req: NextRequest) {
             input_tokens: pendingUsage.inputTokens,
             output_tokens: pendingUsage.outputTokens,
           });
+          /**
+           * تسوية الحجز بالاستهلاك الحقيقي: الفرق بين ما حُجز (أسوأ حالة)
+           * وما استُهلك يتحرّر فورًا، فلا يُحاسَب المستخدم على ما لم يستعمله
+           * ولا ينتظر انقضاء المهلة كي يستعيد رصيده.
+           */
+          await finalizeChatBudget(
+            requestId,
+            pendingUsage.inputTokens,
+            pendingUsage.outputTokens,
+          );
+        } else {
+          // لا استهلاك يُحتسب (إجهاض أو غياب إطار usage) ⇒ يتحرّر الحجز كاملًا
+          await releaseChatBudget(requestId);
         }
 
         if (req.signal.aborted) {
@@ -874,7 +963,7 @@ export async function POST(req: NextRequest) {
         req.signal.removeEventListener("abort", onClientAbort);
         // مقعد التزامن يُحرَّر هنا لا قبله: أي مسار خروج — نجاح أو خطأ أو
         // إلغاء من العميل — يمرّ بهذا الـfinally، فلا يبقى مستخدم محبوسًا
-        slot.release();
+        await slot.release();
         try {
           controller.close();
         } catch {

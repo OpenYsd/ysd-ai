@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { getConfiguredProviders, listModelOptions } from "@/lib/ai/registry";
+import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { peekNineRouterCache } from "@/lib/ai/nine-router";
 
 export const runtime = "nodejs";
@@ -26,6 +27,16 @@ interface SafeModel {
   provider: string;
   capabilities: { streaming: boolean; tools: boolean; vision: boolean };
   available: boolean;
+  /**
+   * v0.8.1 — النموذج يتجاوز خطة المستخدم.
+   *
+   * يُعرض **مقفولًا بشارة** لا مخفيًّا: الإخفاء يجعل المستخدم لا يعرف أن
+   * الترقية تمنحه شيئًا، والعرض بلا شارة يجعله يختاره ثم يُخفَّض بلا سبب
+   * ظاهر. الشارة تقول الحقيقة قبل أن يُنفق أحدٌ نقرة.
+   */
+  locked: boolean;
+  /** أدنى خطة تفتح النموذج — لنصّ الشارة */
+  minTier: string;
 }
 
 function json(body: unknown, status: number, extraHeaders: Record<string, string> = {}) {
@@ -53,8 +64,17 @@ export async function GET() {
    * مساره الخاص، فما هنا من الكاش أو من القائمة الثابتة.
    */
   const providersById = new Map(getConfiguredProviders().map((p) => [p.id, p]));
+
+  /**
+   * خطة المستخدم وحدود النماذج — من القاعدة لا من العميل. القائمة التي تُعرض
+   * يجب أن تطابق ما سيقبله /api/chat، وإلا اختار المستخدم ما سيُرفض.
+   */
+  const policy = await loadModelPolicy(supabase, ctx.userId);
+  const minTierById = new Map(policy.models.map((m) => [m.id, m.min_tier]));
+
   const models: SafeModel[] = listModelOptions().map((o) => {
     const p = providersById.get(o.providerId);
+    const minTier = minTierById.get(o.id) ?? "free";
     return {
       id: o.id,
       name: o.nameAr || o.nameEn || o.id,
@@ -65,11 +85,13 @@ export async function GET() {
         vision: p?.supportsVision ?? false,
       },
       available: o.available,
+      locked: !tierAllows(policy.userTier, minTier),
+      minTier,
     };
   });
 
   const peek = providersById.has("nine_router") ? peekNineRouterCache() : null;
   const stale = Boolean(peek && peek.ageMs > STALE_AFTER_MS);
 
-  return json({ models, stale }, 200, stale ? { "X-YSD-Models-Stale": "1" } : {});
+  return json({ models, stale, tier: policy.userTier }, 200, stale ? { "X-YSD-Models-Stale": "1" } : {});
 }

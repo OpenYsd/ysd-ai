@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { inviteRateKey } from "../lib/auth/invite-guard";
+import { INVITE_BUCKETS, inviteRateKey } from "../lib/auth/invite-guard";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
 const strip = (s: string) =>
@@ -18,11 +18,12 @@ const strip = (s: string) =>
 
 const M0025 = strip(read("supabase/migrations/0025_lock_down_public_cleanup_functions.sql"));
 const M0026 = strip(read("supabase/migrations/0026_harden_usage_check_permissions.sql"));
-const M0027 = strip(read("supabase/migrations/0027_lock_invite_rpcs_and_tier_cost_limits.sql"));
+const M0027 = strip(read("supabase/migrations/0027_prepare_cost_limits.sql"));
+const M0028 = strip(read("supabase/migrations/0028_lock_invite_rpcs.sql"));
 
 // ════════════════════════════════════════════════════════════
 
-describe("★ 0027 — دوال الدعوة لا ينادها إلا service_role", () => {
+describe("★ 0028 — دوال الدعوة لا ينادها إلا service_role", () => {
   const SIGS = [
     ["beta_invite_valid", "public\\.beta_invite_valid\\(text\\)"],
     ["beta_claim_invite", "public\\.beta_claim_invite\\(text, text, integer\\)"],
@@ -31,7 +32,7 @@ describe("★ 0027 — دوال الدعوة لا ينادها إلا service_ro
   for (const [name, sig] of SIGS) {
     it(`★ ${name}: مسحوبة من public وanon وauthenticated`, () => {
       for (const role of ["public", "anon", "authenticated"]) {
-        expect(M0027, `${name}/${role}`).toMatch(
+        expect(M0028, `${name}/${role}`).toMatch(
           new RegExp(`revoke all on function ${sig} from ${role}`),
         );
       }
@@ -39,19 +40,45 @@ describe("★ 0027 — دوال الدعوة لا ينادها إلا service_ro
 
     it(`★ ${name}: ممنوحة لـservice_role وحده`, () => {
       const grantees = [
-        ...M0027.matchAll(new RegExp(`grant execute on function ${sig} to ([^;]+)`, "g")),
+        ...M0028.matchAll(new RegExp(`grant execute on function ${sig} to ([^;]+)`, "g")),
       ].map((m) => m[1]!.trim());
       expect(grantees).toEqual(["service_role"]);
     });
 
     it(`★ ${name}: السحب يسبق المنح`, () => {
       const rx = new RegExp(`revoke all on function ${sig} from authenticated`);
-      const revoke = M0027.search(rx);
-      const grant = M0027.search(new RegExp(`grant execute on function ${sig} to service_role`));
+      const revoke = M0028.search(rx);
+      const grant = M0028.search(new RegExp(`grant execute on function ${sig} to service_role`));
       expect(revoke).toBeGreaterThan(-1);
       expect(revoke).toBeLessThan(grant);
     });
   }
+});
+
+describe("★ الفصل إلى مرحلتين — شرط ألّا ينكسر الإنتاج", () => {
+  /**
+   * 0027 **إضافية بحتة**: لو سحبت صلاحية لانكسر التطبيق الحيّ لحظة تطبيقها،
+   * قبل أن يُنشر الجديد. هذا الاختبار هو ما يمنع دمج المرحلتين ثانيةً.
+   */
+  it("★ 0027 لا تسحب أي صلاحية ولا تمسّ دوال الدعوة", () => {
+    expect(M0027).not.toMatch(/revoke/i);
+    expect(M0027).not.toMatch(/beta_invite_valid|beta_claim_invite/);
+  });
+
+  it("★ 0027 إضافية فقط — لا حذف عمود ولا جدول", () => {
+    expect(M0027).not.toMatch(/drop table|drop column/i);
+    expect(M0027).toMatch(/add column if not exists/);
+  });
+
+  it("★ 0028 تسحب فقط ولا تغيّر بيانات", () => {
+    expect(M0028).not.toMatch(/insert into|update public\./i);
+    expect(M0028).toMatch(/revoke all on function/);
+  });
+
+  it("★ 0028 توثّق أنها تُطبَّق بعد النشر", () => {
+    const raw = read("supabase/migrations/0028_lock_invite_rpcs.sql");
+    expect(raw).toMatch(/لا تُطبَّق قبل نشر التطبيق الجديد/);
+  });
 });
 
 describe("★ 0025 — دوال التنظيف العامة ممنوعة", () => {
@@ -130,14 +157,28 @@ const state = vi.hoisted(() => ({
   error: null as { code: string } | null,
   calls: [] as { fn: string; args: Record<string, unknown> }[],
   adminAvailable: true,
+  counters: new Map<string, number>(),
 }));
 
+/**
+ * المُموِّه يحمل **عدّادًا مشتركًا** يحاكي جدول القاعدة: كل نداء يزيده ويقارنه
+ * بالحدّ. وهو مشترك بين كل استدعاءات المسار في هذا الملف — أي أنه يمثّل
+ * «نسخة تطبيق واحدة أو أكثر تشترك في مصدر واحد»، وهو بالضبط عقد الحدّ
+ * الموزّع. أمّا إثبات الذرّية باتصالين حقيقيين ففي scripts/v08-pg-concurrency.mjs.
+ */
 vi.mock("@/lib/supabase/admin", () => ({
   getAdminClient: () =>
     state.adminAvailable
       ? {
           rpc: async (fn: string, args: Record<string, unknown>) => {
             state.calls.push({ fn, args });
+            if (fn === "consume_invite_rate_limit") {
+              const key = String(args.p_key_hash);
+              const limit = Number(args.p_limit);
+              const n = (state.counters.get(key) ?? 0) + 1;
+              state.counters.set(key, n);
+              return { data: [{ allowed: n <= limit, current_count: n }], error: null };
+            }
             return {
               data: fn === "beta_invite_valid" ? state.valid : state.claimOk,
               error: state.error,
@@ -161,6 +202,8 @@ const call = (handler: typeof VERIFY, body: unknown, ip?: string) =>
   );
 
 const uniqCode = () => `INVITE-${String(++seq).padStart(6, "0")}`;
+/** أول نداء لدالة بعينها — النداءات الأولى صارت لحدّ المعدّل */
+const rpcCall = (fn: string) => state.calls.find((c) => c.fn === fn);
 
 beforeEach(() => {
   state.valid = true;
@@ -168,6 +211,7 @@ beforeEach(() => {
   state.error = null;
   state.calls = [];
   state.adminAvailable = true;
+  state.counters.clear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -176,7 +220,7 @@ describe("★ المسارات تمرّ بعميل الخدمة", () => {
     const r = await call(VERIFY, { code: uniqCode() });
     expect(r.status).toBe(200);
     expect(await r.json()).toEqual({ valid: true });
-    expect(state.calls[0]!.fn).toBe("beta_invite_valid");
+    expect(rpcCall("beta_invite_valid")).toBeTruthy();
   });
 
   it("★ claim يستدعي beta_claim_invite ويعيد تذكرة", async () => {
@@ -185,22 +229,22 @@ describe("★ المسارات تمرّ بعميل الخدمة", () => {
     const body = (await r.json()) as { ticket?: string };
     expect(typeof body.ticket).toBe("string");
     expect(body.ticket!.length).toBeGreaterThan(20);
-    expect(state.calls[0]!.fn).toBe("beta_claim_invite");
+    expect(rpcCall("beta_claim_invite")).toBeTruthy();
   });
 
   /** التذكرة الخام لا تُرسَل إلى القاعدة — الهاش فقط */
   it("★ القاعدة تتلقّى هاش التذكرة لا التذكرة", async () => {
     const r = await call(CLAIM, { code: uniqCode() });
     const { ticket } = (await r.json()) as { ticket: string };
-    const sent = String(state.calls[0]!.args.p_ticket_hash);
+    const sent = String(rpcCall("beta_claim_invite")!.args.p_ticket_hash);
     expect(sent).toMatch(/^[0-9a-f]{64}$/);
     expect(sent).not.toBe(ticket);
-    expect(JSON.stringify(state.calls[0]!.args)).not.toContain(ticket);
+    expect(JSON.stringify(rpcCall("beta_claim_invite")!.args)).not.toContain(ticket);
   });
 
   it("★ البريد لا يصل القاعدة إطلاقًا", async () => {
     await call(CLAIM, { code: uniqCode(), email: "person@example.com" });
-    const args = JSON.stringify(state.calls[0]!.args);
+    const args = JSON.stringify(rpcCall("beta_claim_invite")!.args);
     expect(args).not.toContain("person@example.com");
     expect(args).not.toContain("email");
   });
@@ -243,8 +287,20 @@ describe("★ الرفض لا يميّز سببًا", () => {
   });
 });
 
-describe("★ حدود المعدّل الثلاثة", () => {
-  it("★ IP يُوقَف", async () => {
+describe("★ حدود المعدّل الثلاثة — موزّعة", () => {
+  /** المصدر هو القاعدة: كل فحص يمرّ بـconsume_invite_rate_limit */
+  it("★ الحدّ يُستهلك من القاعدة لا من الذاكرة", async () => {
+    await call(CLAIM, { code: uniqCode(), email: "a@b.co" });
+    const rateCalls = state.calls.filter((c) => c.fn === "consume_invite_rate_limit");
+    expect(rateCalls.length).toBe(3); // IP + كود + بريد
+    expect(rateCalls.map((c) => c.args.p_bucket)).toEqual([
+      INVITE_BUCKETS.claimIp,
+      INVITE_BUCKETS.claimCode,
+      INVITE_BUCKETS.claimEmail,
+    ]);
+  });
+
+  it("★ IP يُوقَف عند الحدّ", async () => {
     const ip = "203.0.113.9";
     const codes: number[] = [];
     for (let i = 0; i < 14; i++) codes.push((await call(CLAIM, { code: uniqCode() }, ip)).status);
@@ -269,12 +325,40 @@ describe("★ حدود المعدّل الثلاثة", () => {
     expect(codes).toContain(429);
   });
 
-  /** المفاتيح هاش: لا يظهر الكود ولا البريد في ذاكرة الحدّ */
-  it("★ مفتاح الحدّ هاش لا قيمة خام", () => {
-    const k = inviteRateKey("SECRET-CODE-1");
-    expect(k).toMatch(/^[0-9a-f]{32}$/);
-    expect(k).not.toContain("SECRET");
-    expect(inviteRateKey("A@B.co")).toBe(inviteRateKey(" a@b.CO "));
+  /**
+   * الهجوم المباشر: العميل يكتب `x-forwarded-for` بنفسه ليحصل على مفتاح جديد
+   * كل طلب. العنوان يُؤخذ من **يمين** السلسلة (ما أضافه وكيلنا)، فالتلاعب
+   * باليسار لا يغيّر المفتاح.
+   */
+  it("★ تزوير x-forwarded-for لا يتجاوز الحدّ", async () => {
+    const realIp = "203.0.113.55";
+    const codes: number[] = [];
+    for (let i = 0; i < 14; i++) {
+      // المهاجم يبدّل الجزء الأيسر في كل طلب
+      codes.push((await call(CLAIM, { code: uniqCode() }, `10.0.0.${i}, ${realIp}`)).status);
+    }
+    expect(codes).toContain(429);
+  });
+
+  it("★ المفاتيح HMAC لا قيم خام", async () => {
+    await call(CLAIM, { code: "PLAINCODE-77", email: "leak@example.com" }, "9.9.9.9");
+    const rateCalls = state.calls.filter((c) => c.fn === "consume_invite_rate_limit");
+    for (const c of rateCalls) {
+      const key = String(c.args.p_key_hash);
+      expect(key).toMatch(/^[0-9a-f]{64}$/);
+      for (const leak of ["PLAINCODE-77", "leak@example.com", "9.9.9.9"]) {
+        expect(key, leak).not.toContain(leak);
+      }
+    }
+  });
+
+  it("★ المفتاح يختلف باختلاف الدلو ويتطابق بعد التطبيع", () => {
+    expect(inviteRateKey(INVITE_BUCKETS.claimCode, "X")).not.toBe(
+      inviteRateKey(INVITE_BUCKETS.claimEmail, "X"),
+    );
+    expect(inviteRateKey(INVITE_BUCKETS.claimEmail, " A@B.co ")).toBe(
+      inviteRateKey(INVITE_BUCKETS.claimEmail, "a@b.co"),
+    );
   });
 });
 

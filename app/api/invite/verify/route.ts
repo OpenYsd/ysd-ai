@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { getAdminClient } from "@/lib/supabase/admin";
-import { rateLimit } from "@/lib/rate-limit";
-import { inviteRateKey } from "@/lib/auth/invite-guard";
+import { clientIpFrom } from "@/lib/http/client-ip";
+import { consumeInviteRate, INVITE_BUCKETS } from "@/lib/auth/invite-guard";
 
 export const runtime = "nodejs";
 
@@ -23,11 +23,13 @@ const schema = z.object({ code: z.string().min(8).max(64) });
  * أبجدية 32 ≈ 80 بت). الـRate Limit هنا طبقة إضافية ضد الإغراق/العدّ.
  */
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
-  if (!rateLimit(`invite-verify:${ip}`, 10, 60_000)) return tooMany();
+  /**
+   * العنوان من `clientIpFrom` لا من أول عنصر في `x-forwarded-for`: الترويسة
+   * سلسلة يُلحق بها، وأولها يكتبه العميل — فأخذه يعني أنه يختار مفتاح حدّه
+   * بنفسه ويتجاوزه بتغيير رقم.
+   */
+  const ip = clientIpFrom(req.headers);
+  if (!(await consumeInviteRate(INVITE_BUCKETS.verifyIp, ip)).allowed) return tooMany();
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ valid: false }, 200);
@@ -35,9 +37,9 @@ export async function POST(req: NextRequest) {
 
   /**
    * حدّ ثانٍ على **الكود نفسه**: حدّ الـIP وحده تتجاوزه شبكة موزّعة، وكودٌ
-   * بعينه هدفٌ قائم بذاته. المفتاح هاش فلا يظهر الكود في الذاكرة.
+   * بعينه هدفٌ قائم بذاته. والمفتاح HMAC فلا تصل القاعدة قيمة خام.
    */
-  if (!rateLimit(`invite-verify-code:${inviteRateKey(code)}`, 20, 300_000)) return tooMany();
+  if (!(await consumeInviteRate(INVITE_BUCKETS.verifyCode, code)).allowed) return tooMany();
 
   const supabase = getAdminClient();
   if (!supabase) {

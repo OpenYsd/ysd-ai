@@ -14,7 +14,8 @@
     "embeddings:prefetch": "node scripts/embeddings-prefetch.mjs",
     "worker:rag": "node scripts/worker-rag.mjs",
     "test:signup:integration": "node scripts/v08-signup-matrix.mjs",
-    "test:pg:concurrency": "node scripts/v08-pg-concurrency.mjs"
+    "test:pg:concurrency": "node scripts/v08-pg-concurrency.mjs",
+    "test:pg:guards": "node scripts/v081-pg-guards.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

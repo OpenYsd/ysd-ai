@@ -2,8 +2,8 @@ import { NextRequest } from "next/server";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { getAdminClient } from "@/lib/supabase/admin";
-import { rateLimit } from "@/lib/rate-limit";
-import { inviteRateKey } from "@/lib/auth/invite-guard";
+import { clientIpFrom } from "@/lib/http/client-ip";
+import { consumeInviteRate, INVITE_BUCKETS } from "@/lib/auth/invite-guard";
 
 export const runtime = "nodejs";
 
@@ -33,20 +33,22 @@ const schema = z.object({
  * ولا يُسجَّل الكود ولا البريد ولا التذكرة في أي سجل.
  */
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
-  if (!rateLimit(`invite-claim:${ip}`, 10, 60_000)) return tooMany();
+  /**
+   * العنوان من `clientIpFrom` لا من أول عنصر في `x-forwarded-for` — انظر
+   * lib/http/client-ip.ts: أول عنصر يكتبه العميل، فأخذه يجعله يختار مفتاح
+   * حدّه بنفسه وينتحل عنوان غيره.
+   */
+  const ip = clientIpFrom(req.headers);
+  if (!(await consumeInviteRate(INVITE_BUCKETS.claimIp, ip)).allowed) return tooMany();
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: "كود غير صالح | Invalid code" }, 400);
   const code = parsed.data.code.trim();
 
-  // حدّان إضافيان: على الكود وعلى البريد — بالهاش لا بالقيمة الخام
-  if (!rateLimit(`invite-claim-code:${inviteRateKey(code)}`, 15, 300_000)) return tooMany();
+  // حدّان إضافيان: على الكود وعلى البريد — بمفاتيح HMAC لا قيم خام
+  if (!(await consumeInviteRate(INVITE_BUCKETS.claimCode, code)).allowed) return tooMany();
   if (parsed.data.email) {
-    if (!rateLimit(`invite-claim-email:${inviteRateKey(parsed.data.email)}`, 8, 300_000)) {
+    if (!(await consumeInviteRate(INVITE_BUCKETS.claimEmail, parsed.data.email)).allowed) {
       return tooMany();
     }
   }
