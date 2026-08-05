@@ -28,10 +28,8 @@ import { rateLimit as memoryRateLimit } from "@/lib/rate-limit";
  *
  * ── المفتاح السرّي ──
  *
- * `YSD_RATE_LIMIT_SECRET` إن وُجد. وإلا فمشتقٌّ من `SUPABASE_SERVICE_ROLE_KEY`
- * — سرٌّ خادمي عالي العشوائية موجود أصلًا، فلا يفرض إعدادًا جديدًا. وغيابهما
- * معًا يعني بيئةً بلا أسرار (اختبار محلي)، فنستعمل ثابتًا معلومًا **مع رمز
- * تحذير**: الحماية حينها شكلية، ولا ندّعي غير ذلك.
+ * `RATE_LIMIT_HMAC_SECRET` **مطلوب ومستقلّ** — 32 بايتًا على الأقل. لا يُشتقّ
+ * من أي سرٍّ آخر، ولا احتياطي له في الإنتاج. التفصيل عند `rateSecret()`.
  */
 
 const BUCKETS = {
@@ -54,21 +52,46 @@ export const INVITE_LIMITS: Record<InviteBucket, { limit: number; windowSeconds:
   [BUCKETS.claimEmail]: { limit: 8, windowSeconds: 300 },
 };
 
+/** الحدّ الأدنى: 32 بايتًا — أقلّ من ذلك لا يُعتدّ به مفتاح HMAC */
+export const RATE_LIMIT_SECRET_MIN_LENGTH = 32;
+
 let secretWarned = false;
 
-function rateSecret(): string {
-  const explicit = process.env.YSD_RATE_LIMIT_SECRET;
-  if (explicit && explicit.length >= 16) return explicit;
+/** هل المفتاح مضبوط وصالح؟ — للفحص الصحي، بلا كشف قيمة ولا طول */
+export function isRateSecretConfigured(): boolean {
+  const v = process.env.RATE_LIMIT_HMAC_SECRET;
+  return typeof v === "string" && v.length >= RATE_LIMIT_SECRET_MIN_LENGTH;
+}
 
-  const derived = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (derived && derived.length >= 20) return `ysd-rate:${derived}`;
+/**
+ * المفتاح السرّي لمفاتيح الحدّ.
+ *
+ * **مطلوب صراحةً ولا يُشتقّ من غيره.** كان يسقط إلى
+ * `SUPABASE_SERVICE_ROLE_KEY` عند غيابه، وذلك خطأ من وجهين: خلط الأسرار
+ * يجعل تدوير أحدهما يكسر الآخر صامتًا (كل عدّادات الحدّ تُصبح مفاتيح جديدة
+ * دفعةً واحدة، فينفتح الحدّ للجميع لحظةَ التدوير)، وتسريب أحدهما يفضح
+ * الاثنين.
+ *
+ * **ولا احتياطي في الإنتاج**: غيابه هناك يرمي. الحماية التي تعمل بمفتاح
+ * معلوم ليست حماية، والصمت عنها أسوأ من تعطّل ظاهر يُصلَح في دقيقة.
+ * وفي التطوير وحده يُستعمل ثابتٌ معلوم مع تحذير صريح.
+ */
+function rateSecret(): string {
+  const explicit = process.env.RATE_LIMIT_HMAC_SECRET;
+  if (explicit && explicit.length >= RATE_LIMIT_SECRET_MIN_LENGTH) return explicit;
+
+  if (process.env.NODE_ENV === "production") {
+    // لا اسم قيمة ولا جزء منها — رسالة إعداد فقط
+    throw new Error(
+      "RATE_LIMIT_HMAC_SECRET مفقود أو أقصر من 32 بايتًا — مطلوب في الإنتاج",
+    );
+  }
 
   if (!secretWarned) {
     secretWarned = true;
-    // رمز فقط — لا قيمة ولا اسم متغيّر سرّي
-    console.warn("[invite] rate_key_secret=absent protection=weak");
+    console.warn("[invite] rate_key_secret=absent env=development protection=weak");
   }
-  return "ysd-rate-limit-development-only";
+  return "ysd-rate-limit-development-only-not-for-production";
 }
 
 /**

@@ -13,13 +13,26 @@ import { NextRequest } from "next/server";
 import { INVITE_BUCKETS, inviteRateKey } from "../lib/auth/invite-guard";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
+/**
+ * يجرّد تعليقات SQL — **بعد تطبيع نهايات الأسطر**.
+ *
+ * بلا التطبيع لا يعمل التجريد إطلاقًا على ملفٍ بنهايات CRLF: `.` في
+ * JavaScript لا تطابق `\r`، فـ`--.*$` لا تجد نهاية السطر فلا تتطابق. والنتيجة
+ * أن التعليقات تمرّ كأنها شيفرة، فتنجح كل `toMatch` وتفشل كل `not.toMatch` —
+ * أي أن الحرّاس السلبية كانت تحرس نصًّا لا وجود له.
+ */
 const strip = (s: string) =>
-  s.split("\n").map((l) => l.replace(/--.*$/, "")).join("\n").replace(/\/\*[\s\S]*?\*\//g, " ");
+  s
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.replace(/--.*$/, ""))
+    .join("\n")
+    .replace(/\/\*[\s\S]*?\*\//g, " ");
 
 const M0025 = strip(read("supabase/migrations/0025_lock_down_public_cleanup_functions.sql"));
 const M0026 = strip(read("supabase/migrations/0026_harden_usage_check_permissions.sql"));
 const M0027 = strip(read("supabase/migrations/0027_prepare_cost_limits.sql"));
-const M0028 = strip(read("supabase/migrations/0028_lock_invite_rpcs.sql"));
+const M0028 = strip(read("supabase/migrations/0031_lock_invite_rpcs.sql"));
 
 // ════════════════════════════════════════════════════════════
 
@@ -76,7 +89,7 @@ describe("★ الفصل إلى مرحلتين — شرط ألّا ينكسر ا
   });
 
   it("★ 0028 توثّق أنها تُطبَّق بعد النشر", () => {
-    const raw = read("supabase/migrations/0028_lock_invite_rpcs.sql");
+    const raw = read("supabase/migrations/0031_lock_invite_rpcs.sql");
     expect(raw).toMatch(/لا تُطبَّق قبل نشر التطبيق الجديد/);
   });
 });

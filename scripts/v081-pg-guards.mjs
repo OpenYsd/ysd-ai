@@ -11,7 +11,7 @@
  *
  * ما يُثبته:
  *   ① ترتيب الإصدار: /api/chat على المخطط **قبل** 0027 — لماذا لا يتوافق،
- *      ثم أن 0027 إضافية فلا تكسر القديم، وأن 0028 وحدها الكاسرة.
+ *      ثم أن 0027 إضافية فلا تكسر القديم، وأن 0031 وحدها الكاسرة.
  *   ② monthly_tokens يُفرض فعلًا، وحجزان متزامنان لا يتجاوزانه.
  *   ③ مقعد التوليد: اتصالان متزامنان ⇒ واحد فقط ينجح.
  *   ④ انتهاء TTL يسمح بطلب لاحق (انهيار لا يحبس مستخدمًا).
@@ -164,16 +164,16 @@ grant execute on function public.beta_claim_invite(text,text,integer) to anon, a
 `, { tuples: false });
 
   const oldWorksBefore = psql(`set role anon; select public.beta_invite_valid('X'); reset role;`).trim();
-  ok(oldWorksBefore.includes("t"), "قبل 0028: التطبيق القديم (anon) يعمل");
+  ok(oldWorksBefore.includes("t"), "قبل 0031: التطبيق القديم (anon) يعمل");
 
-  console.log("\n▶ تطبيق 0027 + 0029 + 0030 + 0031 (كلها إضافية)…");
+  console.log("\n▶ تطبيق 0027 + 0028 + 0029 + 0030 (كلها إضافية)…");
   psql(mig("0027_prepare_cost_limits.sql"), { tuples: false });
-  psql(mig("0029_chat_budget_reservations.sql"), { tuples: false });
-  psql(mig("0030_generation_slots.sql"), { tuples: false });
-  psql(mig("0031_invite_rate_limits.sql"), { tuples: false });
+  psql(mig("0028_chat_budget_reservations.sql"), { tuples: false });
+  psql(mig("0029_distributed_generation_slots.sql"), { tuples: false });
+  psql(mig("0030_distributed_invite_rate_limits.sql"), { tuples: false });
 
   const oldWorksAfter27 = psql(`set role anon; select public.beta_invite_valid('X'); reset role;`).trim();
-  ok(oldWorksAfter27.includes("t"), "(ب) بعد 0027: التطبيق القديم ما زال يعمل ✔ لا كسر");
+  ok(oldWorksAfter27.includes("t"), "(B) بعد 0027–0030: التطبيق القديم ما زال يعمل ✔ لا كسر");
 
   const cap = psql(`select max_output_tokens from public.usage_limits where tier='free';`).trim();
   ok(cap === "1024", "بعد 0027: سقف الإخراج للمجاني", `= ${cap}`);
@@ -315,16 +315,16 @@ grant execute on function public.beta_claim_invite(text,text,integer) to anon, a
   ok(svc.includes("t"), "service_role: مسموح");
 
   // ─────────────────────────────────────────────────────────
-  console.log("\n⑧ 0028 — الكاسرة، بعد النشر وحدها");
-  psql(mig("0028_lock_invite_rpcs.sql"), { tuples: false });
+  console.log("\n⑧ 0031 — الكاسرة، بعد النشر وحدها");
+  psql(mig("0031_lock_invite_rpcs.sql"), { tuples: false });
   let anonDenied = false;
   try { psql(`set role anon; select public.beta_invite_valid('X');`); }
   catch (e) { anonDenied = /permission denied/i.test(String(e.stderr ?? e.message)); }
-  ok(anonDenied, "(هـ) بعد 0028: anon ⇒ permission denied");
+  ok(anonDenied, "(F) بعد 0031: anon ⇒ permission denied");
   info("لو طُبِّقت قبل النشر لتعطّل التسجيل بالدعوة في الإنتاج فورًا.");
 
   const svcStill = psql(`set role service_role; select public.beta_invite_valid('X'); reset role;`).trim();
-  ok(svcStill.includes("t"), "بعد 0028: service_role (التطبيق الجديد) يعمل");
+  ok(svcStill.includes("t"), "(G) بعد 0031: service_role (التطبيق الجديد) يعمل");
 
   console.log(`\n${"─".repeat(62)}`);
   console.log(`النتيجة: ${checks - failures}/${checks} ✅   الإخفاقات: ${failures}`);

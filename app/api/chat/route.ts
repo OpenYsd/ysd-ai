@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
   }
 
   /**
-   * مقعد التوليد — مصدره القاعدة لا ذاكرة العملية (ترحيل 0030).
+   * مقعد التوليد — مصدره القاعدة لا ذاكرة العملية (ترحيل 0029).
    * `requestId` جزء من الحجز، فلا يحرّر طلبٌ مقعدَ طلبٍ آخر.
    */
   const slot = await acquireSlot(userId, requestId, policy.userTier);
@@ -207,7 +207,7 @@ export async function POST(req: NextRequest) {
   }
 
   /**
-   * حجز الميزانية **قبل** أي نداء للمزوّد (ترحيل 0029).
+   * حجز الميزانية **قبل** أي نداء للمزوّد (ترحيل 0028).
    *
    * `check_usage_allowed` أعلاه تفحص الرسائل وحدها؛ هذا يفرض `monthly_tokens`
    * ذرّيًا: التحقق والحجز في معاملة واحدة تحت قفل صفّ المستخدم، فلا يمرّ

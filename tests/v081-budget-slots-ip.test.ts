@@ -6,23 +6,40 @@
  *   • مقعد التوليد `Set` في الذاكرة — يحرس نسخةً واحدة ويُصفَّر عند إعادة التشغيل.
  *   • عنوان العميل من **أول** `x-forwarded-for` — يكتبه العميل نفسه.
  *
- * الذرّية الحقيقية تُثبَت باتصالَي PostgreSQL في scripts/v08-pg-concurrency.mjs.
+ * الذرّية الحقيقية تُثبَت باتصالَي PostgreSQL في scripts/v081-pg-guards.mjs.
  * هنا نثبت العقد: ما الذي يُنادى، وبأي وسائط، وماذا يحدث عند كل ردّ.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clientIpFrom, isPlausibleIp } from "../lib/http/client-ip";
+import { clientIpFrom, isPlausibleIp, normalizeIp } from "../lib/http/client-ip";
+import {
+  INVITE_BUCKETS,
+  inviteRateKey,
+  isRateSecretConfigured,
+} from "../lib/auth/invite-guard";
 import { estimateInputTokens, BUDGET_DENY_MESSAGE } from "../lib/ai/budget";
 import { _resetGenerationSlots } from "../lib/ai/concurrency";
 
 const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
+/**
+ * يجرّد تعليقات SQL — **بعد تطبيع نهايات الأسطر**.
+ *
+ * بلا التطبيع لا يعمل التجريد إطلاقًا على ملفٍ بنهايات CRLF: `.` في
+ * JavaScript لا تطابق `\r`، فـ`--.*$` لا تجد نهاية السطر فلا تتطابق. فتمرّ
+ * التعليقات كأنها شيفرة، وتصير كل `not.toMatch` تحرس نصًّا لا وجود له.
+ */
 const strip = (s: string) =>
-  s.split("\n").map((l) => l.replace(/--.*$/, "")).join("\n").replace(/\/\*[\s\S]*?\*\//g, " ");
+  s
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.replace(/--.*$/, ""))
+    .join("\n")
+    .replace(/\/\*[\s\S]*?\*\//g, " ");
 
-const M0029 = strip(read("supabase/migrations/0029_chat_budget_reservations.sql"));
-const M0030 = strip(read("supabase/migrations/0030_generation_slots.sql"));
-const M0031 = strip(read("supabase/migrations/0031_invite_rate_limits.sql"));
+const M0029 = strip(read("supabase/migrations/0028_chat_budget_reservations.sql"));
+const M0030 = strip(read("supabase/migrations/0029_distributed_generation_slots.sql"));
+const M0031 = strip(read("supabase/migrations/0030_distributed_invite_rate_limits.sql"));
 
 // ════════════════════════════════════════════════════════════
 //  عنوان العميل خلف الوكيل
@@ -30,59 +47,82 @@ const M0031 = strip(read("supabase/migrations/0031_invite_rate_limits.sql"));
 
 const hdrs = (o: Record<string, string>) => new Headers(o);
 
-describe("★ عنوان العميل — لا يُؤخذ أول x-forwarded-for", () => {
+describe("★ عنوان العميل — x-real-ip أولًا", () => {
   /**
-   * جوهر الثغرة: السلسلة تُلحَق، فأولها يكتبه العميل. أخذه يعني أن المهاجم
-   * يختار مفتاح حدّه بنفسه، ويستطيع انتحال عنوان ضحية فيُستنفد حدّها.
+   * وكيل Railway **يكتب** `x-real-ip` ويستبدل ما أرسله العميل تحت الاسم
+   * نفسه، بعكس `x-forwarded-for` التي تُلحَق فيبقى يسارها بيد العميل.
    */
-  it("★ يأخذ اليمين لا اليسار", () => {
+  it("★ x-real-ip هي المصدر ولو وُجدت السلسلة", () => {
+    expect(
+      clientIpFrom(hdrs({ "x-real-ip": "203.0.113.7", "x-forwarded-for": "1.2.3.4, 9.9.9.9" })),
+    ).toBe("203.0.113.7");
+  });
+
+  it("★ x-real-ip ثابت مع 20 قيمة x-forwarded-for مزيّفة ⇒ مفتاح واحد", () => {
+    const real = "203.0.113.7";
+    const keys = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      keys.add(
+        clientIpFrom(
+          hdrs({
+            "x-real-ip": real,
+            "x-forwarded-for": `10.0.0.${i}, 172.16.0.${i}, 192.168.1.${i}`,
+          }),
+        ),
+      );
+    }
+    expect([...keys]).toEqual([real]);
+  });
+
+  it("★ عنوانان مختلفان في x-real-ip ⇒ مفتاحان مختلفان", () => {
+    const a = clientIpFrom(hdrs({ "x-real-ip": "203.0.113.7" }));
+    const b = clientIpFrom(hdrs({ "x-real-ip": "203.0.113.8" }));
+    expect(a).not.toBe(b);
+    expect(inviteRateKey(INVITE_BUCKETS.claimIp, a)).not.toBe(
+      inviteRateKey(INVITE_BUCKETS.claimIp, b),
+    );
+  });
+
+  it("★ لا يمكن نسبة الطلب إلى عنوان ضحية بتغيير x-forwarded-for", () => {
+    const victim = "198.51.100.5";
+    const attacker = "203.0.113.9";
+    const got = clientIpFrom(hdrs({ "x-real-ip": attacker, "x-forwarded-for": victim }));
+    expect(got).toBe(attacker);
+    expect(got).not.toBe(victim);
+  });
+
+  /**
+   * `x-real-ip` فاسدة **لا تسقط** إلى السلسلة: السقوط عندها يمنح المهاجم
+   * مفتاحًا يتحكم به بمجرد إفساد هذه الترويسة.
+   */
+  it("★ x-real-ip فاسدة ⇒ unknown لا سقوط إلى السلسلة", () => {
+    expect(clientIpFrom(hdrs({ "x-real-ip": "not-an-ip", "x-forwarded-for": "1.2.3.4" }))).toBe(
+      "unknown",
+    );
+  });
+
+  it("★ ترويسات فاسدة ⇒ unknown بلا انهيار", () => {
+    for (const bad of ["", "   ", "not-an-ip", "'; drop table--", "x".repeat(80), "999.1.1.1"]) {
+      expect(() => clientIpFrom(hdrs({ "x-real-ip": bad })), bad).not.toThrow();
+      expect(clientIpFrom(hdrs({ "x-real-ip": bad })), bad).toBe("unknown");
+    }
+    expect(clientIpFrom(hdrs({}))).toBe("unknown");
+  });
+
+  it("★ عند غياب x-real-ip تُستعمل السلسلة من اليمين", () => {
     expect(clientIpFrom(hdrs({ "x-forwarded-for": "1.2.3.4, 203.0.113.7" }))).toBe("203.0.113.7");
   });
 
-  it("★ تبديل الجزء الأيسر لا يغيّر النتيجة", () => {
+  it("★ وحتى حينها لا يُؤخذ اليسار الذي يكتبه العميل", () => {
     const real = "203.0.113.7";
     const seen = new Set<string>();
     for (let i = 0; i < 20; i++) {
       seen.add(clientIpFrom(hdrs({ "x-forwarded-for": `10.0.0.${i}, ${real}` })));
     }
-    expect([...seen]).toEqual([real]); // مفتاح واحد مهما بدّل المهاجم
+    expect([...seen]).toEqual([real]);
   });
 
-  it("★ انتحال عنوان ضحية في اليسار لا يُنسب إليها", () => {
-    const victim = "198.51.100.5";
-    const got = clientIpFrom(hdrs({ "x-forwarded-for": `${victim}, 203.0.113.9` }));
-    expect(got).not.toBe(victim);
-    expect(got).toBe("203.0.113.9");
-  });
-
-  it("★ عنوان واحد فقط يُؤخذ كما هو", () => {
-    expect(clientIpFrom(hdrs({ "x-forwarded-for": "203.0.113.7" }))).toBe("203.0.113.7");
-  });
-
-  it("★ x-real-ip تُستعمل عند غياب x-forwarded-for فقط", () => {
-    expect(clientIpFrom(hdrs({ "x-real-ip": "203.0.113.8" }))).toBe("203.0.113.8");
-    // وحين توجد السلسلة، لا تُقدَّم x-real-ip عليها
-    expect(
-      clientIpFrom(hdrs({ "x-forwarded-for": "1.1.1.1, 2.2.2.2", "x-real-ip": "9.9.9.9" })),
-    ).toBe("2.2.2.2");
-  });
-
-  /** نصّ عشوائي في الترويسة لا يصير مفتاحًا */
-  it("★ قيمة غير صالحة تُردّ إلى unknown", () => {
-    for (const bad of ["not-an-ip", "'; drop table--", "", "   ", "x".repeat(60)]) {
-      expect(clientIpFrom(hdrs({ "x-forwarded-for": bad })), bad).toBe("unknown");
-    }
-    expect(clientIpFrom(hdrs({}))).toBe("unknown");
-  });
-
-  it("★ فحص الشكل يقبل IPv4 وIPv6 ويرفض ما عداهما", () => {
-    expect(isPlausibleIp("192.168.1.1")).toBe(true);
-    expect(isPlausibleIp("2001:db8::1")).toBe(true);
-    expect(isPlausibleIp("999.1.1.1")).toBe(false);
-    expect(isPlausibleIp("hello")).toBe(false);
-  });
-
-  it("★ عدد الوكلاء قابل للضبط للبنى متعددة الطبقات", () => {
+  it("★ عدد الوكلاء قابل للضبط (يخصّ السلسلة وحدها)", () => {
     const prev = process.env.YSD_TRUSTED_PROXY_HOPS;
     process.env.YSD_TRUSTED_PROXY_HOPS = "2";
     expect(clientIpFrom(hdrs({ "x-forwarded-for": "1.1.1.1, 203.0.113.7, 10.0.0.1" }))).toBe(
@@ -93,11 +133,47 @@ describe("★ عنوان العميل — لا يُؤخذ أول x-forwarded-for
   });
 });
 
+describe("★ تطبيع العنوان — عنوانٌ واحد لا دلوان", () => {
+  /**
+   * بلا تطبيع يحصل المهاجم على دلوين بكتابة الحرف نفسه كبيرًا أو بإضافة صفر
+   * بادئ — فيتضاعف حدّه الفعلي بلا أي حيلة.
+   */
+  it("★ IPv6 يُوحَّد بحالة الأحرف", () => {
+    expect(normalizeIp("2001:DB8::1")).toBe(normalizeIp("2001:db8::1"));
+  });
+
+  it("★ IPv4 المُغلَّف في IPv6 = IPv4 نفسه", () => {
+    expect(normalizeIp("::ffff:192.168.1.1")).toBe("192.168.1.1");
+    expect(normalizeIp("::FFFF:192.168.1.1")).toBe("192.168.1.1");
+  });
+
+  it("★ الأصفار البادئة تُسقَط", () => {
+    expect(normalizeIp("010.001.001.001")).toBe("10.1.1.1");
+  });
+
+  it("★ المنفذ يُنزع من الصيغتين", () => {
+    expect(normalizeIp("203.0.113.7:8443")).toBe("203.0.113.7");
+    expect(normalizeIp("[2001:db8::1]:443")).toBe("2001:db8::1");
+  });
+
+  it("★ الصيغ الفاسدة ⇒ null", () => {
+    for (const bad of ["999.1.1.1", "1.2.3", "hello", "", "  ", "1.2.3.4.5"]) {
+      expect(normalizeIp(bad), bad).toBeNull();
+    }
+  });
+
+  it("★ isPlausibleIp يتبع التطبيع نفسه", () => {
+    expect(isPlausibleIp("192.168.1.1")).toBe(true);
+    expect(isPlausibleIp("2001:db8::1")).toBe(true);
+    expect(isPlausibleIp("999.1.1.1")).toBe(false);
+  });
+});
+
 // ════════════════════════════════════════════════════════════
-//  بنية 0029 — حجز الميزانية
+//  بنية 0028 — حجز الميزانية
 // ════════════════════════════════════════════════════════════
 
-describe("★ 0029 — الفحص والحجز في معاملة واحدة", () => {
+describe("★ 0028 — الفحص والحجز في معاملة واحدة", () => {
   it("★ قفل صفّ المستخدم قبل أي عدّ", () => {
     const fn = M0029.slice(M0029.indexOf("function public.reserve_chat_budget"));
     const lock = fn.indexOf("for update");
@@ -181,10 +257,10 @@ describe("★ رسائل الرفض وتقدير المدخل", () => {
 });
 
 // ════════════════════════════════════════════════════════════
-//  بنية 0030 — المقعد الموزّع
+//  بنية 0029 — المقعد الموزّع
 // ════════════════════════════════════════════════════════════
 
-describe("★ 0030 — مقعد التوليد في القاعدة", () => {
+describe("★ 0029 — مقعد التوليد في القاعدة", () => {
   it("★ الذرّية من فهرس فريد جزئي لا من ترتيب عبارات", () => {
     expect(M0030).toMatch(
       /create unique index[^;]*generation_slots_one_active_idx[\s\S]*?\(user_id\)[\s\S]*?where released_at is null/,
@@ -227,10 +303,10 @@ describe("★ 0030 — مقعد التوليد في القاعدة", () => {
 });
 
 // ════════════════════════════════════════════════════════════
-//  بنية 0031 — حدّ المعدّل الموزّع
+//  بنية 0030 — حدّ المعدّل الموزّع
 // ════════════════════════════════════════════════════════════
 
-describe("★ 0031 — حدّ المعدّل الموزّع", () => {
+describe("★ 0030 — حدّ المعدّل الموزّع", () => {
   it("★ الزيادة والقراءة في عبارة واحدة", () => {
     expect(M0031).toMatch(
       /insert into public\.invite_rate_limits[\s\S]*?on conflict \(key_hash, window_start\) do update[\s\S]*?returning/,
@@ -358,5 +434,56 @@ describe("★ المقعد الموزّع — سلوك", () => {
     expect(await acquireSlot("u1", "req-abcdef99", "free")).toBeNull();
     // رفضٌ محلي: لم نُزعج القاعدة
     expect(slotState.calls).toHaveLength(0);
+  });
+});
+
+describe("★ مفتاح HMAC — مطلوب ولا يُشتقّ من غيره", () => {
+  const withSecret = (v: string | undefined, fn: () => void) => {
+    const prev = process.env.RATE_LIMIT_HMAC_SECRET;
+    if (v === undefined) delete process.env.RATE_LIMIT_HMAC_SECRET;
+    else process.env.RATE_LIMIT_HMAC_SECRET = v;
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env.RATE_LIMIT_HMAC_SECRET;
+      else process.env.RATE_LIMIT_HMAC_SECRET = prev;
+    }
+  };
+
+  it("★ 32 بايتًا فأكثر ⇒ مضبوط", () => {
+    withSecret("f".repeat(64), () => expect(isRateSecretConfigured()).toBe(true));
+    withSecret("f".repeat(32), () => expect(isRateSecretConfigured()).toBe(true));
+  });
+
+  it("★ الأقصر من 32 أو الغائب ⇒ غير مضبوط", () => {
+    withSecret("short", () => expect(isRateSecretConfigured()).toBe(false));
+    withSecret(undefined, () => expect(isRateSecretConfigured()).toBe(false));
+  });
+
+  /** خلط الأسرار يجعل تدوير أحدهما يكسر الآخر صامتًا، وتسريبَ أحدهما يفضح الاثنين */
+  it("★ لا يُشتقّ من SUPABASE_SERVICE_ROLE_KEY", () => {
+    const src = read("lib/auth/invite-guard.ts");
+    // الاستعمال البرمجي هو المقصود — ذكرُه في شرحٍ يوضّح لماذا لا يُستعمل
+    expect(src).not.toMatch(/process\.env\.SUPABASE_SERVICE_ROLE_KEY/);
+    expect(src).toMatch(/process\.env\.RATE_LIMIT_HMAC_SECRET/);
+  });
+
+  it("★ يرمي في الإنتاج عند غيابه — لا احتياطي معلوم", () => {
+    const src = read("lib/auth/invite-guard.ts");
+    expect(src).toMatch(/NODE_ENV === "production"[\s\S]{0,220}throw new Error/);
+  });
+
+  it("★ الوحدة server-only ولا تُطبع القيمة", () => {
+    const src = read("lib/auth/invite-guard.ts");
+    expect(src.split("\n")[0]).toBe('import "server-only";');
+    expect(src).not.toMatch(/console\.[a-z]+\([^)]*rateSecret\(\)/);
+  });
+
+  /** الفحص الصحي يقول «موجود» لا أكثر — الطول وحده يضيّق مجال التخمين */
+  it("★ الفحص الصحي: وجود فقط بلا قيمة ولا طول", () => {
+    const src = read("lib/health/checks.ts");
+    expect(src).toMatch(/rate_limit_secret/);
+    expect(src).toMatch(/isRateSecretConfigured\(\)/);
+    expect(src).not.toMatch(/process\.env\.RATE_LIMIT_HMAC_SECRET/);
   });
 });

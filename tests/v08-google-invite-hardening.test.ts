@@ -17,7 +17,8 @@ const read = (p: string) => fs.readFileSync(path.resolve(p), "utf8");
 
 const MIGRATION = read("supabase/migrations/0024_google_invite_registration.sql");
 /** يجرّد التعليقات — ذكر النمط في شرحٍ مقصود ولا يعني استعماله */
-const sql = MIGRATION.split("\n")
+const sql = MIGRATION.replace(/\r\n/g, "\n")
+  .split("\n")
   .map((l) => l.replace(/--.*$/, ""))
   .join("\n")
   .replace(/\/\*[\s\S]*?\*\//g, " ");

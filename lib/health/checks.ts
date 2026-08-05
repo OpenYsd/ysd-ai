@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { checkEnv } from "@/lib/env";
 import { getEmbeddingModelState } from "@/lib/rag/embeddings";
 import { getRagRuntimeConfig } from "@/lib/rag/runtime-config";
+import { isRateSecretConfigured } from "@/lib/auth/invite-guard";
 
 /**
  * فحوص التبعيات (readiness) — مستخرَجة من مسار /api/health في v0.7.0.
@@ -109,6 +110,20 @@ export async function runHealthChecks(): Promise<HealthResult> {
   // ---- OpenRouter: إعداد المفتاح فقط — لا طلب AI مدفوع ----
   const orItem = env.items.find((i) => i.name === "OPENROUTER_API_KEY");
   checks.openrouter = orItem?.present
+    ? { status: "ok", detail: "configured" }
+    : { status: "down", detail: "not_configured" };
+
+  /**
+   * ---- مفتاح HMAC لحدّ المعدّل: **الوجود والصلاحية فقط** ----
+   *
+   * لا قيمة، ولا طول، ولا جزء منها، ولا حتى بادئة. الطول وحده يضيّق مجال
+   * التخمين، والفحص الصحي مسارٌ يُقرأ من خارج المنصّة — فلا يخرج منه إلا
+   * حكمٌ ثنائي.
+   *
+   * وغيابه `down` لا `degraded`: بدونه تُهشَّم عناوين IP والبريد بلا سرّ،
+   * وكلاهما منخفض العشوائية فيُكشف من الهاش بجدول قوس قزح.
+   */
+  checks.rate_limit_secret = isRateSecretConfigured()
     ? { status: "ok", detail: "configured" }
     : { status: "down", detail: "not_configured" };
 

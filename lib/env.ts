@@ -46,6 +46,23 @@ const SPECS: EnvSpec[] = [
   },
   { name: "ANTHROPIC_API_KEY", required: false, note: "موفر Anthropic (اختياري)" },
   {
+    /**
+     * مفتاح HMAC لمفاتيح حدّ المعدّل (v0.8.1).
+     *
+     * **مطلوب**: بدونه تُهشَّم عناوين IP والبريد بلا سرّ، وكلاهما منخفض
+     * العشوائية — جدول قوس قزح يكشفهما من الهاش في دقائق. ولا يُشتقّ من
+     * `SUPABASE_SERVICE_ROLE_KEY`: خلط الأسرار يعني أن تدوير أحدهما يكسر
+     * الآخر صامتًا، وأن تسريب أحدهما يفضح الاثنين.
+     *
+     * 32 بايتًا على الأقل (64 حرفًا ست عشريًا):
+     *   openssl rand -hex 32
+     */
+    name: "RATE_LIMIT_HMAC_SECRET",
+    required: true,
+    validate: (v) => v.length >= 32,
+    note: "مفتاح HMAC لحدّ المعدّل (32 بايتًا على الأقل)",
+  },
+  {
     name: "SUPABASE_SERVICE_ROLE_KEY",
     required: false,
     note: "لعامل RAG المستقل فقط — غير مطلوب في الوضع request-driven",

@@ -9,6 +9,7 @@ const KEYS = [
   "ANTHROPIC_API_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
   "APP_ORIGIN",
+  "RATE_LIMIT_HMAC_SECRET",
 ];
 let saved: Record<string, string | undefined>;
 
@@ -28,6 +29,8 @@ function setValid() {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "a".repeat(40);
   process.env.OPENROUTER_API_KEY = "sk-or-" + "b".repeat(30);
   process.env.APP_ORIGIN = "https://ysd-ai-production.up.railway.app";
+  // 32 بايتًا على الأقل — الحدّ الذي يفرضه lib/env.ts
+  process.env.RATE_LIMIT_HMAC_SECRET = "c".repeat(64);
 }
 
 describe("checkEnv", () => {
@@ -142,5 +145,47 @@ describe("assertEnvAtStartup", () => {
     setValid();
     delete process.env.APP_ORIGIN;
     expect(() => assertEnvAtStartup()).toThrow(/APP_ORIGIN/);
+  });
+});
+
+/**
+ * مفتاح HMAC لحدّ المعدّل (v0.8.1) — **مطلوب**.
+ *
+ * بدونه تُهشَّم عناوين IP والبريد بلا سرّ، وكلاهما منخفض العشوائية فيُكشف
+ * من الهاش بجدول قوس قزح. ولا يُشتقّ من مفتاح الخدمة: خلط الأسرار يجعل
+ * تدوير أحدهما يكسر الآخر صامتًا.
+ */
+describe("checkEnv — RATE_LIMIT_HMAC_SECRET", () => {
+  it("غيابه يُفشل الفحص", () => {
+    setValid();
+    delete process.env.RATE_LIMIT_HMAC_SECRET;
+    const r = checkEnv();
+    expect(r.ok).toBe(false);
+    expect(r.missingRequired).toContain("RATE_LIMIT_HMAC_SECRET");
+  });
+
+  it("الأقصر من 32 بايتًا يُعدّ صيغة غير صالحة", () => {
+    setValid();
+    process.env.RATE_LIMIT_HMAC_SECRET = "short";
+    const r = checkEnv();
+    expect(r.invalidFormat).toContain("RATE_LIMIT_HMAC_SECRET");
+    expect(r.ok).toBe(false);
+  });
+
+  it("32 بايتًا فأكثر يمرّ", () => {
+    setValid();
+    process.env.RATE_LIMIT_HMAC_SECRET = "d".repeat(32);
+    expect(checkEnv().ok).toBe(true);
+  });
+
+  /** التقرير أسماء وحالة فقط — لا قيمة ولا طول ولا جزء منها */
+  it("التقرير لا يحمل القيمة ولا طولها", () => {
+    setValid();
+    const secret = "e".repeat(48);
+    process.env.RATE_LIMIT_HMAC_SECRET = secret;
+    const blob = JSON.stringify(checkEnv());
+    expect(blob).not.toContain(secret);
+    expect(blob).not.toContain(secret.slice(0, 8));
+    expect(blob).not.toContain('"48"');
   });
 });
