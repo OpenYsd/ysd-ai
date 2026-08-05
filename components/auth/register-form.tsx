@@ -77,10 +77,11 @@ export function RegisterForm({
     // يجوز أن يصله الكود الخام إطلاقًا.
     let ticket = "";
     if (code.trim()) {
+      // البريد يُرسَل لحدّ المعدّل وحده — لا يُخزَّن ولا يصل القاعدة (v0.8.1)
       const res = await fetch("/api/invite/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim() }),
+        body: JSON.stringify({ code: code.trim(), email }),
       });
       if (res.status === 429) {
         setError("محاولات كثيرة — انتظر قليلًا.");

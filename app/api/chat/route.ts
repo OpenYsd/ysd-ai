@@ -6,6 +6,8 @@ import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
+import { loadModelPolicy, resolveModelForUser } from "@/lib/ai/model-policy";
+import { acquireGenerationSlot } from "@/lib/ai/concurrency";
 import { SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import {
   ambiguousCandidates,
@@ -137,9 +139,50 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  /**
+   * 5ب) بوابة الخطة على النموذج — **لا يُصدَّق ما أرسله العميل** (v0.8.1).
+   *
+   * `min_tier` كان عمودًا بلا فارض، و`claude-sonnet-4-6` (مدفوع) كان متاحًا
+   * للخطة المجانية. هنا يُعاد حلّ النموذج من `subscriptions.tier` في كل طلب،
+   * ومن طلب ما لا تبلغه خطته يُخفَّض إلى ysd/free بدل أن يُرفض — فالمحادثة
+   * تستمر والكلفة لا تقع.
+   *
+   * ويُحجز مقعد التزامن **بعد** البوابة وقبل أي عمل: حجزه قبلها كان يترك
+   * مقعدًا محجوزًا على طلبٍ سيُرفض بعد سطر.
+   */
+  const policy = await loadModelPolicy(supabase, userId);
+  const resolved = resolveModelForUser({
+    requestedModelId: modelId,
+    userTier: policy.userTier,
+    models: policy.models,
+    maxOutputTokens: policy.maxOutputTokens,
+  });
+  const effectiveModelId = resolved.modelId;
+  if (resolved.downgraded) {
+    // رمز فقط — لا معرّف مستخدم ولا محتوى
+    console.log(
+      `[chat] rid=${requestId} model_downgraded reason=${resolved.reason} ` +
+        `requested=${modelId} effective=${effectiveModelId}`,
+    );
+  }
+
+  const slot = acquireGenerationSlot(userId, policy.userTier);
+  if (!slot) {
+    return json(
+      {
+        error: "لديك طلب جارٍ. انتظر انتهاءه قبل إرسال طلب جديد.",
+        code: "concurrent_request",
+      },
+      429,
+    );
+  }
+
   // 6) اختيار الموفر عبر الطبقة الموحدة
-  const provider = resolveProviderForModel(modelId);
-  if (!provider) return json({ error: "النموذج المطلوب غير متاح." }, 400);
+  const provider = resolveProviderForModel(effectiveModelId);
+  if (!provider) {
+    slot.release();
+    return json({ error: "النموذج المطلوب غير متاح." }, 400);
+  }
 
   /**
    * v0.8.0 — القائمة المسموحة تُفرض على الخادم.
@@ -149,7 +192,8 @@ export async function POST(req: NextRequest) {
    * — المسح الصامت يفقد اختيار المستخدم بلا أثر. يصير غير متاح، ويُطلب بديل.
    */
   const aiSettings = await getAiSettings(supabase);
-  if (!isModelAllowed(modelId, aiSettings.allowedModels)) {
+  if (!isModelAllowed(effectiveModelId, aiSettings.allowedModels)) {
+    slot.release();
     return json(
       { error: "النموذج غير متاح حاليًا. اختر نموذجًا آخر.", code: "model_not_allowed" },
       400,
@@ -182,7 +226,7 @@ export async function POST(req: NextRequest) {
       .is("deleted_at", null)
       .single();
     if (!target || target.role !== "user")
-      return json({ error: "الرسالة غير موجودة." }, 404);
+      { slot.release(); return json({ error: "الرسالة غير موجودة." }, 404); }
 
     await supabase
       .from("messages")
@@ -214,6 +258,7 @@ export async function POST(req: NextRequest) {
     );
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true path=regenerate`);
+      slot.release();
       return json(
         { error: "هذه الرسالة أُرسلت بالفعل.", code: "duplicate_request" },
         409,
@@ -233,6 +278,7 @@ export async function POST(req: NextRequest) {
     if (!lastUser) {
       // نحرّر الحجز كي لا يبقى in_progress فيمنع محاولة لاحقة مشروعة
       await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
+      slot.release();
       return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
     }
 
@@ -285,6 +331,7 @@ export async function POST(req: NextRequest) {
     );
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true`);
+      slot.release();
       return json(
         {
           error: "هذه الرسالة أُرسلت بالفعل.",
@@ -305,6 +352,7 @@ export async function POST(req: NextRequest) {
       console.log(
         `[chat] rid=${requestId} rate_limited=true backend=${rl.backend} remaining=${rl.remaining}`,
       );
+      slot.release();
       return json(
         { error: "تجاوزت حد الطلبات، حاول بعد قليل.", code: "rate_limit" },
         429,
@@ -323,6 +371,7 @@ export async function POST(req: NextRequest) {
     if (insertErr || !inserted) {
       // فشل الحفظ — علّم الحجز failed كي لا يبقى in_progress معلّقًا
       await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
+      slot.release();
       return json({ error: "تعذّر حفظ الرسالة." }, 500);
     }
     userMessageId = inserted.id;
@@ -516,10 +565,13 @@ export async function POST(req: NextRequest) {
           throw new Error('deadline_exceeded_before_provider');
         }
         for await (const chunk of provider.streamChat({
-          modelId,
+          modelId: effectiveModelId,
           messages: history,
           systemPrompt,
           grounding,
+          // سقف الإخراج من usage_limits لا ثابتًا في المحوّل — يضبط كلفة
+          // الطلب الواحد مركزيًا لكل خطة
+          maxTokens: resolved.maxOutputTokens,
           // السقف الصارم يُلغي المزوّد فعليًا (لا مجرد تجاهل الرد)
           signal: hardLimit.signal,
         })) {
@@ -629,7 +681,7 @@ export async function POST(req: NextRequest) {
           await supabase.from("usage_events").insert({
             user_id: userId,
             conversation_id: conversationId,
-            model_id: actualModelId ?? modelId,
+            model_id: actualModelId ?? effectiveModelId,
             input_tokens: pendingUsage.inputTokens,
             output_tokens: pendingUsage.outputTokens,
           });
@@ -676,7 +728,7 @@ export async function POST(req: NextRequest) {
             conversation_id: conversationId,
             role: "assistant",
             content: assistantText,
-            model_id: actualModelId ?? modelId,
+            model_id: actualModelId ?? effectiveModelId,
           };
           // عمود metadata يأتي مع migration 0007 — لا نرسله إلا عند وجود محتوى
           const meta: Record<string, unknown> = {};
@@ -692,7 +744,7 @@ export async function POST(req: NextRequest) {
            */
           meta.provider = provider.id;
           meta.requested_model = modelId;
-          meta.actual_model = actualModelId ?? modelId;
+          meta.actual_model = actualModelId ?? effectiveModelId;
           if (ragSnippets.length > 0) {
             meta.sources = ragSnippets.map((s) => ({
               fileId: s.fileId,
@@ -727,7 +779,7 @@ export async function POST(req: NextRequest) {
                 .from("messages")
                 .update({
                   content: assistantText,
-                  model_id: actualModelId ?? modelId,
+                  model_id: actualModelId ?? effectiveModelId,
                   metadata: Object.keys(meta).length > 0 ? meta : {},
                 })
                 .eq("id", regenerateTargetId)
@@ -757,7 +809,7 @@ export async function POST(req: NextRequest) {
         const idx = FREE_MODEL_CHAIN.indexOf(actualModelId ?? "");
         const fallbackCount = idx > 0 ? idx : 0;
         console.log(
-          `[chat] rid=${requestId} model=${actualModelId ?? modelId} fallback_count=${fallbackCount} ` +
+          `[chat] rid=${requestId} model=${actualModelId ?? effectiveModelId} fallback_count=${fallbackCount} ` +
             `mode=${answerMode} regeneration_count=${regenerations} ` +
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
@@ -820,6 +872,9 @@ export async function POST(req: NextRequest) {
         stopKeepAlive();
         clearTimeout(hardLimitTimer);
         req.signal.removeEventListener("abort", onClientAbort);
+        // مقعد التزامن يُحرَّر هنا لا قبله: أي مسار خروج — نجاح أو خطأ أو
+        // إلغاء من العميل — يمرّ بهذا الـfinally، فلا يبقى مستخدم محبوسًا
+        slot.release();
         try {
           controller.close();
         } catch {
