@@ -33,6 +33,20 @@ export interface RetrievedSnippet {
   fileName: string;
   pageNumber: number | null;
   similarity: number;
+  /**
+   * معرّف المقطع في `file_chunks` — **المقبض الثابت** الذي يربط مقطعًا بعينه
+   * بما بُني عليه (v0.9.0، الإيداع الأول).
+   *
+   * `match_file_chunks` تُعيده منذ 0007، وكانت هذه الطبقة تُسقطه: تحتفظ
+   * بالمحتوى والاسم والصفحة وترمي المعرّف. والنتيجة أن كل ما بعدها يعمل على
+   * **نسخة** من المقطع لا على إشارةٍ إليه — فلا سبيل لفتح الأصل، ولا للتحقق
+   * أن اقتباسًا يعود إليه فعلًا، ولا لمعرفة أن الملف حُذف.
+   *
+   * لا أثر ظاهر لهذا الحقل بعد: لا واجهة ولا تخزين. غرضه أن يتوقف الفقد.
+   */
+  chunkId: string;
+  /** ترتيب المقطع داخل ملفه — للتنقّل «السابق/التالي» في الأصل لاحقًا */
+  chunkIndex: number;
 }
 
 interface MatchRow {
@@ -121,6 +135,9 @@ export async function retrieveSnippets(
       fileName: row.original_name,
       pageNumber: row.page_number,
       similarity: Math.round(row.similarity * 1000) / 1000,
+      // v0.9.0: المعرّف يُمرَّر كما ورد من القاعدة بلا اشتقاق ولا تقريب
+      chunkId: row.chunk_id,
+      chunkIndex: row.chunk_index,
     });
   }
   return { snippets: picked, searched: true, topSimilarity };

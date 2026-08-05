@@ -475,7 +475,7 @@ describe("★ مفتاح HMAC — مطلوب ولا يُشتقّ من غيره",
 
   it("★ الوحدة server-only ولا تُطبع القيمة", () => {
     const src = read("lib/auth/invite-guard.ts");
-    expect(src.split("\n")[0]).toBe('import "server-only";');
+    expect(src.split(/\r?\n/)[0]).toBe('import "server-only";');
     expect(src).not.toMatch(/console\.[a-z]+\([^)]*rateSecret\(\)/);
   });
 

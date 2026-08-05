@@ -87,7 +87,7 @@ describe("★ ١ب) مفتاح الخدمة لا يبلغ المتصفح", () =>
    * وهو الحارس الوحيد الذي لا يعتمد على انتباه المُراجع.
    */
   it("★ عميل الخدمة يبدأ بـserver-only", () => {
-    expect(ADMIN.split("\n")[0]).toBe('import "server-only";');
+    expect(ADMIN.split(/\r?\n/)[0]).toBe('import "server-only";');
   });
 
   it("★ المسار يستعمل عميل الخدمة لا عميل الطلب", () => {

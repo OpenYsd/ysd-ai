@@ -404,7 +404,7 @@ describe("★ مفتاح الخدمة لا يبلغ المتصفح", () => {
   const ADMIN = read("lib/supabase/admin.ts");
 
   it("★ عميل الخدمة server-only", () => {
-    expect(ADMIN.split("\n")[0]).toBe('import "server-only";');
+    expect(ADMIN.split(/\r?\n/)[0]).toBe('import "server-only";');
   });
 
   it("★ مسارات الدعوة تستعمل عميل الخدمة لا عميل الطلب", () => {
@@ -417,7 +417,7 @@ describe("★ مفتاح الخدمة لا يبلغ المتصفح", () => {
 
   it("★ وحدات الحماية الخادمية معلَّمة server-only", () => {
     for (const p of ["lib/ai/model-policy.ts", "lib/ai/concurrency.ts"]) {
-      expect(read(p).split("\n")[0], p).toBe('import "server-only";');
+      expect(read(p).split(/\r?\n/)[0], p).toBe('import "server-only";');
     }
   });
 

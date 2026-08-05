@@ -119,53 +119,91 @@ interface RetrievedSnippet { content; fileId; fileName; pageNumber; similarity }
 
 ## ٣) Schema المقترح
 
-### مبدأ: مؤشّرات لا نسخ — إلا الاقتباس
+> **القرارات المعتمدة (2026-08-05):** العلامة الداخلية `[[1]]` وتُعرض زرًّا
+> inline باسم `[1]` لا superscript · حدّ الاقتباس **240 حرفًا** · Evidence Mode
+> متاح للخطة المجانية بحدّ **4 مراجع موثّقة لكل إجابة** · **لا backfill**
+> للرسائل القديمة.
 
-نخزّن `chunk_id` مؤشّرًا (فالاسم والصفحة يُقرآن حيًّا)، **ونخزّن الاقتباس
-نسخةً** عمدًا: هو ما رآه النموذج فعلًا لحظة الإجابة، وتغيّر الملف لاحقًا لا
-يجوز أن يغيّر ما استُشهد به. الاقتباس **دليلٌ تاريخي**، والاسم والصفحة
-**حقيقةٌ حاليّة**.
+### مبدأ: مؤشّرات حيّة + لقطة تاريخية
 
-### جدول `message_citations`
+`chunk_id` و`file_id` مؤشّران يُقرأ منهما الاسم والصفحة **حيّين ما دام الملف
+قائمًا**. ومعهما `file_name_snapshot` و`page_number_snapshot`: لقطةٌ وقت
+الإجابة تُستعمل **فقط** حين يُحذف الملف. فالعرض يفضّل الحيّ دائمًا، ويسقط إلى
+اللقطة بدل أن يفقد التاريخ.
+
+### فصل المصدر عن الفقرة — قيد `marker` الفريد
+
+**المتطلَّب**: `marker` فريد لكل رسالة، ولا يشير رقمان مختلفان إلى مصدرين
+مختلفين، ولا يشير الرقم الواحد إلى مصدرين.
+
+جدولٌ واحد بـ`unique(message_id, segment_index, marker)` **لا يحقّق ذلك**:
+يسمح بأن يكون `[1]` في الفقرة 0 مصدرًا وفي الفقرة 2 مصدرًا آخر — وهو بالضبط ما
+يربك القارئ. الحلّ **فصل الجدولين**:
 
 ```sql
-create table if not exists public.message_citations (
-  id            uuid primary key default gen_random_uuid(),
+-- ① مصادر الرسالة: كل مرجع مرقّم مرة واحدة لكل رسالة
+create table if not exists public.message_sources (
+  id           uuid primary key default gen_random_uuid(),
+  message_id   uuid not null references public.messages(id) on delete cascade,
+  marker       int  not null check (marker between 1 and 99),
+
+  -- مؤشّرات حيّة
+  chunk_id     uuid references public.file_chunks(id) on delete set null,
+  file_id      uuid references public.files(id)       on delete set null,
+
+  -- لقطة تاريخية — تُستعمل عند فقد الملف فقط
+  file_name_snapshot  text not null,
+  page_number_snapshot int,
+
+  quote        text not null check (length(quote) between 1 and 240),
+
+  -- من الاسترجاع وحده (pgvector). لا يكتبها النموذج ولا العميل.
+  relevance    real not null check (relevance >= 0 and relevance <= 1),
+
+  -- الاستشهاد لا يُحفظ إلا متحقَّقًا: لا قيمة 'unverified' في المجموعة
+  verification text not null check (verification in ('exact','normalized')),
+  created_at   timestamptz not null default now(),
+
+  -- ★ الرقم فريد داخل الرسالة: لا يشير مرجعان لمصدرين
+  unique (message_id, marker),
+  -- ★ والمصدر لا يأخذ رقمين داخل الرسالة نفسها
+  unique (message_id, chunk_id, quote)
+);
+
+-- ② ربط الفقرات بالمصادر: علاقة كثير-إلى-كثير
+create table if not exists public.message_citation_segments (
   message_id    uuid not null references public.messages(id) on delete cascade,
-  -- ترتيب الفقرة داخل الرد: 0 للفقرة الأولى
   segment_index int  not null check (segment_index >= 0),
-  -- رقم المرجع الظاهر للمستخدم داخل تلك الفقرة: [1] [2]
-  marker        int  not null check (marker between 1 and 99),
-
-  -- مؤشّرات: تُقرأ حيّة فلا تبيت
-  chunk_id      uuid references public.file_chunks(id) on delete set null,
-  file_id       uuid references public.files(id)       on delete set null,
-
-  -- لقطة تاريخية: ما رآه النموذج لحظة الإجابة
-  quote         text not null check (length(quote) between 1 and 1000),
-  page_number   int,
-  relevance     real not null check (relevance >= 0 and relevance <= 1),
-
-  -- كيف تحقّقنا: تطابق حرفي أم تطبيعي أم لم يُتحقَّق
-  verification  text not null default 'exact'
-                  check (verification in ('exact','normalized','unverified')),
-  created_at    timestamptz not null default now(),
-
-  unique (message_id, segment_index, marker)
+  source_id     uuid not null references public.message_sources(id) on delete cascade,
+  primary key (message_id, segment_index, source_id)
 );
 ```
 
-**لماذا `on delete set null` لا `cascade` على `chunk_id`:** حذف ملف يجب ألّا
-يمحو تاريخ المحادثة. يبقى الاقتباس ويصير المؤشّر فارغًا، فتعرض الواجهة «المصدر
-لم يعد متاحًا» بدل اختفاء صامت. أمّا `message_id` فـ`cascade`: حذف الرسالة
-يحذف استشهاداتها بداهةً.
+**ما يضمنه هذا البناء:**
 
-**لماذا `relevance` وليس `similarity`:** الاسم يصف ما نعرضه للمستخدم لا آلية
-حسابه. مصدره اليوم `similarity` من pgvector، وقد يصير مركّبًا لاحقًا بلا تغيير
-عقد.
+| الضمان | القيد الذي يفرضه |
+|---|---|
+| `[1]` معناه واحد في الرد كلّه | `unique (message_id, marker)` |
+| المصدر الواحد لا يأخذ رقمين | `unique (message_id, chunk_id, quote)` |
+| الفقرة تستشهد بعدة مصادر | `message_citation_segments` كثير-إلى-كثير |
+| المصدر الواحد يخدم عدة فقرات | نفس الجدول — بلا تكرار الاقتباس |
+| حذف الرسالة ينظّف الكل | `cascade` على الاثنين |
+| حذف الملف لا يمحو التاريخ | `set null` + `*_snapshot` |
 
-**لماذا `verification`:** يفصل «تحقّقنا حرفيًا» عن «قرّبنا» عن «لم نستطع».
-عمودٌ يجعل الفرق مرئيًا بدل أن يكون افتراضًا.
+**لماذا `unverified` غير موجودة أصلًا:** الاستشهاد غير المتحقَّق **لا يُحفَظ**.
+الفقرة التي تعذّر التحقق من سندها تُسجَّل غير مدعومة في
+`metadata.evidence.unsupported_segments` — وهذا كل الأثر. وجود قيمة
+`'unverified'` في المجموعة كان سيغري بحفظ ما لا نثق به ثم عرضه بتحفّظ؛
+والمجموعة المغلقة تمنع ذلك عند القاعدة لا عند المُراجع.
+
+**`relevance` من الاسترجاع وحده:** مصدرها `similarity` من `match_file_chunks`
+بعد التقريب. **لا يكتبها النموذج ولا تُقرأ من جسم الطلب** — وهذا مفروضٌ في
+مسار الكتابة: قيمة كل `marker` تؤخذ من صفّ `RetrievedSnippet` المطابق لـ
+`chunk_id`، لا مما اقترحه النموذج.
+
+**ما لا يحدّده النموذج إطلاقًا:** `file_id` · `chunk_id` · `file_name` ·
+`page_number` · `relevance`. كلها تأتي من مجموعة الاسترجاع عبر رقم المرجع.
+النموذج يقترح **رقمًا واقتباسًا** لا غير.
 
 ### امتداد `messages.metadata` (بلا ترحيل)
 
@@ -186,41 +224,69 @@ create table if not exists public.message_citations (
 ### فهارس
 
 ```sql
-create index if not exists message_citations_message_idx
-  on public.message_citations (message_id, segment_index, marker);
+create index if not exists message_sources_message_idx
+  on public.message_sources (message_id, marker);
 
 -- «أين استُشهد بهذا الملف؟» — للوحة الملف لاحقًا
-create index if not exists message_citations_file_idx
-  on public.message_citations (file_id) where file_id is not null;
+create index if not exists message_sources_file_idx
+  on public.message_sources (file_id) where file_id is not null;
+
+create index if not exists citation_segments_source_idx
+  on public.message_citation_segments (source_id);
 ```
 
 ### RLS
 
 ```sql
-alter table public.message_citations enable row level security;
-alter table public.message_citations force row level security;
-revoke all on table public.message_citations from public, anon, authenticated;
+alter table public.message_sources enable row level security;
+alter table public.message_sources force row level security;
+revoke all on table public.message_sources from public, anon, authenticated;
+-- ونفسها لـ message_citation_segments
 ```
 
 **بلا سياسات، والقراءة عبر دالة `SECURITY DEFINER` تتحقق من ملكية المحادثة.**
-السبب: سياسة `select` تحتاج ثلاث قفزات (`citation → message → conversation →
+السبب: سياسة `select` تحتاج ثلاث قفزات (`source → message → conversation →
 user_id`) على كل صفّ، والدالة تفعلها مرة واحدة للرسالة كلها. ونفس النمط
 المعتمد في 0024 و0028–0030.
 
-### دالة القراءة
+### دوال القراءة — الملكية شرطٌ في كل مسار
 
 ```sql
 create or replace function public.get_message_citations(p_message_id uuid)
 returns table (
-  segment_index int, marker int, chunk_id uuid, file_id uuid,
+  marker int, segments int[], chunk_id uuid, file_id uuid,
   file_name text, page_number int, quote text,
-  relevance real, verification text, chunk_available boolean
+  relevance real, verification text, source_available boolean
 )
 language plpgsql security definer set search_path = '' as $$
--- يتحقق أن الرسالة تخصّ محادثةً يملكها auth.uid()، ثم يُرجع الصفوف
--- مع الاسم الحيّ من public.files و chunk_available = (chunk_id is not null)
+-- ① يتحقق أن الرسالة تخصّ محادثةً يملكها auth.uid() — وإلا صفر صفوف
+-- ② يجمع الفقرات لكل marker في مصفوفة (aggregation)
+-- ③ الاسم والصفحة: coalesce(الحيّ من public.files, اللقطة)
+-- ④ source_available = (chunk_id is not null)
+$$;
+
+create or replace function public.get_file_chunk(p_chunk_id uuid)
+returns table (chunk_id uuid, file_id uuid, file_name text, page_number int,
+               chunk_index int, content text, prev_id uuid, next_id uuid)
+language plpgsql security definer set search_path = '' as $$
+-- ★ كل فتح لمقطع يتحقق من ملكية المستخدم للملف قبل أي إرجاع.
+--   ولا يكفي أن يكون chunk_id صحيحًا: المعرّفات قابلة للتخمين والتسريب،
+--   والملكية هي البوابة الوحيدة. صفر صفوف عند عدم الملكية — لا رسالة
+--   تفرّق بين «غير موجود» و«ليس لك».
 $$;
 ```
+
+### الخصوصية — عقدٌ صريح
+
+| ما | القاعدة |
+|---|---|
+| الاقتباسات | **لا تدخل سجلًّا ولا `observability_events` إطلاقًا** |
+| أسماء الملفات | لا تُسجَّل — رموز وعدّادات فقط |
+| محتوى المقاطع | لا يخرج إلا عبر دالة تفحص الملكية |
+| السجلّات المسموحة | `citations_count` · `unsupported_count` · `verification` كرمز |
+
+نفس عقد `observability_events` القائم منذ v0.6.6: أرقام وbooleans ومجموعات
+مغلقة، لا محتوى.
 
 ---
 
@@ -476,14 +542,31 @@ DOM المخرَج مطابق لما قبل الإصدار.
 
 ---
 
-## ١١) أسئلة مفتوحة تحتاج قرارك
+## ١١) القرارات المعتمدة
 
-1. **صيغة العلامة**: `[1]` مألوفة لكنها تصطدم بـMarkdown (`[1](url)`). البديل
-   `‹1›` أو `[[1]]`. أرجّح `[[1]]`: لا تلتبس بأي بناء Markdown، وتُحوَّل إلى
-   `¹` عند العرض.
-2. **حدّ الاقتباس**: 200 حرفًا؟ الأطول أدقّ لكنه يلتهم سقف الإخراج (1024
-   للمجاني).
-3. **هل Evidence Mode متاح للخطة المجانية؟** يزيد الإخراج ~15–25٪. أرجّح
-   **نعم** — القيمة في الثقة لا في الرفاهية — مع سقف استشهادات أقلّ للمجاني.
-4. **الأدلة القديمة**: هل نُعيد توليد استشهادات لرسائل سابقة؟ أرجّح **لا**:
-   إعادة التوليد تكلفة بلا يقين، والرسالة القديمة أُنتجت بسياق لم يعد معروفًا.
+| القرار | الاعتماد | الأثر |
+|---|---|---|
+| **العلامة الداخلية** | `[[1]]` | لا تلتبس بـMarkdown (`[1](url)`)؛ تُجرَّد من النص المحفوظ |
+| **العرض** | زرّ inline باسم `[1]` | لا `<sup>`: هدف نقر أكبر، وأوضح في RTL، ويصله Tab |
+| **حدّ الاقتباس** | **240 حرفًا** | يكفي لجملة كاملة، ولا يلتهم سقف الإخراج |
+| **الخطة المجانية** | متاح · **4 مراجع موثّقة كحدّ أقصى للإجابة** | القيمة في الثقة لا في الرفاهية؛ والحدّ يحمي سقف 1024 |
+| **وسم غير المدعوم** | يظهر **فقط** حين يكون Evidence Mode فعّالًا وتوجد مصادر RAG | بلا مصادر لا معنى للوسم — يصير اتهامًا بلا مرجع |
+| **الرسائل القديمة** | **لا backfill** · `citations = []` · `evidence = null` | إعادة التوليد تُؤجَّل لميزة يطلبها المستخدم يدويًا |
+
+### حدّ الأربعة — أين يُفرض
+
+عند **اختيار المصادر بعد التحقق** لا عند الطلب: تُرتَّب المراجع المتحقّقة حسب
+`relevance` ويُؤخذ أعلى أربعة. والفقرات التي كان سندها الوحيد مرجعًا مستبعَدًا
+تصير **غير مدعومة** — لا تُنسب إلى مرجع آخر لم تستشهد به.
+
+السبب: الحدّ عند الطلب («استشهد بأربعة كحدّ أقصى») رجاءٌ لا عقد — نفس علّة
+«اذكر أي مصدر استندت إليه». الحدّ بعد التحقق **واقعة**.
+
+### وسم غير المدعوم — شرطان معًا
+
+```
+evidence.mode === "on"  &&  ragSnippets.length > 0
+```
+
+بلا الشرط الثاني تظهر الرسالة «غير مستند إلى ملفاتك» في محادثة **بلا ملفات
+أصلًا** — وهو وسمٌ صحيح حرفيًا ومضلّل عمليًا.
