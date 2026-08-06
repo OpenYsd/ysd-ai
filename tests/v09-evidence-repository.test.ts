@@ -52,6 +52,7 @@ const evidence = (over: Partial<ResolvedEvidence> = {}): ResolvedEvidence => ({
     droppedUnknownMarkers: 0,
     droppedMissingQuotes: 0,
     droppedInvalidQuotes: 0,
+    droppedInvalidRelevance: 0,
     droppedByPlanLimit: 0,
   },
   ...over,
@@ -304,13 +305,16 @@ describe("حراسة الشيفرة", () => {
   });
 
   /**
-   * ★ عزل الإيداع: المسار مبنيّ وغير موصول.
+   * ★ نقطة الوصل **واحدة**: مسار المحادثة وحده.
    *
-   * الشرط الصريح لهذا الإيداع: لا chat route ولا بثّ ولا واجهة. والحارس يجعل
-   * الوصل خطأ اختبار لا مراجعةً بالعين — فلا يمرّ ربطٌ عابر قبل أن يُقصد.
+   * كان الشرط في الإيداع الخامس «لا أحد يستعمله»؛ والسادس يصله بـchat route
+   * قصدًا. وبقاء الحارس مثبَّتًا على ملفٍ واحد يحفظ الغرض: الكتابة تمرّ بمكان
+   * واحد يمكن مراجعته، فلا يظهر مسار ثانٍ يحفظ استشهادات بشروط أخرى — ولا
+   * واجهة تستدعي المستودع مباشرةً فتتجاوز إثبات الجلسة.
    */
-  it("لا يستعمله chat route ولا البثّ ولا الواجهة بعد", () => {
-    const ALLOWED = ["resolve-evidence.ts", "evidence-repository.ts"];
+  it("لا يستعمله إلا مسار المحادثة", () => {
+    const INTERNAL = ["resolve-evidence.ts", "evidence-repository.ts"];
+    const ALLOWED_CONSUMERS = [join("api", "chat", "route.ts")];
     const hits: string[] = [];
     const walk = (dir: string) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -321,7 +325,8 @@ describe("حراسة الشيفرة", () => {
           continue;
         }
         if (!/\.(ts|tsx)$/.test(e.name)) continue;
-        if (ALLOWED.some((a) => full.endsWith(a))) continue;
+        if (INTERNAL.some((a) => full.endsWith(a))) continue;
+        if (ALLOWED_CONSUMERS.some((a) => full.endsWith(a))) continue;
         const body = readFileSync(full, "utf8");
         if (body.includes("resolve-evidence") || body.includes("evidence-repository")) {
           hits.push(full);
@@ -329,6 +334,28 @@ describe("حراسة الشيفرة", () => {
       }
     };
     for (const root of ["app", "components", "lib"]) walk(resolve(root));
+    expect(hits).toEqual([]);
+  });
+
+  /** ولا واجهة تلمسه: `server-only` يمنعه بناءً، والحارس يمنعه مراجعةً */
+  it("لا مكوّن واجهة يستورد المستودع", () => {
+    const hits: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) {
+          if ([".next", "node_modules"].includes(e.name)) continue;
+          walk(full);
+          continue;
+        }
+        if (!/\.tsx$/.test(e.name)) continue;
+        const body = readFileSync(full, "utf8");
+        if (body.includes("evidence-repository") || body.includes("resolve-evidence")) {
+          hits.push(full);
+        }
+      }
+    };
+    for (const root of ["app", "components"]) walk(resolve(root));
     expect(hits).toEqual([]);
   });
 });

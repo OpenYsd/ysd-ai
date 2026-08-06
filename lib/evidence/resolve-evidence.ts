@@ -81,6 +81,12 @@ export interface ResolvedEvidence {
     droppedMissingQuotes: number;
     /** اقتباسٌ لم يجتز التحقق، أو التبس، أو كرّر مصدرًا مقبولًا */
     droppedInvalidQuotes: number;
+    /**
+     * درجة صلة خارج المدى بما يتجاوز هامش التمثيل — سببٌ عام بلا القيمة.
+     * القيمة نفسها لا تُخرَج ولا تُسجَّل: هي مؤشّر على حالة الاسترجاع لا خطأ
+     * مستخدم، ووضعها في سجلّ يُغري بربطها بمحتوى بعينه.
+     */
+    droppedInvalidRelevance: number;
     /** مصدرٌ متحقَّق أسقطه سقف الخطة */
     droppedByPlanLimit: number;
   };
@@ -96,15 +102,29 @@ const isUsableMarker = (m: unknown): m is number =>
   typeof m === "number" && Number.isInteger(m) && m >= 1 && m <= MAX_MARKER;
 
 /**
- * حصر `similarity` في [0,1].
- *
- * ليس حكمًا على القيمة بل حارس حدود عائمة: `1 - (v <=> q)` قد يُخرج
- * `1.0000000000000002` أو قيمة سالبة طفيفة. وقيد `relevance` في 0032 يرفض
- * ذلك، فيسقط **حفظ الرسالة كلها** بسبب خطأ في المنزلة السادسة عشرة. الحصر
- * يمسّ ما هو خارج المدى وحده ولا يغيّر ترتيبًا.
+ * هامش التسوية العائمة — وما تجاوزه ليس خطأ تمثيل بل قيمة خاطئة.
  */
-function clampRelevance(value: number): number {
-  if (!Number.isFinite(value)) return 0;
+export const RELEVANCE_EPSILON = 1e-6;
+
+/**
+ * تسوية `similarity` — **ضيّقة عمدًا**.
+ *
+ * `1 - (v <=> q)` قد يُخرج `1.0000000000000002` أو سالبًا طفيفًا؛ وقيد
+ * `relevance` في 0032 يرفض ذلك فيسقط حفظ الرسالة كلها بسبب المنزلة السادسة
+ * عشرة. فالتسوية هنا لازمة.
+ *
+ * لكنها تقتصر على هامش `1e-6`. الحصر الواسع (`Math.min(1, Math.max(0, x))`)
+ * كان يحوّل `999` إلى `1` و`-20` إلى `0` — أي يمنح **أعلى درجة صلة** لقيمة
+ * تدلّ على عطب في الاسترجاع، فيتصدّر المصدر الفاسد ترتيب المراجع. الفرق بين
+ * «خطأ تمثيل» و«قيمة خاطئة» هو الفرق بين تصحيحٍ وتلفيق.
+ *
+ * `null` تعني: أسقط المصدر. ولا تُسجَّل القيمة — عدّاد فقط.
+ */
+function normalizeRelevance(value: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null; // NaN · ±Infinity
+  if (value < -RELEVANCE_EPSILON) return null;
+  if (value > 1 + RELEVANCE_EPSILON) return null;
+  // داخل الهامش: تسوية إلى الحدّ المجاور لا حصر لقيمة تعسّفية
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
@@ -168,6 +188,7 @@ export function resolveEvidence(input: {
   let droppedUnknownMarkers = 0;
   let droppedMissingQuotes = 0;
   let droppedInvalidQuotes = 0;
+  let droppedInvalidRelevance = 0;
 
   const verified: ResolvedEvidenceSource[] = [];
 
@@ -211,6 +232,16 @@ export function resolveEvidence(input: {
       continue;
     }
 
+    /**
+     * درجة الصلة تُفحص **بعد** التحقق وقبل القبول: مصدرٌ بدرجة فاسدة لا يُحفظ
+     * أصلًا، ولا يُمنح درجةً ملفّقة تضعه في مكان لا يستحقه.
+     */
+    const relevance = normalizeRelevance(snippet.similarity);
+    if (relevance === null) {
+      droppedInvalidRelevance++;
+      continue;
+    }
+
     const seen = acceptedQuotesByChunk.get(snippet.chunkId);
     if (seen !== undefined && seen.has(result.quote)) {
       droppedInvalidQuotes++;
@@ -233,7 +264,7 @@ export function resolveEvidence(input: {
       quote: result.quote, // شريحة الأصل
       quoteStart: result.start,
       quoteEnd: result.end,
-      relevance: clampRelevance(snippet.similarity),
+      relevance,
       verification: result.verification,
     });
   }
@@ -285,6 +316,7 @@ export function resolveEvidence(input: {
       droppedUnknownMarkers,
       droppedMissingQuotes,
       droppedInvalidQuotes,
+      droppedInvalidRelevance,
       droppedByPlanLimit,
     },
   };

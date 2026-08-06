@@ -113,8 +113,16 @@ describe("★ تقوية SSE", () => {
     expect(CHAT_ROUTE).toMatch(/finally \{[\s\S]{0,400}stopKeepAlive\(\)/);
     expect(CHAT_ROUTE).toMatch(/finally \{[\s\S]{0,400}clearTimeout\(hardLimitTimer\)/);
     expect(CHAT_ROUTE).toMatch(/removeEventListener\("abort", onClientAbort\)/);
-    // يتوقف أيضًا عند أول نص
-    expect(CHAT_ROUTE).toMatch(/stopKeepAlive\(\);[\s\S]{0,120}assistantText \+=/);
+    /**
+     * ويتوقف أيضًا عند أول نص.
+     *
+     * الشرط ترتيبيّ لا مسافيّ: `stopKeepAlive()` داخل فرع النصّ وقبل تراكمه.
+     * القياس بالمسافة (120 محرفًا) كان يكسره أي تعليق يُضاف بينهما — وهو ما
+     * وقع في v0.9.0 حين دخل مرشّح البثّ بين السطرين.
+     */
+    expect(CHAT_ROUTE).toMatch(
+      /chunk\.type === "text"[\s\S]{0,800}stopKeepAlive\(\);[\s\S]{0,800}assistantText \+=/,
+    );
   });
 });
 

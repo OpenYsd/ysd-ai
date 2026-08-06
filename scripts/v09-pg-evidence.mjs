@@ -69,13 +69,37 @@ function startContainer() {
   try { sh("docker", ["rm", "-f", CONTAINER], { stdio: "ignore" }); } catch { /* لم توجد */ }
   console.log(`▶ تشغيل ${IMAGE}…`);
   sh("docker", ["run", "-d", "--name", CONTAINER, "-e", "POSTGRES_PASSWORD=ysd_local_only", IMAGE]);
-  for (let i = 0; i < 90; i++) {
+
+  /**
+   * الجاهزية تُقاس على **TCP** لا على المقبس ولا على نصّ السجلّ.
+   *
+   * صورة postgres تُقلع خادمًا مؤقتًا أثناء `initdb` ثم تُنهيه وتُقلع الحقيقي.
+   * والاكتفاء بـ`select 1` عبر المقبس كان يمرّ على المؤقّت فيبدأ الاختبار ثم
+   * ينهار عند إعادة الإقلاع («No such file or directory» على المقبس) — وهو ما
+   * وقع فعلًا في تشغيلة سابقة.
+   *
+   * والفرق البنيوي بين الطورين أن المؤقّت يُقلَع بـ`listen_addresses=''`، أي
+   * على المقبس وحده. فنجاح اتصال TCP **يعني الخادم الحقيقي** بحكم التعريف، لا
+   * بحكم مطابقة سطرٍ في السجلّ قد يتغيّر مع إصدار الصورة أو يغيب أصلًا حين
+   * يكون مجلد البيانات مهيّأً سلفًا.
+   */
+  const sleepMs = (ms) => {
+    const shared = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.wait(shared, 0, 0, ms);
+  };
+
+  for (let i = 0; i < 120; i++) {
     try {
-      sh("docker", ["exec", CONTAINER, "psql", "-U", "postgres", "-d", "postgres", "-tAc", "select 1"],
-         { stdio: "pipe" });
+      sh("docker", [
+        "exec", "-e", "PGPASSWORD=ysd_local_only", CONTAINER,
+        "psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres", "-tAc", "select 1",
+      ], { stdio: "pipe" });
       console.log("▶ القاعدة جاهزة");
       return;
-    } catch { execFileSync("node", ["-e", "setTimeout(()=>{},1000)"]); }
+    } catch {
+      /* المنفذ لم يُفتح بعد — أو ما زلنا في طور initdb */
+    }
+    sleepMs(1000);
   }
   throw new Error("تعذّر إقلاع PostgreSQL");
 }
@@ -492,7 +516,7 @@ async function main() {
   await writeChecks();
 
   // ───────── إعادة التطبيق ─────────
-  console.log("\n⑫ إعادة التطبيق (idempotent)");
+  console.log("\n⑬ إعادة التطبيق (idempotent)");
   const again = tryPsql(mig("0032_message_evidence_tables.sql") + "\n" +
                         mig("0033_message_evidence_read_rpcs.sql") + "\n" +
                         mig("0034_write_message_evidence_rpc.sql"));
@@ -789,6 +813,129 @@ async function writeChecks() {
 
   // وحتى في مجرى الخطأ الخام للقاعدة أثناء هذه الجولة
   ok(evidenceRows() === "2", "(36ج) الأدلة السليمة صمدت خلال كل المحاولات الفاشلة");
+
+  // ═════ تشديدات الحمولة (٤٣–٤٩) ═════
+  console.log("\n⑫ 0034 — سقوف الحمولة وأنواعها");
+
+  // أعِد حالة معروفة ثم ثبّت معرّفاتها للمقارنة بعد كل محاولة فاشلة
+  rpcWrite("service_role", U1, WMSG, GOOD_SOURCES, GOOD_SEGMENTS, GOOD_SUMMARY);
+  const guardBaseline = lastValue(psql(
+    `select string_agg(id::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+
+  const seg1 = (n) =>
+    Array.from({ length: n }, (_, i) => ({ segment_index: i, marker: 1 }));
+  const oneSource = [source(1, WC0, Q1)];
+
+  // (43) روابط الفقرات أكثر من 256
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, seg1(257))) === "evidence_validation_failed",
+     "(43) segment links > 256 ⇒ رمز عام");
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, seg1(256))) === "ok",
+     "(43ب) 256 بالضبط مقبولة");
+
+  // (44) unsupportedSegments أكبر من الحد
+  const uns = (n, from = 1000) => ({ unsupportedSegments: Array.from({ length: n }, (_, i) => from + i) });
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: 0, marker: 1 }], uns(257)))
+       === "evidence_validation_failed",
+     "(44) unsupportedSegments > 256 ⇒ رمز عام");
+
+  // (45) segment_index سالب أو أكبر من 4095
+  for (const [label, idx] of [["سالب", -1], ["4096", 4096], ["ضخم", 999999]]) {
+    ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: idx, marker: 1 }]))
+         === "evidence_validation_failed",
+       `(45) segment_index ${label} ⇒ رمز عام`);
+  }
+  for (const [label, idx] of [["سالب", -1], ["4096", 4096]]) {
+    ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: 0, marker: 1 }],
+          { unsupportedSegments: [idx] })) === "evidence_validation_failed",
+       `(45ب) unsupportedSegments ${label} ⇒ رمز عام`);
+  }
+
+  // تكرار داخل unsupportedSegments
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: 0, marker: 1 }],
+        { unsupportedSegments: [3, 3] })) === "evidence_validation_failed",
+     "(45ج) تكرار داخل unsupportedSegments ⇒ رمز عام");
+
+  /**
+   * (46) فقرةٌ مدعومة ومُعلَنة غير مدعومة معًا.
+   *
+   * تناقضٌ لا تستطيع القاعدة حلّه: أحد الطرفين خاطئ ولا سبيل لمعرفة أيّهما.
+   * وقبولُه يُنتج فقرةً تحمل استشهادًا ووسم «غير مدعومة» في آنٍ واحد.
+   */
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: 0, marker: 1 }],
+        { unsupportedSegments: [0] })) === "evidence_validation_failed",
+     "(46) supported وunsupported متداخلان ⇒ رمز عام");
+  ok(code(rpcWrite("service_role", U1, WMSG, oneSource, [{ segment_index: 0, marker: 1 }],
+        { unsupportedSegments: [1, 2] })) === "ok",
+     "(46ب) بلا تداخل ⇒ يُقبل");
+
+  // (47) أنواع خاطئة في الملخّص والمصفوفات
+  const badTypes = [
+    ["p_summary مصفوفة", oneSource, [{ segment_index: 0, marker: 1 }], []],
+    ["p_summary نصّ", oneSource, [{ segment_index: 0, marker: 1 }], "نص"],
+    ["p_summary رقم", oneSource, [{ segment_index: 0, marker: 1 }], 5],
+    ["unsupported ليست مصفوفة", oneSource, [{ segment_index: 0, marker: 1 }], { unsupportedSegments: 3 }],
+    ["unsupported نصوص", oneSource, [{ segment_index: 0, marker: 1 }], { unsupportedSegments: ["1"] }],
+    ["unsupported كسرية", oneSource, [{ segment_index: 0, marker: 1 }], { unsupportedSegments: [1.5] }],
+    ["segment_index نصّي", oneSource, [{ segment_index: "0", marker: 1 }], {}],
+    ["marker نصّي في الفقرة", oneSource, [{ segment_index: 0, marker: "1" }], {}],
+    ["segment ليس كائنًا", oneSource, [[0, 1]], {}],
+    ["source ليس كائنًا", ["نص"], [], {}],
+  ];
+  for (const [label, srcs, segs, summary] of badTypes) {
+    ok(code(rpcWrite("service_role", U1, WMSG, srcs, segs, summary)) === "evidence_validation_failed",
+       `(47) ${label} ⇒ رمز عام`);
+  }
+
+  /**
+   * أرقام غير صالحة — بالمسلكين الممكنين فعلًا.
+   *
+   * `NaN` عاريةً ليست JSON صالحًا، فيرفضها محوّل `jsonb` قبل الدالة. المسلكان
+   * الواقعيان هما: **نصّ** `"NaN"` (وnumeric يقبله فيصير حقيقيًا لو مرّ)،
+   * وأُسٌّ ضخم يتجاوز المدى. وكلاهما مُغطّى: الأول بفحص النوع والثاني بفحص
+   * المدى — والحارس النصّي في SQL يبقى دفاعًا في العمق.
+   */
+  for (const bad of ["NaN", "Infinity", "-Infinity"]) {
+    ok(code(rpcWrite("service_role", U1, WMSG,
+          [source(1, WC0, Q1, { relevance: bad })], [])) === "evidence_validation_failed",
+       `(47ب) relevance = نصّ "${bad}" ⇒ رمز عام`);
+  }
+  for (const [label, value] of [["أُسّ ضخم", 1e40], ["سالب ضخم", -1e40]]) {
+    ok(code(rpcWrite("service_role", U1, WMSG,
+          [source(1, WC0, Q1, { relevance: value })], [])) === "evidence_validation_failed",
+       `(47ب) relevance ${label} ⇒ رمز عام`);
+  }
+  // وأنّ jsonb نفسه يرفض NaN العارية قبل أن تبلغ الدالة
+  const rawNaN = tryPsql(`select '{"relevance": NaN}'::jsonb;`);
+  ok(!rawNaN.ok, "(47د) jsonb يرفض NaN العارية قبل الدالة أصلًا");
+
+  // حقل نصّي ضخم خارج الحدود
+  ok(code(rpcWrite("service_role", U1, WMSG,
+        [source(1, "x".repeat(500), Q1)], [])) === "evidence_validation_failed",
+     "(47ج) chunk_id ضخم ⇒ رمز عام");
+
+  // (48) الأدلة القديمة صمدت خلال **كل** ما سبق
+  const guardAfter = lastValue(psql(
+    `select string_agg(id::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(evidenceRows() === "1", "(48) الأدلة الأخيرة الناجحة باقية بلا تشويه", evidenceRows());
+  ok(guardAfter.length > 0 && guardAfter !== guardBaseline,
+     "(48ب) الاستبدال الناجح الأخير هو ما استقرّ", "معرّفات مختلفة عن الأساس كما هو متوقّع");
+
+  // (49) لا حمولة سرّية في أي ردّ أو مجرى
+  let guardLeak = "";
+  for (const [label, srcs, segs, summary] of [
+    ["فقرات ضخمة", [source(1, WC0, `${SECRET} حمولة`)], seg1(300), {}],
+    ["تداخل", [source(1, WC0, `${SECRET} حمولة`)], [{ segment_index: 0, marker: 1 }], { unsupportedSegments: [0] }],
+    ["نوع خاطئ", [source(1, WC0, `${SECRET} حمولة`)], [{ segment_index: "0", marker: 1 }], {}],
+  ]) {
+    const res = rpcWrite("service_role", U1, WMSG, srcs, segs, summary);
+    const blob = `${res.out}\n${res.err}`;
+    const hits = [SECRET, "ملف الكتابة", "stored-w.pdf", "DETAIL", "HINT", "Key ("]
+      .filter((n) => blob.includes(n));
+    if (hits.length > 0) guardLeak += `${label}: ${hits.join(",")} `;
+  }
+  ok(guardLeak === "", "(49) لا اقتباس ولا اسم ملف ولا DETAIL/HINT في ردود التشديدات", guardLeak);
 
   // صلاحيات الدالة نفسها
   const wcfg = psql(`select p.prosecdef || '|' || coalesce(array_to_string(p.proconfig, ','), 'NULL')

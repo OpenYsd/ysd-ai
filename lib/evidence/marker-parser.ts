@@ -37,7 +37,7 @@ export const MAX_MARKER = 99;
  * محدودة عمدًا: بلا حدّ يصير كل `[[` في النص بحثًا حتى آخره، فيتحوّل المسح
  * إلى تربيعي على نصّ مليء بالأقواس.
  */
-const MALFORMED_LOOKAHEAD = 12;
+export const MALFORMED_LOOKAHEAD = 12;
 
 export interface ParsedEvidenceSegment {
   /** ترتيب الفقرة بين الفقرات المُخرَجة — يبدأ من 0 */
@@ -80,7 +80,17 @@ const CLING_LEFT = new Set([
 const isDigit = (c: string): boolean => c >= "0" && c <= "9";
 const isSpace = (c: string): boolean => c === " " || c === "\t";
 
-/** سطر فتح/إغلاق سياج: ``` أو ~~~ (ثلاثة فأكثر) مع إزاحة حتى ثلاث مسافات */
+/**
+ * سطر فتح/إغلاق سياج: ``` أو ~~~ (ثلاثة فأكثر) مع إزاحة حتى ثلاث مسافات.
+ *
+ * مُصدَّرة كي يستعملها مستخرِج الغلاف (v0.9.0، الإيداع السادس): «داخل سياج»
+ * يجب أن تعني الشيء نفسه في الموضعين. تعريفان متوازيان يفترقان يومًا، فيصير
+ * نصٌّ **علامةً** عند أحدهما و**شيفرةً** عند الآخر.
+ */
+export function readFenceMarker(line: string): { char: string; len: number } | null {
+  return fenceInfo(line);
+}
+
 function fenceInfo(line: string): { char: string; len: number } | null {
   let i = 0;
   while (i < 3 && i < line.length && line[i] === " ") i++;

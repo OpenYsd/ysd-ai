@@ -266,16 +266,115 @@ describe("★ حدّ الثقة: ما يأتي من القاعدة لا من ا�
     expect(JSON.stringify(out)).not.toContain("ملف-الضحية.pdf");
   });
 
-  it("(★) similarity خارج [0,1] يُحصر ولا يُسقط المصدر", () => {
-    const high = run("جواب [[1]].", [{ marker: 1, quote: QUOTE_A }], [
-      { marker: 1, snippet: snippet({ similarity: 1.0000000000000002 }) },
-    ]);
-    expect(high.sources[0]!.relevance).toBe(1);
+});
 
-    const low = run("جواب [[1]].", [{ marker: 1, quote: QUOTE_A }], [
-      { marker: 1, snippet: snippet({ similarity: -0.0001 }) },
+describe("★ حارس درجة الصلة", () => {
+  const withSimilarity = (similarity: number) =>
+    run("جواب [[1]].", [{ marker: 1, quote: QUOTE_A }], [
+      { marker: 1, snippet: snippet({ similarity }) },
     ]);
-    expect(low.sources[0]!.relevance).toBe(0);
+
+  /**
+   * (٥٠) القيم غير العددية.
+   *
+   * `NaN` أخطر من قيمة خاطئة: كل مقارنة معها تُعيد `false`، فلا يلتقطها فحص
+   * مدى ولا يُخرجها فرز. تدخل بصمت ويصير ترتيب المراجع بلا معنى.
+   */
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+  ])("(٥٠) %s تُسقط المصدر ولا تُحفظ", (_label, value) => {
+    const out = withSimilarity(value);
+    expect(out.sources).toHaveLength(0);
+    expect(out.stats.droppedInvalidRelevance).toBe(1);
+    expect(out.unsupportedSegments).toEqual([0]);
+  });
+
+  /**
+   * (٥١) قيم بعيدة عن المدى.
+   *
+   * الحصر الواسع كان يحوّل `999` إلى `1` و`-20` إلى `0` — أي يمنح **أعلى**
+   * درجة صلة لقيمة تدلّ على عطب في الاسترجاع، فيتصدّر المصدر الفاسد ترتيب
+   * المراجع ويزاحم مصادر سليمة على سقف الأربعة.
+   */
+  it.each([
+    ["999", 999],
+    ["-20", -20],
+    ["1.5", 1.5],
+    ["-0.5", -0.5],
+    ["2", 2],
+  ])("(٥١) %s تُسقط المصدر ولا تُحصر", (_label, value) => {
+    const out = withSimilarity(value);
+    expect(out.sources).toHaveLength(0);
+    expect(out.stats.droppedInvalidRelevance).toBe(1);
+  });
+
+  /** (٥٢) التجاوز العائم الصغير وحده يُسوّى */
+  it.each([
+    ["1 + 1e-16", 1 + 1e-16, 1],
+    ["1.0000000000000002", 1.0000000000000002, 1],
+    ["-1e-9", -1e-9, 0],
+    ["-1e-7", -1e-7, 0],
+    ["1 + 1e-7", 1 + 1e-7, 1],
+  ])("(٥٢) %s تُسوَّى إلى الحدّ", (_label, value, expected) => {
+    const out = withSimilarity(value);
+    expect(out.sources).toHaveLength(1);
+    expect(out.sources[0]!.relevance).toBe(expected);
+    expect(out.stats.droppedInvalidRelevance).toBe(0);
+  });
+
+  /** (٥٣) خارج الهامش مباشرةً ⇒ إسقاط لا تسوية */
+  it("(٥٣) الحدّ الفاصل عند 1e-6 بالضبط", () => {
+    // داخل الهامش
+    expect(withSimilarity(1 + 1e-6).sources).toHaveLength(1);
+    expect(withSimilarity(-1e-6).sources).toHaveLength(1);
+    // خارجه بقليل ⇒ إسقاط
+    expect(withSimilarity(1 + 1e-5).sources).toHaveLength(0);
+    expect(withSimilarity(-1e-5).sources).toHaveLength(0);
+  });
+
+  it("(٥٣ب) القيم المشروعة تمرّ بلا تغيير", () => {
+    for (const v of [0, 0.5, 0.8123456, 1]) {
+      const out = withSimilarity(v);
+      expect(out.sources).toHaveLength(1);
+      expect(out.sources[0]!.relevance).toBe(v);
+    }
+  });
+
+  /** القيمة الفاسدة لا تظهر في أي مخرَج — عدّاد فقط */
+  it("(٥٣ج) القيمة المرفوضة لا تُخرَج ولا تُسجَّل", () => {
+    const streams: string[] = [];
+    const capture = (...args: unknown[]) => void streams.push(args.map(String).join(" "));
+    vi.spyOn(console, "log").mockImplementation(capture);
+    vi.spyOn(console, "warn").mockImplementation(capture);
+    vi.spyOn(console, "error").mockImplementation(capture);
+
+    const out = withSimilarity(31337.5);
+
+    expect(JSON.stringify(out)).not.toContain("31337");
+    expect(streams.join("\n")).not.toContain("31337");
+    expect(streams).toHaveLength(0);
+    expect(out.stats.droppedInvalidRelevance).toBe(1);
+    vi.restoreAllMocks();
+  });
+
+  /** مصدر فاسد لا يمنع مصدرًا سليمًا في الرد نفسه */
+  it("(٥٣د) الإسقاط موضعي: السليم يمرّ", () => {
+    const out = run(
+      "أ [[1]] وب [[2]].",
+      [
+        { marker: 1, quote: QUOTE_A },
+        { marker: 2, quote: QUOTE_B },
+      ],
+      [
+        { marker: 1, snippet: snippet({ chunkId: "c1", similarity: Number.NaN }) },
+        { marker: 2, snippet: snippet({ chunkId: "c2", content: CONTENT_B, similarity: 0.7 }) },
+      ],
+    );
+    expect(out.sources.map((s) => s.marker)).toEqual([2]);
+    expect(out.stats.droppedInvalidRelevance).toBe(1);
+    expect(out.stats.verifiedSources).toBe(1);
   });
 });
 

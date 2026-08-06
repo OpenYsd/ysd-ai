@@ -28,11 +28,17 @@ import {
 } from "@/lib/ai/entity-aliases";
 import { detectUserGrounding } from "@/lib/ai/grounding-guard";
 import {
+  buildSourceRegistry,
   buildSourcesContext,
   NO_MATCH_HINT,
   retrieveSnippets,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
+import { EVIDENCE_MODE_INSTRUCTIONS } from "@/lib/evidence/evidence-prompt";
+import { extractEvidenceEnvelope } from "@/lib/evidence/evidence-envelope";
+import { createEvidenceStream } from "@/lib/evidence/evidence-stream";
+import { resolveEvidence } from "@/lib/evidence/resolve-evidence";
+import { replaceMessageEvidence } from "@/lib/evidence/evidence-repository";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
@@ -55,6 +61,23 @@ import {
  * 100ث، ونريد أن ننهي الرد بأنفسنا برسالة واضحة بدل قطع صامت من وسيط.
  */
 const TOTAL_REQUEST_BUDGET_MS = 110_000;
+
+/**
+ * سقف المصادر الموثّقة لكل رد (v0.9.0).
+ *
+ * ثابتٌ في الخادم لا يأتي من الطلب: `maxVerifiedSources` يحدّد كم استشهادًا
+ * يُحفظ، فلو قُرئ من الجسم لأمكن لعميل معدَّل أن يرفعه. و0034 تفرض أربعة على
+ * أي حال، فالقيمة هنا تطابق ما تقبله القاعدة بدل أن ترتدّ الكتابة عندها.
+ */
+const MAX_VERIFIED_SOURCES = 4;
+
+/**
+ * مهلة حفظ الأدلة — الميزة إضافية ولا تؤخّر `done` بلا حدّ.
+ *
+ * بغيرها يعلّق نداءٌ بطيء إغلاقَ البثّ، فينتظر المستخدم رسالةً وصلته كاملةً
+ * من أجل مراجع قد لا تُحفظ أصلًا.
+ */
+const EVIDENCE_PERSIST_TIMEOUT_MS = 3_000;
 
 /** السقف الفعلي — يُقصَّر في الاختبار وحده خلف البوابة الصريحة */
 function hardLimitMs(): number {
@@ -482,9 +505,20 @@ export async function POST(req: NextRequest) {
     }
     ragMs = Date.now() - tRag;
   }
+  /**
+   * Evidence Mode — **قرار خادمي، وشرطه وجود مصادر دخلت الموجّه فعلًا**.
+   *
+   * لا يُقرأ من جسم الطلب ولا من الخطة: بلا مقاطع في السياق لا مرجع لأي رقم،
+   * فتصير كل علامة «مرجعًا مجهولًا» وتُنفَق رموز الإخراج على تعليمات بلا معنى.
+   */
+  const evidenceEnabled = ragSnippets.length > 0;
+  /** نفس ترقيم `<source index="n">` بحكم البناء لا بالتصادف */
+  const sourceRegistry = evidenceEnabled ? buildSourceRegistry(ragSnippets) : [];
+
   if (ragSnippets.length > 0) {
     // كتلة منفصلة مُسوَّرة — الموجه الأساسي لا يتغير ومحتوى الملفات ليس تعليمات
     systemPrompt = `${systemPrompt}\n\n${buildSourcesContext(ragSnippets)}`;
+    systemPrompt = `${systemPrompt}\n\n${EVIDENCE_MODE_INSTRUCTIONS}`;
   } else if (ragSearchedNoMatch) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
   }
@@ -522,7 +556,15 @@ export async function POST(req: NextRequest) {
 
   // 9) بث الرد عبر SSE
   const encoder = new TextEncoder();
+  /**
+   * النصّ **المرئي** — هو ما يُرسل وما يُحفظ وما تشير إليه إزاحات الاستشهاد.
+   *
+   * في الوضع العادي يساوي مخرَج المزوّد حرفًا بحرف (المرشّح تمرير محض). وفي
+   * Evidence Mode يُجرَّد من العلامات والكتلة الآلية — والخام يبقى في المرشّح
+   * وحده، لا يُحفظ ولا يُسجَّل ولا يصل العميل.
+   */
   let assistantText = "";
+  const evidenceStream = createEvidenceStream({ enabled: evidenceEnabled });
   // النموذج الفعلي الذي أجاب (قد يختلف عن المنطقي مثل ysd/free)
   let actualModelId: string | null = null;
   /** آخر استهلاك مرصود — يُكتب صفًّا واحدًا بعد البثّ (v0.8.0) */
@@ -658,8 +700,16 @@ export async function POST(req: NextRequest) {
             }
             // أول نص وصل — النبضة لم تعد لازمة
             stopKeepAlive();
-            assistantText += chunk.text;
-            send({ type: "text", text: chunk.text });
+            /**
+             * المرشّح يحتجز السطر الجاري في Evidence Mode، فقد تعود دفعةٌ
+             * فارغة. الشرط يمنع إرسال إطار `text` بلا نصّ — والوضع العادي
+             * يُعيد الدفعة كما هي فلا يتغيّر شيء.
+             */
+            const visible = evidenceStream.push(chunk.text);
+            if (visible) {
+              assistantText += visible;
+              send({ type: "text", text: visible });
+            }
           } else if (chunk.type === "status" && chunk.text) {
             // حالة تحقّق قصيرة — تُعرض فورًا ولا تُحفظ ضمن نص الرد
             if (statusMs < 0) statusMs = Date.now() - tProvider;
@@ -719,6 +769,22 @@ export async function POST(req: NextRequest) {
             lastErrorCode = chunk.errorCode ?? "unknown";
             send({ type: "error", error: chunk.error, code: lastErrorCode });
           }
+        }
+
+        /**
+         * تفريغ المرشّح — **مباشرةً بعد الحلقة**.
+         *
+         * السطر الأخير قد يكون محتجَزًا بانتظار اكتماله، وما بعده لا مزوّد
+         * يرسله. موضعُه هنا يجعله يسبق كل قارئ لـ`assistantText`: فحص
+         * الاكتمال، وإنهاء النصّ الناقص، والحفظ. ولو تأخّر عن أحدها لحُفظ ردّ
+         * ينقصه آخر سطر.
+         *
+         * الوضع العادي يُعيد نصًّا فارغًا دائمًا، فلا مسار يتغيّر.
+         */
+        const evidenceTail = evidenceStream.flush();
+        if (evidenceTail) {
+          assistantText += evidenceTail;
+          send({ type: "text", text: evidenceTail });
         }
 
         /**
@@ -879,6 +945,114 @@ export async function POST(req: NextRequest) {
           assistantMessageInsertMs = Date.now() - tAsstInsert;
           assistantMessageId = saved?.id ?? null;
         }
+
+        /**
+         * ═════ الأدلة — بعد حفظ الرسالة، وقبل `done` ═════
+         *
+         * الترتيب ليس تفصيلًا: الاستشهاد يشير إلى `message_id`، فلا وجود له
+         * قبل أن توجد الرسالة. وفشل حفظ الرسالة يعني ألّا نحاول أصلًا — لا
+         * لأنه سيفشل بل لأن نجاحه سيربط أدلة برسالة لا يراها أحد.
+         *
+         * وكل ما يلي **إضافي**: أي فشل فيه يترك الرد المعروض والمحفوظ كما هو،
+         * ويمنع أحداث الاستشهاد وحدها. Evidence Mode لا يكسر محادثة.
+         */
+        if (
+          evidenceEnabled &&
+          assistantMessageId &&
+          !evidenceStream.overflowed &&
+          // ردّ مقطوع لا تُنسب إليه مراجع: الكتلة الآلية لم تصل أصلًا
+          !timedOut &&
+          !req.signal.aborted
+        ) {
+          try {
+            const envelope = extractEvidenceEnvelope(evidenceStream.raw);
+            const resolved = resolveEvidence({
+              responseText: envelope.visibleText,
+              quoteCandidates: envelope.quoteCandidates,
+              sourceRegistry,
+              // ثابت خادمي — لا يُقرأ من الطلب ولا من الخطة
+              maxVerifiedSources: MAX_VERIFIED_SOURCES,
+            });
+
+            const write = await Promise.race([
+              replaceMessageEvidence({
+                userId, // ★ من الجلسة الخادمية وحدها
+                messageId: assistantMessageId,
+                evidence: resolved,
+                correlation: requestId,
+              }),
+              new Promise<{ ok: false; code: "evidence_timeout" }>((resolve) =>
+                setTimeout(
+                  () => resolve({ ok: false, code: "evidence_timeout" }),
+                  EVIDENCE_PERSIST_TIMEOUT_MS,
+                ),
+              ),
+            ]);
+
+            if (write.ok) {
+              /**
+               * أحداث الاستشهاد **بعد نجاح الكتابة وحده**.
+               *
+               * إرسالها قبله يعرض للمستخدم مرجعًا قابلًا للفتح ثم لا يجده عند
+               * إعادة تحميل المحادثة — وهو أسوأ من غيابه: الغياب يُفهم، أما
+               * المرجع الذي يختفي فيبدو عطبًا في بياناته هو.
+               */
+              const byMarker = new Map(resolved.sources.map((s) => [s.marker, s]));
+              const links = resolved.segments.flatMap((seg) =>
+                seg.sourceMarkers.map((marker) => ({ segmentIndex: seg.segmentIndex, marker })),
+              );
+              links.sort((a, b) =>
+                a.segmentIndex !== b.segmentIndex
+                  ? a.segmentIndex - b.segmentIndex
+                  : a.marker - b.marker,
+              );
+              for (const link of links) {
+                const src = byMarker.get(link.marker);
+                if (!src) continue;
+                send({
+                  type: "citation",
+                  segmentIndex: link.segmentIndex,
+                  marker: src.marker,
+                  fileId: src.fileId,
+                  chunkId: src.chunkId,
+                  fileName: src.fileNameSnapshot,
+                  pageNumber: src.pageNumberSnapshot,
+                  quote: src.quote,
+                  verification: src.verification,
+                  // `relevance` لا تُرسل: رقمٌ داخلي للترتيب لا معنى له للقارئ
+                });
+              }
+              send({
+                type: "evidence",
+                supported: resolved.sources.length > 0,
+                supportedSegments: resolved.segments.filter((s) => s.supported).length,
+                unsupportedSegments: resolved.unsupportedSegments,
+                sourcesCount: resolved.sources.length,
+                version: 1,
+              });
+            } else {
+              // حدث عام — بلا سبب مفصّل ولا محتوى
+              send({ type: "evidence_unavailable" });
+            }
+
+            // عدّادات ورموز فقط: لا نصّ مزوّد ولا اقتباس ولا اسم ملف
+            console.log(
+              `[chat] rid=${requestId} evidence_status=${envelope.status} ` +
+                `evidence_write=${write.ok ? "ok" : write.code} ` +
+                `evidence_sources=${resolved.stats.verifiedSources} ` +
+                `evidence_requested=${resolved.stats.requestedMarkers} ` +
+                `evidence_unsupported=${resolved.unsupportedSegments.length}`,
+            );
+          } catch {
+            /**
+             * لا `err` يُطبع: قد يحمل نصًّا من الحمولة. والميزة إضافية —
+             * سقوطها لا يمسّ الرد.
+             */
+            send({ type: "evidence_unavailable" });
+            console.error(`[chat] rid=${requestId} evidence_write=evidence_exception`);
+          }
+        }
+
         send({
           type: "done",
           userMessageId,

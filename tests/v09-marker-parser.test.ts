@@ -398,8 +398,9 @@ describe("★ عزل الإيداع — لا تكامل بعد", () => {
    * مستهلك واحد يحفظ الغرض: استخراج العلامات يمرّ بمكان واحد، فلا يظهر مسارٌ
    * ثانٍ يفسّر `[[n]]` بقواعد أخرى.
    */
-  it("★ لا يستعملها إلا حلّ الأدلة", () => {
-    const ALLOWED = ["resolve-evidence.ts"];
+  it("★ لا يستعملها إلا وحدات الأدلة", () => {
+    // مستهلكوها المقصودون: الحلّ، والغلاف، ومرشّح البثّ — لا شيء غيرها
+    const ALLOWED = ["resolve-evidence.ts", "evidence-envelope.ts", "evidence-stream.ts"];
     const roots = ["app", "components", "lib"];
     const hits: string[] = [];
     const walk = (dir: string) => {

@@ -60,12 +60,27 @@ declare
    */
   c_max_sources constant integer := 4;
 
+  /**
+   * سقوف بنيوية للحمولة.
+   *
+   * الحدود على القيم وحدها لا تكفي: حمولة بمليون رابط فقرة كلٌّ منها صالح
+   * تمرّ كل الفحوص ثم تُشغّل القاعدة دقائق. السقف على **العدد** هو ما يجعل
+   * كلفة الطلب محدودة سلفًا.
+   *
+   * 4095 لعدد الفقرات: أوسع بكثير من أي ردّ واقعي، وضيّق بما يمنع أرقامًا
+   * تعسّفية تُخزَّن في فهرس.
+   */
+  c_max_segment_links constant integer := 256;
+  c_max_unsupported   constant integer := 256;
+  c_max_segment_index constant integer := 4095;
+
   v_owner       uuid;
   v_role        public.message_role;
   v_bad         integer;
   v_count       integer;
   v_sources_n   integer;
   v_segments_n  integer;
+  v_segment_links integer;
   v_desired     jsonb;
   v_current     jsonb;
   v_meta        jsonb;
@@ -73,9 +88,13 @@ declare
   v_unsupported jsonb;
 begin
   -- ═════ ٠) شكل المدخلات قبل أي لمسة للقاعدة ═════
+  --
+  -- `p_summary` كائن لا مصفوفة ولا نصّ: `->` على غير الكائن يُعيد null صامتًا،
+  -- فتمرّ حمولة مشوّهة كأنها ملخّص فارغ بدل أن تُرفض.
   if p_user_id is null or p_message_id is null
      or p_sources is null or jsonb_typeof(p_sources) is distinct from 'array'
      or p_segments is null or jsonb_typeof(p_segments) is distinct from 'array'
+     or p_summary is null or jsonb_typeof(p_summary) is distinct from 'object'
   then
     return jsonb_build_object('ok', false, 'code', 'evidence_validation_failed');
   end if;
@@ -132,16 +151,31 @@ begin
        or jsonb_typeof(s -> 'verification') is distinct from 'string';
     if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
 
-    -- (ب) القيم — نفس حدود 0032، مفروضةً هنا كي لا نصل إلى القيد أصلًا
+    /**
+     * (ب) القيم — نفس حدود 0032، مفروضةً هنا كي لا نصل إلى القيد أصلًا.
+     *
+     * `'NaN'` و`'Infinity'` **قيم مشروعة** في `numeric` وفي `jsonb` معًا،
+     * وتمرّ من `between` بلا اعتراض. فيُفحصان صراحةً: بدونهما تدخل `NaN` إلى
+     * `relevance` فيصير ترتيب المراجع بلا معنى، ولا يظهر خطأ في أي مرحلة.
+     */
     select count(*) into v_bad
     from jsonb_array_elements(p_sources) as s
     where (s ->> 'marker')::numeric not between 1 and 99
        or (s ->> 'marker')::numeric <> trunc((s ->> 'marker')::numeric)
        or char_length(s ->> 'quote') not between 1 and 240
        or (s ->> 'quote_start')::numeric < 0
+       or (s ->> 'quote_start')::numeric <> trunc((s ->> 'quote_start')::numeric)
+       or (s ->> 'quote_end')::numeric <> trunc((s ->> 'quote_end')::numeric)
        or (s ->> 'quote_end')::numeric <= (s ->> 'quote_start')::numeric
        or (s ->> 'relevance')::numeric not between 0 and 1
-       or (s ->> 'verification') not in ('exact', 'normalized');
+       -- ★ أرقام JSON غير صالحة: تمرّ من كل مقارنة مدى بلا اعتراض
+       or (s ->> 'marker')      in ('NaN', 'Infinity', '-Infinity')
+       or (s ->> 'quote_start') in ('NaN', 'Infinity', '-Infinity')
+       or (s ->> 'quote_end')   in ('NaN', 'Infinity', '-Infinity')
+       or (s ->> 'relevance')   in ('NaN', 'Infinity', '-Infinity')
+       or (s ->> 'verification') not in ('exact', 'normalized')
+       -- حقول نصية ضخمة خارج الحدود: `chunk_id` و`verification` مقيّدان طولًا
+       or char_length(s ->> 'chunk_id') > 64;
     if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
 
     -- (ج) لا تكرار في الأرقام
@@ -172,7 +206,12 @@ begin
     );
     if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
 
-    -- (هـ) الفقرات: الشكل
+    -- (هـ) الفقرات: العدد أولًا ثم الشكل
+    select count(*) into v_segment_links from jsonb_array_elements(p_segments);
+    if v_segment_links > c_max_segment_links then
+      raise exception using errcode = 'YSD01';
+    end if;
+
     select count(*) into v_bad
     from jsonb_array_elements(p_segments) as g
     where jsonb_typeof(g)                   is distinct from 'object'
@@ -183,8 +222,10 @@ begin
     -- (و) الفقرات: القيم، ولا إشارة إلى رقمٍ ليس في المصادر
     select count(*) into v_bad
     from jsonb_array_elements(p_segments) as g
-    where (g ->> 'segment_index')::numeric < 0
+    where (g ->> 'segment_index')::numeric not between 0 and c_max_segment_index
        or (g ->> 'segment_index')::numeric <> trunc((g ->> 'segment_index')::numeric)
+       or (g ->> 'segment_index') in ('NaN', 'Infinity', '-Infinity')
+       or (g ->> 'marker') in ('NaN', 'Infinity', '-Infinity')
        or not exists (
             select 1 from jsonb_array_elements(p_sources) as s
             where s ->> 'marker' = g ->> 'marker'
@@ -212,11 +253,39 @@ begin
     if jsonb_typeof(v_unsupported) is distinct from 'array' then
       raise exception using errcode = 'YSD01';
     end if;
+
+    select count(*) into v_count from jsonb_array_elements(v_unsupported);
+    if v_count > c_max_unsupported then raise exception using errcode = 'YSD01'; end if;
+
     select count(*) into v_bad
     from jsonb_array_elements(v_unsupported) as u
     where jsonb_typeof(u) is distinct from 'number'
-       or (u #>> '{}')::numeric < 0
+       or (u #>> '{}') in ('NaN', 'Infinity', '-Infinity')
+       or (u #>> '{}')::numeric not between 0 and c_max_segment_index
        or (u #>> '{}')::numeric <> trunc((u #>> '{}')::numeric);
+    if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
+
+    -- لا تكرار داخل unsupportedSegments
+    select count(*) into v_bad
+    from (
+      select u #>> '{}' as v
+      from jsonb_array_elements(v_unsupported) as u
+      group by 1 having count(*) > 1
+    ) d;
+    if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
+
+    /**
+     * ★ فقرةٌ مدعومة ومُعلَنة غير مدعومة في آنٍ واحد.
+     *
+     * تناقضٌ لا يمكن للقاعدة أن تحلّه: أحد الطرفين خاطئ ولا سبيل لمعرفة أيّهما.
+     * وقبولُه يُنتج ردًّا تُعرض فيه الفقرة باستشهاد وبوسم «غير مدعومة» معًا.
+     */
+    select count(*) into v_bad
+    from jsonb_array_elements(v_unsupported) as u
+    where exists (
+      select 1 from jsonb_array_elements(p_segments) as g
+      where g ->> 'segment_index' = (u #>> '{}')
+    );
     if v_bad > 0 then raise exception using errcode = 'YSD01'; end if;
 
     select count(distinct g ->> 'segment_index') into v_segments_n

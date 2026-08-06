@@ -151,9 +151,37 @@ export const NO_MATCH_HINT = `أرفق المستخدم ملفات جاهزة ل
  * بناء كتلة سياق المصادر — منفصلة عن موجه النظام الأساسي،
  * ومحتوى الملفات مُسوَّر كبيانات غير موثوقة (حماية من Prompt Injection).
  */
+/**
+ * أقصى عدد مصادر مرقّمة — مطابق لسقف العلامات في `[[n]]`.
+ *
+ * الاسترجاع يُعيد أقلّ من ذلك بكثير، لكن الحدّ هنا يجعل التطابق مضمونًا بحكم
+ * البناء: ما لا يمكن أن يحمل رقمًا صالحًا لا يدخل السياق مرقّمًا.
+ */
+export const MAX_NUMBERED_SOURCES = 99;
+
+/**
+ * سجلّ المصادر — **نفس ترقيم السياق** (v0.9.0، الإيداع السادس).
+ *
+ * `buildSourcesContext` يكتب `index="i+1"`، والنموذج يشير بـ`[[i+1]]`. فلو
+ * بُني السجلّ من مصفوفة أخرى — كل نتائج الاسترجاع مثلًا بدل ما دخل الموجّه —
+ * لأشار الرقم إلى مقطعٍ لم يره النموذج، ولنُسب اقتباس إلى مصدر خاطئ **بلا أن
+ * يفشل شيء**: الاقتباس يُتحقَّق منه في المقطع الخطأ فيسقط، أو — أسوأ — ينجح
+ * لأن النصّ متشابه.
+ *
+ * ولهذا تُشتقّ الدالتان من المصفوفة نفسها، وتُقيَّدان بنفس الحدّ.
+ */
+export function buildSourceRegistry(
+  snippets: RetrievedSnippet[],
+): { marker: number; snippet: RetrievedSnippet }[] {
+  return snippets
+    .slice(0, MAX_NUMBERED_SOURCES)
+    .map((snippet, i) => ({ marker: i + 1, snippet }));
+}
+
 export function buildSourcesContext(snippets: RetrievedSnippet[]): string {
   if (snippets.length === 0) return "";
   const blocks = snippets
+    .slice(0, MAX_NUMBERED_SOURCES)
     .map((s, i) => {
       // تعقيم أسوار الاقتباس داخل المحتوى حتى لا يكسر التسوير
       const safe = s.content.replace(/<\/?(?:file_sources|source)\b[^>]*>/gi, " ");

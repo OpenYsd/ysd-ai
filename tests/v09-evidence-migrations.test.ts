@@ -343,6 +343,79 @@ describe("0034 — دالة الكتابة", () => {
   });
 });
 
+describe("0034 — تشديدات الحمولة", () => {
+  it("p_summary يجب أن يكون كائنًا", () => {
+    // `->` على غير الكائن يُعيد null صامتًا، فتمرّ حمولة مشوّهة كملخّص فارغ
+    expect(writeCode).toMatch(
+      /jsonb_typeof\(p_summary\)\s+is distinct from\s+'object'/i,
+    );
+  });
+
+  it("سقوف بنيوية على العدد لا على القيم وحدها", () => {
+    expect(writeCode).toMatch(/c_max_segment_links constant integer := 256/i);
+    expect(writeCode).toMatch(/c_max_unsupported\s+constant integer := 256/i);
+    expect(writeCode).toMatch(/c_max_segment_index constant integer := 4095/i);
+    // ومفروضة فعلًا لا معلَنة فقط
+    expect(writeCode).toMatch(/v_segment_links > c_max_segment_links/i);
+    expect(writeCode).toMatch(/v_count > c_max_unsupported/i);
+    expect(writeCode).toMatch(/not between 0 and c_max_segment_index/i);
+  });
+
+  /**
+   * `'NaN'` قيمة **مشروعة** في numeric وتمرّ من كل مقارنة مدى بلا اعتراض.
+   * الحارس النصّي دفاعٌ في العمق خلف فحص النوع.
+   */
+  it("أرقام JSON غير الصالحة مرفوضة صراحةً", () => {
+    const guards = writeCode.match(/in \('NaN', 'Infinity', '-Infinity'\)/g) ?? [];
+    expect(guards.length).toBeGreaterThanOrEqual(6);
+    for (const field of ["marker", "quote_start", "quote_end", "relevance"]) {
+      expect(writeCode).toMatch(
+        new RegExp(`\\(s ->> '${field}'\\)\\s+in \\('NaN'`, "i"),
+      );
+    }
+  });
+
+  it("الإزاحات أعداد صحيحة لا كسور", () => {
+    for (const field of ["quote_start", "quote_end"]) {
+      expect(writeCode).toMatch(
+        new RegExp(`\\(s ->> '${field}'\\)::numeric <> trunc`, "i"),
+      );
+    }
+    expect(writeCode).toMatch(/\(g ->> 'segment_index'\)::numeric <> trunc/i);
+    expect(writeCode).toMatch(/\(u #>> '\{\}'\)::numeric <> trunc/i);
+  });
+
+  it("لا تكرار داخل unsupportedSegments", () => {
+    expect(writeCode).toMatch(
+      /select u #>> '\{\}' as v[\s\S]{0,160}group by 1 having count\(\*\) > 1/i,
+    );
+  });
+
+  /**
+   * ★ التناقض الذي لا تستطيع القاعدة حلّه: أحد الطرفين خاطئ ولا سبيل لمعرفة
+   * أيّهما، وقبولُه يُنتج فقرةً تحمل استشهادًا ووسم «غير مدعومة» معًا.
+   */
+  it("فقرة مدعومة لا تكون في unsupportedSegments", () => {
+    expect(writeCode).toMatch(
+      /from jsonb_array_elements\(v_unsupported\) as u[\s\S]{0,200}g ->> 'segment_index' = \(u #>> '\{\}'\)/i,
+    );
+  });
+
+  it("حقل نصّي ضخم مرفوض", () => {
+    expect(writeCode).toMatch(/char_length\(s ->> 'chunk_id'\) > 64/i);
+  });
+
+  it("كل تشديد يعود بالرمز العام نفسه", () => {
+    // لا رمز جديد يفرّق بين أسباب الرفض فيصير مِسبارًا
+    const codes = new Set(writeCode.match(/'evidence_[a-z_]+'/g) ?? []);
+    expect([...codes].sort()).toEqual([
+      "'evidence_not_writable'",
+      "'evidence_validation_failed'",
+      "'evidence_write_failed'",
+    ]);
+  });
+});
+
 describe("الخصوصية: لا محتوى ملفات خارج الجدولين", () => {
   /**
    * الاقتباس ومحتوى المقطع واسم الملف بيانات مستخدم. أي مسار يضعها في
