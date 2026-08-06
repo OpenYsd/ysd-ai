@@ -391,7 +391,15 @@ describe("★ عزل الإيداع — لا تكامل بعد", () => {
     expect(src).not.toMatch(/from "server-only"/);
   });
 
-  it("★ لا أحد يستعملها بعد — الإيداع تمهيدي", () => {
+  /**
+   * ★ المستهلك الوحيد هو حلّ الأدلة (الإيداع الخامس).
+   *
+   * كان الشرط «لا أحد يستعملها» حين كان الإيداع تمهيديًا. وبقاؤه مثبَّتًا على
+   * مستهلك واحد يحفظ الغرض: استخراج العلامات يمرّ بمكان واحد، فلا يظهر مسارٌ
+   * ثانٍ يفسّر `[[n]]` بقواعد أخرى.
+   */
+  it("★ لا يستعملها إلا حلّ الأدلة", () => {
+    const ALLOWED = ["resolve-evidence.ts"];
     const roots = ["app", "components", "lib"];
     const hits: string[] = [];
     const walk = (dir: string) => {
@@ -400,7 +408,11 @@ describe("★ عزل الإيداع — لا تكامل بعد", () => {
         if (e.isDirectory()) {
           if ([".next", "node_modules"].includes(e.name)) continue;
           walk(full);
-        } else if (/\.(ts|tsx)$/.test(e.name) && !full.includes("marker-parser")) {
+        } else if (
+          /\.(ts|tsx)$/.test(e.name) &&
+          !full.includes("marker-parser") &&
+          !ALLOWED.some((a) => full.endsWith(a))
+        ) {
           if (fs.readFileSync(full, "utf8").includes("marker-parser")) hits.push(full);
         }
       }

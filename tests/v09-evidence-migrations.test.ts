@@ -30,8 +30,10 @@ function stripComments(sql: string): string {
 
 const tables = read("0032_message_evidence_tables.sql");
 const rpcs = read("0033_message_evidence_read_rpcs.sql");
+const writeRpc = read("0034_write_message_evidence_rpc.sql");
 const tablesCode = stripComments(tables);
 const rpcsCode = stripComments(rpcs);
+const writeCode = stripComments(writeRpc);
 
 describe("0032 — جدولا الاستشهاد", () => {
   it("يعلن الجدولين معًا", () => {
@@ -239,23 +241,134 @@ describe("0033 — دالتا القراءة", () => {
   });
 });
 
+describe("0034 — دالة الكتابة", () => {
+  it("SECURITY DEFINER بمسار مغلق وبلا SQL ديناميكي", () => {
+    expect(writeCode).toMatch(/create or replace function public\.replace_message_evidence\(/i);
+    expect(writeCode).toMatch(/security definer/i);
+    expect(writeCode).toMatch(/set search_path\s*=\s*''/i);
+    expect(writeCode).not.toMatch(/\bexecute\s+(format|'|")/i);
+    expect(writeCode).not.toMatch(/\bquote_ident\b|\bquote_literal\b/i);
+  });
+
+  /**
+   * الدالة تكتب باسم مستخدم يُمرَّر معرّفه وسيطًا. فمنحها لـ`authenticated`
+   * يجعل `p_user_id` حقلًا يتحكّم به العميل — أي انتحالًا بمكالمة واحدة.
+   */
+  it("service_role وحده — والسحب من الثلاثة صريح", () => {
+    const sig = "public\\.replace_message_evidence\\(uuid, uuid, jsonb, jsonb, jsonb\\)";
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(writeCode).toMatch(new RegExp(`revoke all on function ${sig} from ${role}`, "i"));
+    }
+    expect(writeCode).toMatch(new RegExp(`grant execute on function ${sig} to service_role`, "i"));
+    expect(writeCode).not.toMatch(new RegExp(`grant execute on function ${sig} to (anon|authenticated)`, "i"));
+  });
+
+  it("يقفل صفّ الرسالة ويتتبّع الملكية عبر conversations", () => {
+    expect(writeCode).toMatch(/for update of m/i);
+    expect(writeCode).toMatch(/join public\.conversations c on c\.id = m\.conversation_id/i);
+    expect(writeCode).toMatch(/v_owner <> p_user_id/i);
+    expect(writeCode).not.toMatch(/m\.user_id/);
+  });
+
+  /** المخطط الفعلي: النوع enum من 0001، والعمود `metadata` من 0007 */
+  it("يقارن الدور بالنوع الفعلي ويكتب في العمود الفعلي", () => {
+    expect(writeCode).toMatch(/'assistant'::public\.message_role/i);
+    expect(writeCode).toMatch(/update public\.messages\s+set metadata/i);
+    expect(writeCode).not.toMatch(/set\s+meta\s*=/i);
+  });
+
+  it("metadata تُدمج ولا تُستبدل", () => {
+    expect(writeCode).toMatch(/metadata\s*=\s*coalesce\(metadata,\s*'\{\}'::jsonb\)\s*\|\|/i);
+  });
+
+  /**
+   * ★ اللقطات تُشتقّ ولا تُقرأ من الحمولة. لو قُبل `file_name_snapshot` من
+   * التطبيق لأمكن حفظ اقتباس منسوب إلى ملفٍ لا يحويه، ويبقى في التاريخ بعد
+   * حذف الملف بلا ما يكشفه.
+   */
+  it("لا يقرأ لقطة ولا معرّف ملف من الحمولة", () => {
+    for (const field of [
+      "file_id", "file_name_snapshot", "page_number_snapshot", "chunk_index_snapshot",
+    ]) {
+      expect(writeCode).not.toMatch(new RegExp(`->>\\s*'${field}'`, "i"));
+    }
+    // وتُشتقّ من المقطع وملفه
+    expect(writeCode).toMatch(/join public\.file_chunks fc on fc\.id = \(s ->> 'chunk_id'\)::uuid/i);
+    expect(writeCode).toMatch(/join public\.files f on f\.id = fc\.file_id/i);
+    expect(writeCode).toMatch(/f\.user_id = p_user_id/i);
+    expect(writeCode).toMatch(/coalesce\(f\.original_name,\s*f\.file_name\)/i);
+  });
+
+  it("الحذف والإدراج داخل كتلة واحدة لها exception", () => {
+    const guarded = /begin[\s\S]*?delete from public\.message_sources[\s\S]*?insert into public\.message_sources[\s\S]*?exception/i;
+    expect(writeCode).toMatch(guarded);
+  });
+
+  it("يلتقط 23505 و23514 و23503 ويعيد رمزًا عامًا", () => {
+    expect(writeCode).toMatch(/unique_violation/i);
+    expect(writeCode).toMatch(/check_violation/i);
+    expect(writeCode).toMatch(/foreign_key_violation/i);
+    expect(writeCode).toMatch(/evidence_validation_failed/);
+    expect(writeCode).toMatch(/when others then[\s\S]{0,120}evidence_write_failed/i);
+  });
+
+  /**
+   * PostgreSQL يضع الصفّ المخالف — ومعه الاقتباس — في `DETAIL`. إخراجه يحوّل
+   * كل مخالفة قيد إلى تسريب لمحتوى ملف المستخدم.
+   */
+  it("لا يُخرج SQLERRM ولا DETAIL ولا HINT ولا الصفّ", () => {
+    expect(writeCode).not.toMatch(/\bSQLERRM\b/i);
+    expect(writeCode).not.toMatch(/PG_EXCEPTION_DETAIL/i);
+    expect(writeCode).not.toMatch(/PG_EXCEPTION_HINT/i);
+    expect(writeCode).not.toMatch(/returned_sqlstate/i);
+    expect(writeCode).not.toMatch(/\braise\s+(notice|warning|log|info)/i);
+  });
+
+  it("لا يفرّق بين «غير موجودة» و«ليست لك» و«ليست ردَّ مساعد»", () => {
+    const codes = writeCode.match(/evidence_not_writable/g) ?? [];
+    expect(codes).toHaveLength(1); // مسار خروج واحد للحالات الثلاث
+  });
+
+  it("يفرض سقف المصادر وحدود القيم داخل القاعدة", () => {
+    expect(writeCode).toMatch(/c_max_sources constant integer := 4/i);
+    expect(writeCode).toMatch(/not between 1 and 99/i);
+    expect(writeCode).toMatch(/char_length\(s ->> 'quote'\) not between 1 and 240/i);
+    expect(writeCode).toMatch(/'relevance'\)::numeric not between 0 and 1/i);
+    expect(writeCode).toMatch(/'verification'\) not in \('exact', 'normalized'\)/i);
+  });
+
+  it("إضافي بحت: لا drop ولا alter table", () => {
+    expect(writeCode).not.toMatch(/drop (table|column|function|index|type)/i);
+    expect(writeCode).not.toMatch(/alter table/i);
+  });
+});
+
 describe("الخصوصية: لا محتوى ملفات خارج الجدولين", () => {
   /**
    * الاقتباس ومحتوى المقطع واسم الملف بيانات مستخدم. أي مسار يضعها في
    * `observability_events` أو في سجل يحوّل السجلات نفسها إلى نسخة من ملفاته.
    */
-  it("لا يذكر الترحيلان observability ولا log", () => {
-    for (const sql of [tablesCode, rpcsCode]) {
+  it("لا تذكر الترحيلات observability ولا log", () => {
+    for (const sql of [tablesCode, rpcsCode, writeCode]) {
       expect(sql).not.toMatch(/observability_events/i);
       expect(sql).not.toMatch(/\braise\s+log\b/i);
     }
   });
 
-  it("لا يُدرج الترحيلان صفوفًا في أي جدول قائم", () => {
+  it("0032 و0033 لا يكتبان صفًّا واحدًا", () => {
     for (const sql of [tablesCode, rpcsCode]) {
       expect(sql).not.toMatch(/\binsert\s+into\b/i);
       expect(sql).not.toMatch(/\bupdate\s+public\./i);
       expect(sql).not.toMatch(/\bdelete\s+from\b/i);
+    }
+  });
+
+  /** 0034 يكتب بحكم غرضه — لكن في جدولَي الأدلة و`messages.metadata` وحدها */
+  it("0034 لا يكتب في جدول خارج نطاق الأدلة", () => {
+    const writes = writeCode.match(/(?:insert into|delete from|update)\s+public\.\w+/gi) ?? [];
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) {
+      expect(w).toMatch(/message_sources|message_citation_segments|messages/i);
     }
   });
 });

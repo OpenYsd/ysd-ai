@@ -109,10 +109,18 @@ create table public.conversations (
   deleted_at timestamptz
 );
 
+/**
+ * النوع الفعلي من 0001 — **enum لا text**.
+ *
+ * 0034 يقارن الدور بـ 'assistant'::public.message_role، والمقارنة لا تُصاغ إلا
+ * بالنوع نفسه. مخطط اختبار بـtext كان سيمرّر دالةً تنهار على الإنتاج.
+ */
+create type public.message_role as enum ('user', 'assistant', 'system');
+
 create table public.messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations(id) on delete cascade,
-  role text not null, content text not null,
+  role public.message_role not null, content text not null,
   metadata jsonb not null default '{}',
   created_at timestamptz not null default now(), deleted_at timestamptz
 );
@@ -212,9 +220,10 @@ async function main() {
   startContainer();
   console.log("▶ تهيئة المخطط الأدنى…");
   psql(BASE, { tuples: false });
-  console.log("▶ تطبيق 0032 و0033 (على الحاوية وحدها)…");
+  console.log("▶ تطبيق 0032 و0033 و0034 (على الحاوية وحدها)…");
   psql(mig("0032_message_evidence_tables.sql"), { tuples: false });
   psql(mig("0033_message_evidence_read_rpcs.sql"), { tuples: false });
+  psql(mig("0034_write_message_evidence_rpc.sql"), { tuples: false });
   psql(SEED, { tuples: false });
   console.log("▶ تم\n");
 
@@ -480,15 +489,319 @@ async function main() {
                           and relrowsecurity and relforcerowsecurity;`).trim();
   ok(forced === "2", "(★) RLS مفعّل ومفروض على الجدولين");
 
+  await writeChecks();
+
   // ───────── إعادة التطبيق ─────────
-  console.log("\n⑦ إعادة التطبيق (idempotent)");
+  console.log("\n⑫ إعادة التطبيق (idempotent)");
   const again = tryPsql(mig("0032_message_evidence_tables.sql") + "\n" +
-                        mig("0033_message_evidence_read_rpcs.sql"));
-  ok(again.ok, "(★) إعادة تشغيل الترحيلين بلا خطأ", again.err.split("\n")[0]);
+                        mig("0033_message_evidence_read_rpcs.sql") + "\n" +
+                        mig("0034_write_message_evidence_rpc.sql"));
+  ok(again.ok, "(★) إعادة تشغيل الترحيلات الثلاثة بلا خطأ", again.err.split("\n")[0]);
 
   console.log(`\n${"─".repeat(62)}`);
   console.log(`النتيجة: ${checks - failures}/${checks} ✅   الإخفاقات: ${failures}`);
   return failures === 0 ? 0 : 1;
+}
+
+// ════════════════════════════════════════════════════════════
+//  0034 — مسار الكتابة
+// ════════════════════════════════════════════════════════════
+
+const WCONV = "aaaaaaaa-0000-4000-8000-000000000003";
+const WMSG = "bbbbbbbb-0000-4000-8000-000000000011";   // ردّ مساعد لمستخدم١
+const WUSER_MSG = "bbbbbbbb-0000-4000-8000-000000000012"; // رسالة مستخدم لا مساعد
+const WFILE = "cccccccc-0000-4000-8000-000000000003";
+const WFILE2 = "cccccccc-0000-4000-8000-000000000004";
+const WC0 = "dddddddd-0000-4000-8000-000000000020";
+const WC1 = "dddddddd-0000-4000-8000-000000000021";
+const WC2B = "dddddddd-0000-4000-8000-000000000030";   // مقطع في الملف الثاني
+
+/** محتوى فريد: ظهوره في أي مخرَج يعني تسريبًا من هنا وحده */
+const SECRET = "SECRET_QUOTE_MUST_NOT_APPEAR";
+const Q1 = `${SECRET} في المقطع الأول من الملف`;
+const Q2 = "جملة أخرى مختلفة تمامًا داخل المقطع";
+
+const WSEED = `
+insert into public.conversations (id, user_id) values ('${WCONV}', '${U1}');
+insert into public.messages (id, conversation_id, role, content, metadata) values
+  ('${WMSG}', '${WCONV}', 'assistant', 'ردّ', '{"model_id":"x","rag":{"used":true}}'),
+  ('${WUSER_MSG}', '${WCONV}', 'user', 'سؤال', '{}');
+
+insert into public.files (id, user_id, file_name, original_name) values
+  ('${WFILE}',  '${U1}', 'stored-w.pdf', 'ملف الكتابة.pdf'),
+  ('${WFILE2}', '${U1}', 'stored-2.pdf', null);            -- original_name فارغ عمدًا
+
+insert into public.file_chunks (id, file_id, user_id, chunk_index, content, page_number) values
+  ('${WC0}',  '${WFILE}',  '${U1}', 0, '${Q1} وتتمّته.', 11),
+  ('${WC1}',  '${WFILE}',  '${U1}', 1, '${Q2} وتتمّته.', 12),
+  ('${WC2B}', '${WFILE2}', '${U1}', 0, 'محتوى الملف الثاني', 3);
+`;
+
+const q = (s) => String(s).replace(/'/g, "''");
+
+/** ينادي الدالة بدور معيّن ويُعيد نصّ JSON الناتج */
+function rpcWrite(role, userId, messageId, sources, segments, summary = {}) {
+  const sql = `begin; set local role ${role};
+    select public.replace_message_evidence(
+      ${userId === null ? "null" : `'${userId}'::uuid`},
+      ${messageId === null ? "null" : `'${messageId}'::uuid`},
+      '${q(JSON.stringify(sources))}'::jsonb,
+      '${q(JSON.stringify(segments))}'::jsonb,
+      '${q(JSON.stringify(summary))}'::jsonb);
+  commit;`;
+  return tryPsql(sql);
+}
+
+const source = (marker, chunkId, quote, over = {}) => ({
+  marker, chunk_id: chunkId, quote,
+  quote_start: 0, quote_end: quote.length,
+  relevance: 0.8, verification: "exact", ...over,
+});
+
+const GOOD_SOURCES = [source(1, WC0, Q1), source(2, WC1, Q2)];
+const GOOD_SEGMENTS = [
+  { segment_index: 0, marker: 1 },
+  { segment_index: 0, marker: 2 },
+  { segment_index: 1, marker: 1 },
+];
+const GOOD_SUMMARY = { unsupportedSegments: [2] };
+
+const evidenceRows = (msg = WMSG) =>
+  psql(`select count(*) from public.message_sources where message_id = '${msg}';`).trim();
+
+async function writeChecks() {
+  psql(WSEED, { tuples: false });
+
+  // ───────── الصلاحيات ─────────
+  console.log("\n⑧ 0034 — الصلاحيات");
+
+  // (20) authenticated وanon لا ينفّذان
+  for (const role of ["anon", "authenticated"]) {
+    const r = rpcWrite(role, U1, WMSG, [], []);
+    ok(!r.ok && /permission denied/i.test(r.err), `(20) ${role} ممنوع من تنفيذ الدالة`);
+  }
+
+  // (19) service_role يستطيع
+  let r = rpcWrite("service_role", U1, WMSG, GOOD_SOURCES, GOOD_SEGMENTS, GOOD_SUMMARY);
+  const first = r.ok ? lastValue(r.out) : "";
+  ok(r.ok && /"ok": true/.test(first) && /"unchanged": false/.test(first),
+     "(19) service_role يحفظ الأدلة", r.ok ? first : r.err.split("\n")[0]);
+
+  // (37) العدّادات
+  ok(/"sources_count": 2/.test(first) && /"segments_count": 2/.test(first),
+     "(37) عدّادا المصادر والفقرات صحيحان", first);
+
+  // ───────── الملكية ─────────
+  console.log("\n⑨ 0034 — الملكية والمدخلات");
+
+  const code = (res) => {
+    const m = /"code": "([a-z_]+)"/.exec(res.ok ? res.out : "");
+    return m ? m[1] : `ERR:${res.err.split("\n")[0]}`;
+  };
+
+  // (21) لا يُحفظ لرسالة غير المالك — ولا فرق بين الأسباب
+  ok(code(rpcWrite("service_role", U2, WMSG, GOOD_SOURCES, GOOD_SEGMENTS)) === "evidence_not_writable",
+     "(21) مستخدم آخر لا يحفظ لرسالة ليست له");
+  ok(code(rpcWrite("service_role", U1, "bbbbbbbb-0000-4000-8000-0000000fffff", GOOD_SOURCES, GOOD_SEGMENTS))
+       === "evidence_not_writable",
+     "(21ب) رسالة غير موجودة ⇒ نفس الرمز بلا تفريق");
+  ok(code(rpcWrite("service_role", U1, WUSER_MSG, GOOD_SOURCES, GOOD_SEGMENTS)) === "evidence_not_writable",
+     "(21ج) رسالة مستخدم لا مساعد ⇒ نفس الرمز");
+
+  // (22) مقطع مستخدم آخر
+  ok(code(rpcWrite("service_role", U1, WMSG, [source(1, COTHER, Q1)], [{ segment_index: 0, marker: 1 }]))
+       === "evidence_validation_failed",
+     "(22) مقطع يخصّ مستخدمًا آخر يُرفض");
+
+  // مقطع غير موجود أصلًا
+  ok(code(rpcWrite("service_role", U1, WMSG,
+        [source(1, "dddddddd-0000-4000-8000-0000000fffff", Q1)], [{ segment_index: 0, marker: 1 }]))
+       === "evidence_validation_failed",
+     "(22ب) مقطع غير موجود يُرفض");
+
+  // حدود القيم
+  const bads = [
+    ["اقتباس > 240", [source(1, WC0, "ن".repeat(241))]],
+    ["marker = 0", [source(0, WC0, Q1)]],
+    ["marker = 100", [source(100, WC0, Q1)]],
+    ["relevance = 1.5", [source(1, WC0, Q1, { relevance: 1.5 })]],
+    ["verification مجهولة", [source(1, WC0, Q1, { verification: "unverified" })]],
+    ["quote_end <= quote_start", [source(1, WC0, Q1, { quote_start: 5, quote_end: 5 })]],
+    ["أكثر من 4 مصادر", [1, 2, 3, 4, 5].map((i) => source(i, WC0, `${Q1}#${i}`))],
+    ["تكرار marker", [source(1, WC0, Q1), source(1, WC1, Q2)]],
+    ["uuid مشوّه", [source(1, "ليس-uuid", Q1)]],
+  ];
+  for (const [label, srcs] of bads) {
+    ok(code(rpcWrite("service_role", U1, WMSG, srcs, [])) === "evidence_validation_failed",
+       `(22ج) ${label} ⇒ evidence_validation_failed`);
+  }
+
+  // فقرة تشير إلى مصدر غير موجود
+  ok(code(rpcWrite("service_role", U1, WMSG, [source(1, WC0, Q1)], [{ segment_index: 0, marker: 9 }]))
+       === "evidence_validation_failed",
+     "(22د) فقرة تشير إلى رقم ليس في المصادر");
+
+  // تكرار (فقرة، مصدر)
+  ok(code(rpcWrite("service_role", U1, WMSG, [source(1, WC0, Q1)],
+        [{ segment_index: 0, marker: 1 }, { segment_index: 0, marker: 1 }]))
+       === "evidence_validation_failed",
+     "(22هـ) تكرار الزوج (فقرة، مصدر)");
+
+  // ───────── الاشتقاق ─────────
+  console.log("\n⑩ 0034 — الاشتقاق والتخزين");
+
+  // الحالة السليمة لا تزال قائمة رغم كل ما سبق من محاولات فاشلة
+  ok(evidenceRows() === "2", "(36) لا كتابة جزئية: الأدلة السليمة لم تتأثر بأي محاولة فاشلة");
+
+  // (24) اللقطات من القاعدة لا من الحمولة
+  const smuggled = [
+    source(1, WC0, Q1, {
+      file_id: "cccccccc-0000-4000-8000-00000000dead",
+      file_name_snapshot: "ملف-الضحية.pdf",
+      page_number_snapshot: 999,
+      chunk_index_snapshot: 999,
+    }),
+  ];
+  r = rpcWrite("service_role", U1, WMSG, smuggled, [{ segment_index: 0, marker: 1 }]);
+  ok(r.ok && /"ok": true/.test(r.out), "(24) حمولة تحمل لقطات مزوّرة تُقبل — وتُتجاهل حقولها");
+
+  const stored = lastValue(psql(
+    `select file_id || '|' || chunk_index_snapshot || '|' || file_name_snapshot
+            || '|' || coalesce(page_number_snapshot::text,'NULL')
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(stored === `${WFILE}|0|ملف الكتابة.pdf|11`,
+     "(24ب) اللقطات المخزّنة مشتقّة من chunk_id لا من الحمولة", `= ${stored}`);
+
+  // (23) الملف المشتقّ هو ملف المقطع دائمًا — لا يعبر إلى ملف آخر
+  r = rpcWrite("service_role", U1, WMSG, [source(1, WC2B, "محتوى الملف الثاني")],
+               [{ segment_index: 0, marker: 1 }]);
+  const derived = lastValue(psql(
+    `select file_id || '|' || file_name_snapshot
+       from public.message_sources where message_id = '${WMSG}';`));
+  // الملف الثاني بلا original_name ⇒ السلسلة ترجع إلى file_name
+  ok(derived === `${WFILE2}|stored-2.pdf`,
+     "(23) الملف يُشتقّ من المقطع · وسلسلة الاسم ترجع إلى file_name", `= ${derived}`);
+
+  // (25) الجدولان يُكتبان ويُربطان
+  r = rpcWrite("service_role", U1, WMSG, GOOD_SOURCES, GOOD_SEGMENTS, GOOD_SUMMARY);
+  const linked = lastValue(psql(
+    `select count(*) || '|' || (select count(*) from public.message_citation_segments seg
+                                  join public.message_sources m2 on m2.id = seg.message_source_id
+                                 where m2.message_id = '${WMSG}')
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(linked === "2|3", "(25) مصدران وثلاثة روابط فقرات", `= ${linked}`);
+
+  // (26) و(27) metadata
+  const meta = lastValue(psql(
+    `select metadata::text from public.messages where id = '${WMSG}';`));
+  ok(/"model_id": *"x"/.test(meta) && /"rag"/.test(meta),
+     "(26) الحقول القديمة في metadata لم تُمسح", meta.slice(0, 120));
+  ok(/"evidence"/.test(meta) && /"version": *1/.test(meta)
+     && /"sourcesCount": *2/.test(meta) && /"supportedSegments": *2/.test(meta)
+     && /"supported": *true/.test(meta) && /"unsupportedSegments": *\[2\]/.test(meta),
+     "(27) evidence مكتوبة بالشكل المتفق عليه", meta.slice(0, 200));
+  ok(!meta.includes(SECRET) && !meta.includes("ملف الكتابة"),
+     "(27ب) لا اقتباس ولا اسم ملف داخل metadata");
+
+  // (28) إعادة نفس الطلب: بلا تغيير ولا صفوف جديدة
+  const before = lastValue(psql(
+    `select string_agg(id::text || ':' || extract(epoch from created_at)::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+  r = rpcWrite("service_role", U1, WMSG, GOOD_SOURCES, GOOD_SEGMENTS, GOOD_SUMMARY);
+  const repeated = lastValue(r.out);
+  const after = lastValue(psql(
+    `select string_agg(id::text || ':' || extract(epoch from created_at)::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(/"unchanged": true/.test(repeated), "(28) إعادة الطلب تُعلن unchanged", repeated);
+  ok(before === after, "(28ب) لا صفوف جديدة ولا created_at جديد");
+  ok(evidenceRows() === "2", "(28ج) لا تكرار في الصفوف");
+
+  // (29) استبدال بأدلة مختلفة
+  r = rpcWrite("service_role", U1, WMSG, [source(3, WC1, Q2)], [{ segment_index: 0, marker: 3 }]);
+  const replaced = lastValue(psql(
+    `select string_agg(marker::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(/"unchanged": false/.test(lastValue(r.out)) && replaced === "3",
+     "(29) الاستبدال يحذف القديم ويكتب الجديد", `= ${replaced}`);
+
+  // ───────── التراجع والخصوصية ─────────
+  console.log("\n⑪ 0034 — التراجع الذرّي والخصوصية");
+
+  // أعِد حالة معروفة
+  rpcWrite("service_role", U1, WMSG, GOOD_SOURCES, GOOD_SEGMENTS, GOOD_SUMMARY);
+  const baseline = lastValue(psql(
+    `select string_agg(id::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+
+  /**
+   * (30) صفٌّ يخالف الفهرس الجزئي — علامتان مختلفتان بنفس المقطع ونفس الاقتباس.
+   *
+   * هذا هو المسار الذي **يبلغ القيد فعلًا**: التحقق المسبق يمنع تكرار الرقم
+   * ولا يفحص تكرار (المقطع، الاقتباس). فيقع 23505 داخل الكتلة المحروسة بعد أن
+   * يكون الحذف قد نُفِّذ — وهو بالضبط ما يجب أن يتراجع.
+   */
+  const collide = [source(1, WC0, Q1), source(2, WC0, Q1)];
+  r = rpcWrite("service_role", U1, WMSG, collide,
+               [{ segment_index: 0, marker: 1 }, { segment_index: 0, marker: 2 }]);
+  ok(code(r) === "evidence_validation_failed",
+     "(30) مخالفة الفهرس الجزئي ⇒ رمز عام", code(r));
+
+  // (31) و(38) الأدلة القديمة **بأعيانها** — أي أن الحذف تراجع معها
+  const survived = lastValue(psql(
+    `select string_agg(id::text, ',' order by marker)
+       from public.message_sources where message_id = '${WMSG}';`));
+  ok(survived === baseline,
+     "(31) الأدلة القديمة بقيت بمعرّفاتها نفسها بعد فشل الاستبدال");
+  ok(evidenceRows() === "2" && survived === baseline,
+     "(38) الحذف والإدراج في المعاملة نفسها — التراجع أعاد الصفوف لا نسخها");
+
+  // (36) لا كتابة جزئية
+  const segCount = lastValue(psql(
+    `select count(*) from public.message_citation_segments seg
+       join public.message_sources m2 on m2.id = seg.message_source_id
+      where m2.message_id = '${WMSG}';`));
+  ok(segCount === "3", "(36ب) الروابط لم تتغيّر أيضًا", `= ${segCount}`);
+
+  // (32) تكرار marker ⇒ رمز عام
+  ok(code(rpcWrite("service_role", U1, WMSG, [source(1, WC0, Q1), source(1, WC1, Q2)],
+        [{ segment_index: 0, marker: 1 }])) === "evidence_validation_failed",
+     "(32) تكرار marker ⇒ رمز عام");
+
+  // (33) (34) (35) لا تسرّب في أي ردّ فاشل
+  const failing = [
+    ["اقتباس طويل", [source(1, WC0, `${SECRET} ${"ن".repeat(240)}`)], []],
+    ["مقطع مستخدم آخر", [source(1, COTHER, `${SECRET} منسوب زورًا`)], []],
+    ["تصادم الفهرس", collide, [{ segment_index: 0, marker: 1 }, { segment_index: 0, marker: 2 }]],
+    ["مقطع غير موجود", [source(1, "dddddddd-0000-4000-8000-0000000fffff", `${SECRET} مجهول`)], []],
+  ];
+  let leakFound = "";
+  for (const [label, srcs, segs] of failing) {
+    const res = rpcWrite("service_role", U1, WMSG, srcs, segs);
+    const blob = `${res.out}\n${res.err}`;
+    const bad = [SECRET, "ملف الكتابة", "stored-w.pdf", "SQLSTATE", "DETAIL", "HINT", "Key ("]
+      .filter((needle) => blob.includes(needle));
+    if (bad.length > 0) leakFound += `${label}: ${bad.join(",")} `;
+    // الردّ الناجح شكليًا يحمل مفتاحين لا أكثر
+    const keys = res.ok ? Object.keys(JSON.parse(lastValue(res.out))).sort().join(",") : "—";
+    ok(keys === "code,ok", `(35) ردّ «${label}» يحمل ok وcode وحدهما`, `= ${keys}`);
+  }
+  ok(leakFound === "", "(33)(34)(35) لا اقتباس ولا اسم ملف ولا SQLERRM/DETAIL/HINT في أي ردّ", leakFound);
+
+  // وحتى في مجرى الخطأ الخام للقاعدة أثناء هذه الجولة
+  ok(evidenceRows() === "2", "(36ج) الأدلة السليمة صمدت خلال كل المحاولات الفاشلة");
+
+  // صلاحيات الدالة نفسها
+  const wcfg = psql(`select p.prosecdef || '|' || coalesce(array_to_string(p.proconfig, ','), 'NULL')
+                       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                      where n.nspname = 'public' and p.proname = 'replace_message_evidence';`).trim();
+  ok(/^true\|search_path=/.test(wcfg), "(★) الدالة SECURITY DEFINER بمسار مغلق", `= ${wcfg}`);
+
+  const grants = psql(
+    `select coalesce(string_agg(distinct grantee, ',' order by grantee), 'NONE')
+       from information_schema.role_routine_grants
+      where routine_schema = 'public' and routine_name = 'replace_message_evidence'
+        and grantee in ('PUBLIC','anon','authenticated','service_role');`).trim();
+  ok(grants === "service_role", "(★) execute لـservice_role وحده", `= ${grants}`);
 }
 
 let exitCode = 1;

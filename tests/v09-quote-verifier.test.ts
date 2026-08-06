@@ -405,7 +405,15 @@ describe("★ عقد الوحدة", () => {
     expect(src).not.toMatch(/levenshtein|editDistance|fuzzy|similarity/i);
   });
 
-  it("★ لا أحد يستعملها بعد — الإيداع تمهيدي", () => {
+  /**
+   * ★ المستهلك الوحيد هو حلّ الأدلة.
+   *
+   * كان الشرط «لا أحد يستعملها» في الإيداع الثالث؛ والإيداع الخامس هو المستهلك
+   * المقصود. الحارس يبقى لكن مثبَّتًا على مستهلك بعينه: التحقق من الاقتباس هو
+   * البوابة الوحيدة إلى حفظ استشهاد، ومستهلكٌ آخر يعني طريقًا يلتفّ عليها.
+   */
+  it("★ لا يستعملها إلا حلّ الأدلة", () => {
+    const ALLOWED = ["resolve-evidence.ts"];
     const hits: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -413,7 +421,11 @@ describe("★ عقد الوحدة", () => {
         if (e.isDirectory()) {
           if ([".next", "node_modules"].includes(e.name)) continue;
           walk(full);
-        } else if (/\.(ts|tsx)$/.test(e.name) && !full.includes("quote-verifier")) {
+        } else if (
+          /\.(ts|tsx)$/.test(e.name) &&
+          !full.includes("quote-verifier") &&
+          !ALLOWED.some((a) => full.endsWith(a))
+        ) {
           if (fs.readFileSync(full, "utf8").includes("quote-verifier")) hits.push(full);
         }
       }
