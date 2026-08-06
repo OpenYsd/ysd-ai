@@ -58,6 +58,20 @@ export interface ParsedEvidenceOutput {
   allRequestedMarkers: number[];
   /** عدد المحاولات التي بدت علامةً ولم تكن — تبقى في النص كما هي */
   malformedCount: number;
+  /**
+   * لكل سطر: رقم الفقرة التي ينتمي إليها، أو `null` إن لم ينتمِ لأي فقرة
+   * مُخرَجة (سطر فاصل، أو فقرة سقطت لأنها صارت فارغة).
+   *
+   * ── لماذا يُحسب هنا لا في الواجهة ──
+   *
+   * الواجهة تحتاج أن تعرف **أين** تضع زرّ الاستشهاد، أي أن تربط `segmentIndex`
+   * بموضعٍ في Markdown. وإعادةُ اشتقاق التقسيم هناك تعني تعريفين للفقرة
+   * يفترقان مع أول تعديل — فيظهر الزرّ عند فقرةٍ غير التي استُشهد بها، وهو
+   * خطأ نسبة لا خطأ تنسيق.
+   *
+   * يُحسب في نفس المرور، فلا يمكن أن يتباعد عمّا في `segments`.
+   */
+  lineSegments: (number | null)[];
 }
 
 const EMPTY: ParsedEvidenceOutput = {
@@ -65,6 +79,7 @@ const EMPTY: ParsedEvidenceOutput = {
   segments: [],
   allRequestedMarkers: [],
   malformedCount: 0,
+  lineSegments: [],
 };
 
 /**
@@ -301,6 +316,15 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
       ],
       allRequestedMarkers: [],
       malformedCount: 0,
+      /**
+       * فقرةٌ واحدة تغطّي النصّ كلّه، فكل سطر ينتمي إليها.
+       *
+       * كان هذا المسار يُعيد مصفوفةً بعنصرٍ واحد فارغ بينما `segments` يُعلن
+       * فقرةً قائمة — تناقضٌ بين مخرَجَي الدالة نفسها. لا أثر له اليوم (الأدلة
+       * معطّلة أصلًا فوق هذا الحجم)، لكن قارئًا لاحقًا يبني عليه سيجد فقرةً
+       * بلا أسطر.
+       */
+      lineSegments: new Array<number | null>(text.split(/\r?\n/).length).fill(0),
     };
   }
 
@@ -323,6 +347,10 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
   const allSeen = new Set<number>();
   let malformedCount = 0;
   let candidatesUsed = 0;
+
+  /** أرقام أسطر الفقرة الجارية — تُختم برقمها عند نجاح `flush` */
+  let bufLines: number[] = [];
+  const lineSegments: (number | null)[] = new Array<number | null>(lines.length).fill(null);
 
   const flush = (): void => {
     if (rawBuf.length === 0) return;
@@ -349,6 +377,8 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
       rawBuf = [];
       cleanBuf = [];
       segMarkers = [];
+      // الفقرة سقطت: أسطرها لا تنتمي إلى أي فقرة مُخرَجة
+      bufLines = [];
       return;
     }
 
@@ -357,19 +387,23 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
     pushUnique(requested, seen, segMarkers);
     pushUnique(allMarkers, allSeen, segMarkers);
 
+    const segmentIndex = segments.length;
     segments.push({
-      segmentIndex: segments.length,
+      segmentIndex,
       rawText,
       cleanText,
       requestedMarkers: requested,
     });
+    for (const ln of bufLines) lineSegments[ln] = segmentIndex;
 
     rawBuf = [];
     cleanBuf = [];
     segMarkers = [];
+    bufLines = [];
   };
 
-  for (const line of lines) {
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const line = lines[lineNo]!;
     const fence = fenceInfo(line);
 
     if (inFence) {
@@ -377,6 +411,7 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
       rawBuf.push(line);
       cleanBuf.push(line);
       wholeClean.push(line);
+      bufLines.push(lineNo);
       if (fence && fence.char === fenceChar && fence.len >= fenceLen) {
         inFence = false;
         fenceChar = "";
@@ -392,6 +427,7 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
       rawBuf.push(line);
       cleanBuf.push(line);
       wholeClean.push(line);
+      bufLines.push(lineNo);
       continue;
     }
 
@@ -410,6 +446,7 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
     rawBuf.push(line);
     cleanBuf.push(scanned.clean);
     wholeClean.push(scanned.clean);
+    bufLines.push(lineNo);
   }
 
   flush();
@@ -424,5 +461,6 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
     segments,
     allRequestedMarkers: allMarkers,
     malformedCount,
+    lineSegments,
   };
 }

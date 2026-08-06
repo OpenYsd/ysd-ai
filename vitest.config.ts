@@ -18,7 +18,14 @@ export default defineConfig({
    */
   esbuild: { jsx: "automatic" },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    /**
+     * بيئة DOM لاختبارات الواجهة وحدها.
+     *
+     * `jsdom` أبطأ من بيئة node بمراحل، وفرضها على 1400 اختبار منطقي يُطيل كل
+     * تشغيلة بلا مقابل. المطابقة بالامتداد تجعل الثمن على من يحتاجه فقط.
+     */
+    environmentMatchGlobs: [["tests/**/*.test.tsx", "jsdom"]],
     exclude: ["node_modules", ".next", "e2e/**"],
     /**
      * «بلا شبكة» أعلاه كان وصفًا لا إنفاذًا — ومرّ اختبار يستدعي مضيفًا بعيدًا

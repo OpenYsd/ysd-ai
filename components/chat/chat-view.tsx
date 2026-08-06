@@ -31,7 +31,13 @@ import {
   ERROR_MESSAGES,
   codeFromHttpStatus,
 } from "@/lib/ai/error-codes";
-import type { ClientCitation, EvidenceSummary } from "@/lib/evidence/client-citation";
+import {
+  citationFromEvent,
+  mergeCitations,
+  type ClientCitation,
+  type EvidenceSummary,
+} from "@/lib/evidence/client-citation";
+import { EvidenceSourcePanel } from "@/components/chat/evidence-source-panel";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { Markdown } from "./markdown";
@@ -156,7 +162,18 @@ interface ChatViewProps {
 }
 
 interface SSEEvent {
-  type: "text" | "error" | "done" | "meta" | "sources" | "status" | "notice";
+  type:
+    | "text"
+    | "error"
+    | "done"
+    | "meta"
+    | "sources"
+    | "status"
+    | "notice"
+    // v0.9.0 — إضافية بحتة: العميل الذي يجهلها يتجاهلها ولا ينكسر
+    | "citation"
+    | "evidence"
+    | "evidence_unavailable";
   /** رمز تصنيف الخطأ (v0.6.6) */
   code?: string;
   text?: string;
@@ -169,6 +186,25 @@ interface SSEEvent {
   completion?: MsgCompletion;
   /** v0.8.1 — النموذج الفعلي بعد التخفيض (مع notice) */
   effectiveModel?: string;
+  /** v0.9.0 — حقول إطار citation (نفس شكل `CitationEvent`) */
+  segmentIndex?: number;
+  marker?: number;
+  chunkId?: string | null;
+  fileId?: string | null;
+  chunkIndex?: number;
+  fileName?: string;
+  pageNumber?: number | null;
+  quote?: string;
+  quoteStart?: number;
+  quoteEnd?: number;
+  verification?: string;
+  sourceAvailable?: boolean;
+  /** v0.9.0 — حقول إطار evidence */
+  supported?: boolean;
+  supportedSegments?: number;
+  unsupportedSegments?: number[];
+  sourcesCount?: number;
+  version?: number;
 }
 
 export function ChatView({
@@ -185,6 +221,40 @@ export function ChatView({
   const router = useRouter();
 
   const [messages, setMessages] = useState<Msg[]>(initialMessages);
+
+  /**
+   * المصدر المفتوح — واحد لا أكثر.
+   *
+   * ويُحفظ الزرّ الذي فتحه كي يعود إليه التركيز عند الإغلاق: من يتنقّل بلوحة
+   * المفاتيح يجد نفسه بعد الإغلاق في أول الصفحة لو لم نُعده، فيفقد موضعه من
+   * الرد كلّه.
+   */
+  const [openCitation, setOpenCitation] = useState<ClientCitation | null>(null);
+  const citationButtons = useRef(new Map<string, HTMLButtonElement | null>());
+  const lastOpenerKey = useRef<string | null>(null);
+
+  const registerCitationButton = useCallback(
+    (messageId: string, segmentIndex: number, marker: number, el: HTMLButtonElement | null) => {
+      const key = `${messageId}:${segmentIndex}:${marker}`;
+      if (el) citationButtons.current.set(key, el);
+      else citationButtons.current.delete(key);
+    },
+    [],
+  );
+
+  const openCitationPanel = useCallback((messageId: string, citation: ClientCitation) => {
+    lastOpenerKey.current = `${messageId}:${citation.segmentIndex}:${citation.marker}`;
+    setOpenCitation(citation);
+  }, []);
+
+  const closeCitationPanel = useCallback(() => {
+    setOpenCitation(null);
+    const key = lastOpenerKey.current;
+    lastOpenerKey.current = null;
+    if (!key) return;
+    // بعد إزالة اللوحة من الشجرة كي لا يسرق حبسُ التركيز البؤرةَ من جديد
+    requestAnimationFrame(() => citationButtons.current.get(key)?.focus());
+  }, []);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -405,6 +475,57 @@ export function ChatView({
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === asstTempId ? { ...m, sources: data.sources } : m,
+                ),
+              );
+            } else if (data.type === "citation" && typeof data.marker === "number") {
+              /**
+               * تُربط برسالة المساعد **الجارية** لا برسالة جديدة.
+               *
+               * والدمج بـ`mergeCitations` لا بالإلحاق: الإطار نفسه قد يصل
+               * مرتين (إعادة محاولة، أو إطار مكرر من وسيط)، والإلحاق كان
+               * يُنتج زرّين لمرجع واحد.
+               */
+              const incoming = citationFromEvent({
+                type: "citation",
+                segmentIndex: data.segmentIndex ?? 0,
+                marker: data.marker,
+                chunkId: data.chunkId ?? null,
+                fileId: data.fileId ?? null,
+                chunkIndex: data.chunkIndex ?? 0,
+                fileName: data.fileName ?? "",
+                pageNumber: data.pageNumber ?? null,
+                quote: data.quote ?? "",
+                quoteStart: data.quoteStart ?? 0,
+                quoteEnd: data.quoteEnd ?? 0,
+                verification: data.verification ?? "exact",
+                sourceAvailable: data.sourceAvailable === true,
+              });
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === asstTempId
+                    ? { ...m, citations: mergeCitations(m.citations ?? [], [incoming]) }
+                    : m,
+                ),
+              );
+            } else if (data.type === "evidence") {
+              const summary = {
+                supported: data.supported === true,
+                supportedSegments: data.supportedSegments ?? 0,
+                unsupportedSegments: data.unsupportedSegments ?? [],
+                sourcesCount: data.sourcesCount ?? 0,
+                version: data.version ?? 1,
+              };
+              setMessages((prev) =>
+                prev.map((m) => (m.id === asstTempId ? { ...m, evidence: summary } : m)),
+              );
+            } else if (data.type === "evidence_unavailable") {
+              /**
+               * الحفظ فشل: ما بُثّ من استشهادات لم يُكتب، فعرضُه يمنح مرجعًا
+               * يختفي عند إعادة التحميل. تُمسح المؤقتة ويبقى **نصّ الرد**.
+               */
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === asstTempId ? { ...m, citations: [], evidence: null } : m,
                 ),
               );
             } else if (data.type === "error" && data.error) {
@@ -971,7 +1092,27 @@ export function ChatView({
                       </div>
                       <div className="min-w-0 flex-1">
                         {m.content ? (
-                          <Markdown text={m.content} />
+                          <Markdown
+                            text={m.content}
+                            /**
+                             * `undefined` للرسائل بلا أدلة — فيسلك العارض
+                             * مساره القديم حرفًا بحرف: لا إضافة remark ولا
+                             * تغليف عناصر ولا حساب أسطر.
+                             */
+                            evidence={
+                              (m.citations?.length ?? 0) > 0 ||
+                              (m.evidence?.unsupportedSegments?.length ?? 0) > 0
+                                ? {
+                                    citations: m.citations ?? [],
+                                    unsupportedSegments:
+                                      m.evidence?.unsupportedSegments ?? [],
+                                    onOpenCitation: (c) => openCitationPanel(m.id, c),
+                                    registerButton: (segmentIndex, marker, el) =>
+                                      registerCitationButton(m.id, segmentIndex, marker, el),
+                                  }
+                                : undefined
+                            }
+                          />
                         ) : (
                           <div className="flex items-center gap-2 py-2">
                             <div className="flex gap-1.5">
@@ -1127,6 +1268,13 @@ export function ChatView({
           </div>
         </>
       )}
+
+      {/*
+        لوحة المصدر — خارج تدفّق الرسائل عمدًا.
+        واحدة للعرض كلّه لا واحدة لكل استشهاد: عشرات الأزرار تعني عشرات
+        اللوحات المخفية في الشجرة، وكلٌّ منها بمستمعات مفاتيح خاصة بها.
+      */}
+      <EvidenceSourcePanel citation={openCitation} onClose={closeCitationPanel} />
     </>
   );
 }

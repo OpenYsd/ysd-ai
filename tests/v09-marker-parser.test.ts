@@ -370,8 +370,15 @@ describe("★ حدود الأمان", () => {
     const src = fs.readFileSync(path.resolve("lib/evidence/marker-parser.ts"), "utf8");
     const uses =
       src.match(/\.(?:split|match|replace|replaceAll|test|exec|search|matchAll)\(\/[^\n]*/g) ?? [];
-    expect(uses).toHaveLength(1);
-    expect(uses[0]).toContain("split(/\\r?\\n/)");
+    /**
+     * الشرط أن **كل** استعمال هو تقسيم الأسطر — لا أن يكون واحدًا.
+     *
+     * العدّ كان يكسر عند إضافة استعمال ثانٍ للتقسيم نفسه (وقع فعلًا حين احتاج
+     * مسار النصّ الضخم عدّ أسطره)، مع أن الشرط الأمني قائم. المطلوب انعدام
+     * تعبير خطِر لا انعدام التكرار.
+     */
+    expect(uses.length).toBeGreaterThan(0);
+    for (const use of uses) expect(use).toContain("split(/\\r?\\n/)");
     // ولا بناء ديناميكي لتعبير من نصّ المستخدم
     expect(src).not.toMatch(/new RegExp/);
   });
@@ -399,8 +406,18 @@ describe("★ عزل الإيداع — لا تكامل بعد", () => {
    * ثانٍ يفسّر `[[n]]` بقواعد أخرى.
    */
   it("★ لا يستعملها إلا وحدات الأدلة", () => {
-    // مستهلكوها المقصودون: الحلّ، والغلاف، ومرشّح البثّ — لا شيء غيرها
-    const ALLOWED = ["resolve-evidence.ts", "evidence-envelope.ts", "evidence-stream.ts"];
+    /**
+     * مستهلكوها المقصودون: الحلّ، والغلاف، ومرشّح البثّ، ورابط الفقرات في
+     * الواجهة. والأخير لازم بالذات — تقسيم الفقرات يجب أن يكون **تعريفًا
+     * واحدًا**: لو اشتقّته الواجهة بنفسها لظهر الزرّ عند فقرةٍ غير التي
+     * استُشهد بها عند أول اختلاف.
+     */
+    const ALLOWED = [
+      "resolve-evidence.ts",
+      "evidence-envelope.ts",
+      "evidence-stream.ts",
+      "evidence-segments.ts",
+    ];
     const roots = ["app", "components", "lib"];
     const hits: string[] = [];
     const walk = (dir: string) => {
