@@ -430,7 +430,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         const actualModel = result.model ?? model;
 
         // حارس اللغة على الرد الكامل — خليط لغات/كلمة دخيلة يُرفض
-        const lang = violatesLanguage(text, expected, userText);
+        const lang = violatesLanguage(text, expected, userText, req.sourceVocabulary);
         if (lang.violated) {
           // حارس اللغة لا يُهدّئ النموذج: جودة رد لا عطل توفّر.
           console.error(
@@ -603,7 +603,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       // انزع ما أعاده النموذج من نص سبق عرضه (مقارنة على مستوى الكلمات)،
       // ثم افحص التكملة لغويًا. أي شكّ في التكرار → لا تُعرض إطلاقًا.
       const d = dedupeContinuation(emitted, r.text ?? "");
-      if (d.ok && !violatesLanguage(d.text, expected, userText).violated) {
+      if (d.ok && !violatesLanguage(d.text, expected, userText, req.sourceVocabulary).violated) {
         yield { type: "text", text: (/\s$/.test(emitted) ? "" : " ") + d.text };
         if (r.usage) yield { type: "usage", usage: r.usage };
         yield { type: "done" };
@@ -673,7 +673,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       const text = (r.text ?? "").trim();
       const clean =
         text.length > 0 &&
-        !violatesLanguage(text, expected, userText).violated &&
+        !violatesLanguage(text, expected, userText, req.sourceVocabulary).violated &&
         !violatesGrounding(text, userText, grounding).violated;
       if (clean) {
         yield meta(false);
@@ -715,7 +715,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       const text = retry.text ?? "";
       const actualModel = retry.model ?? model;
       const clean =
-        !violatesLanguage(text, expected, userText).violated &&
+        !violatesLanguage(text, expected, userText, req.sourceVocabulary).violated &&
         !violatesUncertainty(userText, text).violated;
       if (clean && text) {
         yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
@@ -865,7 +865,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       const emittedProse = stripCodeAware(emitted, false).prose;
       const proseOverlap = emittedProse.slice(-GUARD_OVERLAP_CHARS);
 
-      const verdict = violatesStreamUnit(proseOverlap + unitProse, expected, userText, false);
+      const verdict = violatesStreamUnit(proseOverlap + unitProse, expected, userText, false, req.sourceVocabulary);
       return verdict.violated ? (verdict.reason ?? "unknown") : null;
     };
 

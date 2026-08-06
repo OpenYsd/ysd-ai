@@ -105,13 +105,15 @@ const LATIN_ALLOW = new Set([
  * ليست اختصارًا/مصطلحًا معروفًا). يُجرَّد الكود والروابط والبريد أولًا،
  * وأي رمز فيه حرف كبير يُعدّ اسم علم أو اختصارًا فيُتجاوز.
  */
-export function findStrayLatinWords(text: string): string[] {
-  const stripped = text
-    .replace(/```[\s\S]*?(```|$)/g, " ")
-    .replace(/`[^`\n]*`/g, " ")
-    .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/\bwww\.\S+/gi, " ")
-    .replace(/[\w.+-]+@[\w.-]+\.\w+/g, " ");
+export function findStrayLatinWords(
+  text: string,
+  /**
+   * مفردات لاتينية **مسنَدة إلى المصدر**: مستخرَجة من المقاطع التي دخلت
+   * الموجّه فعلًا. ما ورد في ملف المستخدم ليس تسريبًا لغويًا.
+   */
+  sourceVocabulary?: ReadonlySet<string>,
+): string[] {
+  const stripped = stripNonProse(text);
   const out: string[] = [];
   const re = /[A-Za-z][A-Za-z.\-'’]*[A-Za-z]|[A-Za-z]/g;
   let m: RegExpExecArray | null;
@@ -121,9 +123,75 @@ export function findStrayLatinWords(text: string): string[] {
     const word = raw.replace(/[.\-'’]/g, "").toLowerCase();
     if (word.length < 3) continue; // رموز قصيرة (js, id, ok) تُتجاهل
     if (LATIN_ALLOW.has(word)) continue; // اختصار/مصطلح معروف
+    if (sourceVocabulary?.has(word)) continue; // ★ ورد في مقاطع المستخدم
     out.push(raw);
   }
   return out;
+}
+
+/**
+ * تجريد ما ليس نثرًا: الشيفرة والروابط والبريد — **وغلاف الأدلة الآلي**.
+ *
+ * ── لماذا الغلاف هنا ──
+ *
+ * `<<<YSD_EVIDENCE_V1>>>{"quotes":[{"marker":1,…}]}` بروتوكولٌ بين النموذج
+ * والخادم، لا كلامٌ موجَّه للقارئ. وهو ASCII صغير بالكامل: `quotes` و`marker`
+ * و`quote` كلمات لاتينية ليست في قائمة السماح، فيقرأها حارس اللغة **نثرًا
+ * دخيلًا** ويقطع ردًّا عربيًا سليمًا.
+ *
+ * وقع هذا حيًّا (رسالة efa22e00…): ردّ عربي بالكامل صُنّف
+ * `incomplete_guard / stray_latin`، فقُطع الغلاف معه، فوصل المستخرِج تالفًا،
+ * فحُفظت الرسالة بصفر مصادر. والأسماء اللاتينية لم تكن السبب — هي بحرف كبير
+ * فتمرّ أصلًا.
+ *
+ * التجريد هنا لا في المستدعي: كل فاحص لغة يمرّ بهذه الدالة، فلا يبقى مسار
+ * يقرأ الغلاف نثرًا.
+ */
+function stripNonProse(text: string): string {
+  return text
+    // الغلاف أولًا: قد يحوي ``` داخل الاقتباس فيربك تجريد الأسيجة
+    .replace(/<<<YSD_EVIDENCE_V1>>>[\s\S]*?(?:<<<END_YSD_EVIDENCE_V1>>>|$)/g, " ")
+    // وسنتينل يتيم أو مبتور — يبقى بروتوكولًا لا نثرًا
+    .replace(/<<<END_YSD_EVIDENCE_V1>>>/g, " ")
+    .replace(/<<<YSD_EVIDENCE_V1>>>/g, " ")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\bwww\.\S+/gi, " ")
+    .replace(/[\w.+-]+@[\w.-]+\.\w+/g, " ");
+}
+
+/**
+ * أقصى عدد كلمات لاتينية متتالية يُسمح به في نثر عربي **مهما كان مصدرها**.
+ *
+ * السماح المسنَد إلى المصدر يفتح ثغرة: ردٌّ إنجليزي كامل مبنيّ من مفردات وردت
+ * كلها في الملف يمرّ كلمةً كلمة. والسقف يغلقها — عبارة مقتبسة تمرّ، وفقرة
+ * إنجليزية لا.
+ */
+export const MAX_LATIN_WORD_RUN = 8;
+
+/**
+ * أطول تسلسل كلمات لاتينية متتالية في النثر — بلا استثناء لأي قائمة سماح.
+ *
+ * يعمل حتى حين تكون كل كلمة مشروعة بمفردها: المقصود شكل النصّ لا مفرداته.
+ */
+export function longestLatinWordRun(text: string): number {
+  const stripped = stripNonProse(text);
+  let best = 0;
+  let run = 0;
+  // أي مقطع عربي يكسر التسلسل؛ الترقيم والأرقام لا تكسره
+  for (const token of stripped.split(/\s+/)) {
+    if (token === "") continue;
+    if (/[؀-ۿ]/.test(token)) {
+      run = 0;
+      continue;
+    }
+    if (/[A-Za-z]{2,}/.test(token)) {
+      run++;
+      if (run > best) best = run;
+    }
+  }
+  return best;
 }
 
 /**
@@ -214,13 +282,11 @@ export function endsInsideCodeFence(text: string): boolean {
  *
  * هكذا نسمح بالمصطلح التقني المفرد بلا أن نفتح الباب لجملة أجنبية كاملة.
  */
-export function longestStrayLatinRun(text: string): number {
-  const stripped = text
-    .replace(/```[\s\S]*?(```|$)/g, " ")
-    .replace(/`[^`\n]*`/g, " ")
-    .replace(/https?:\/\/\S+/gi, " ")
-    .replace(/\bwww\.\S+/gi, " ")
-    .replace(/[\w.+-]+@[\w.-]+\.\w+/g, " ");
+export function longestStrayLatinRun(
+  text: string,
+  sourceVocabulary?: ReadonlySet<string>,
+): number {
+  const stripped = stripNonProse(text);
 
   const re = /[A-Za-z][A-Za-z.\-'’/\\_()]*[A-Za-z)]|[A-Za-z]/g;
   let m: RegExpExecArray | null;
@@ -230,10 +296,12 @@ export function longestStrayLatinRun(text: string): number {
 
   while ((m = re.exec(stripped)) !== null) {
     const raw = m[0];
+    const bare = raw.replace(/[.\-'’/\\_()]/g, "").toLowerCase();
     const isStray =
       !/[A-Z]/.test(raw) &&
-      raw.replace(/[.\-'’/\\_()]/g, "").length >= 3 &&
-      !LATIN_ALLOW.has(raw.replace(/[.\-'’/\\_()]/g, "").toLowerCase()) &&
+      bare.length >= 3 &&
+      !LATIN_ALLOW.has(bare) &&
+      !sourceVocabulary?.has(bare) && // ★ ورد في مقاطع المستخدم
       !looksTechnical(raw);
 
     if (!isStray) {
@@ -262,8 +330,17 @@ export function violatesLanguage(
   reply: string,
   expected: ExpectedLanguage,
   userText: string,
+  sourceVocabulary?: ReadonlySet<string>,
 ): { violated: boolean; reason?: string } {
-  const r = scriptRatios(reply);
+  /**
+   * النسب تُحسب على **النثر** لا على النصّ الخام.
+   *
+   * غلاف الأدلة ASCII بالكامل، فردٌّ عربي قصير معه غلاف كبير كان يبدو «لاتينيًا
+   * غالبًا» فيسقط في `wrong_language` — عطبٌ من نفس الجذر الذي أسقط
+   * `stray_latin`، ولا يظهر إلا على الردود القصيرة.
+   */
+  const prose = stripNonProse(reply);
+  const r = scriptRatios(prose);
 
   const unwanted =
     (userUsesScript(userText, "cyrillic") ? 0 : r.cyrillic) +
@@ -289,8 +366,16 @@ export function violatesLanguage(
 
   // كلمات لاتينية صغيرة دخيلة داخل رد عربي غالبه عربي
   if (expected === "ar" && r.totalLetters >= 15) {
-    if (findStrayLatinWords(reply).length > 0) {
+    if (findStrayLatinWords(reply, sourceVocabulary).length > 0) {
       return { violated: true, reason: "stray_latin" };
+    }
+    /**
+     * ★ السقف يغلق ثغرة السماح المسنَد: فقرةٌ إنجليزية كاملة قد تكون كل
+     * مفرداتها واردة في الملف، فتمرّ كلمةً كلمة وهي ليست جوابًا عربيًا.
+     * المقصود هنا شكل النصّ لا مفرداته.
+     */
+    if (longestLatinWordRun(reply) > MAX_LATIN_WORD_RUN) {
+      return { violated: true, reason: "wrong_language" };
     }
   }
 
@@ -321,6 +406,7 @@ export function violatesStreamUnit(
   userText: string,
   /** حالة سياج الكود عند بداية الوحدة (v0.7.0 RC7) — الكود لا يُفحص كنثر */
   startsInsideCode = false,
+  sourceVocabulary?: ReadonlySet<string>,
 ): { violated: boolean; reason?: string } {
   // نفحص النثر وحده: ما كان داخل ``` أو `…` يخرج من الحساب كليًا
   const { prose } = stripCodeAware(unit, startsInsideCode);
@@ -340,11 +426,19 @@ export function violatesStreamUnit(
     // في الإجابة البرمجية: المصطلح التقني المفرد خارج السياج مقبول («استخدم
     // gzip لضغط الملفات»)، أما تسلسل كلمتين طبيعيتين فأجنبيّة تُمنع كما كانت.
     if (isCodeRequest(userText)) {
-      if (longestStrayLatinRun(unit) >= 2) return { violated: true, reason: "stray_latin" };
+      if (longestStrayLatinRun(unit, sourceVocabulary) >= 2) {
+        return { violated: true, reason: "stray_latin" };
+      }
       return { violated: false };
     }
 
-    if (findStrayLatinWords(unit).length > 0) return { violated: true, reason: "stray_latin" };
+    if (findStrayLatinWords(unit, sourceVocabulary).length > 0) {
+      return { violated: true, reason: "stray_latin" };
+    }
+    // السقف يبقى مطبَّقًا ولو كانت كل المفردات مسنَدة إلى المصدر
+    if (longestLatinWordRun(unit) > MAX_LATIN_WORD_RUN) {
+      return { violated: true, reason: "wrong_language" };
+    }
     return { violated: false };
   }
   if (r.totalLetters >= 30 && unwanted / r.totalLetters > 0.05) {
@@ -656,3 +750,40 @@ export const GUARD_FAILURE_MESSAGE =
 /** ملحق صارم لموجه النظام عند إعادة المحاولة */
 export const STRICT_LANGUAGE_SUFFIX =
   "\n\nتنبيه صارم: أجب حصريًا بلغة رسالة المستخدم الأخيرة. إن كانت بالعربية فاكتب بالعربية الفصحى فقط، ويُمنع منعًا باتًا إدراج أي كلمات أو جمل من لغات أخرى (إسبانية، روسية، صينية، يابانية…) باستثناء أسماء التقنيات والأكواد.";
+
+/**
+ * يبني مفردات لاتينية **مسنَدة إلى المصدر** من المقاطع التي دخلت الموجّه.
+ *
+ * ── لماذا المصدر يُرخّص ──
+ *
+ * حارس اللغة يفترض أن كل كلمة لاتينية صغيرة في ردّ عربي تسريبٌ من النموذج.
+ * والافتراض صحيح إلا حين يكون المستخدم نفسه قد رفع ملفًا فيه تلك الكلمة:
+ * «pgvector» في تقريره ليست تسريبًا، ونقلُها إليه هو الجواب الصحيح.
+ *
+ * والسماح **محصور بما ورد فعلًا**: لا قائمة عامة تتوسّع، بل مفردات هذا الطلب
+ * وحده. وما ليس في ملفه يبقى مرفوضًا كما كان.
+ *
+ * التطبيع محافظ: خفض الحالة وتجريد الترقيم الملاصق — بلا جذوع ولا تقريب،
+ * فلا تتسرّب كلمة قريبة الشكل من كلمة موجودة.
+ */
+export function buildSourceVocabulary(
+  snippets: readonly { content: string; fileName?: string }[],
+  /** سقف الحجم — يمنع ملفًا ضخمًا من بناء قاموس بلا حدّ */
+  maxWords = 5_000,
+): ReadonlySet<string> {
+  const vocab = new Set<string>();
+  for (const s of snippets) {
+    if (vocab.size >= maxWords) break;
+    for (const field of [s.content, s.fileName ?? ""]) {
+      if (typeof field !== "string" || field.length === 0) continue;
+      const re = /[A-Za-z][A-Za-z.\-'’_]*[A-Za-z]|[A-Za-z]/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(field)) !== null) {
+        if (vocab.size >= maxWords) break;
+        const bare = m[0].replace(/[.\-'’_]/g, "").toLowerCase();
+        if (bare.length >= 3) vocab.add(bare);
+      }
+    }
+  }
+  return vocab;
+}

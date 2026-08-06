@@ -27,6 +27,15 @@ export interface ChatRequest {
    * النموذج وحدها، وهي غير كافية لتمرير المواقع والخطوات والأرقام.
    */
   grounding?: { source: "rag" | "knowledge_base" | "tool" | "user_context" | "none"; sourceId?: string };
+  /**
+   * مفردات لاتينية وردت في مقاطع المستخدم التي دخلت الموجّه (v0.9.0).
+   *
+   * حارس اللغة يعدّ كل كلمة لاتينية صغيرة في ردّ عربي تسريبًا — وهو صحيح إلا
+   * حين تكون الكلمة في ملف المستخدم نفسه. نقلُها إليه هو الجواب لا مخالفة له.
+   *
+   * غيابها يعني السلوك القديم حرفيًا: بلا مصادر لا ترخيص.
+   */
+  sourceVocabulary?: ReadonlySet<string>;
 }
 
 export interface UsageReport {

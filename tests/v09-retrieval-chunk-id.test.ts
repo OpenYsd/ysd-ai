@@ -235,12 +235,19 @@ describe("★ ما لم يتغيّر", () => {
     const path = await import("node:path");
     const route = fs.readFileSync(path.resolve("app/api/chat/route.ts"), "utf8");
 
-    // الحقول المُرسَلة مُعدَّدة صراحةً، فلا يتسرّب chunkId إلى الرد
+    /**
+     * الشرط على **الحقول** لا على نصّ السطر.
+     *
+     * كان مثبَّتًا على `sources: ragSnippets.map(…` حرفيًا، فكسره تغليفُ
+     * الاستدعاء بـ`dedupeSourceCards(…)` مع أن الحقول لم تتغيّر. المقصود ألّا
+     * يتسرّب حقلٌ غير معدود (chunkId مثلًا) — لا أن يبقى السطر بشكله.
+     */
     expect(route).toMatch(
-      /sources: ragSnippets\.map\(\(s\) => \(\{\s*fileId: s\.fileId,\s*fileName: s\.fileName,\s*pageNumber: s\.pageNumber,\s*snippet: s\.content\.slice\(0, 180\)/,
+      /ragSnippets\.map\(\(s\) => \(\{\s*fileId: s\.fileId,\s*fileName: s\.fileName,\s*pageNumber: s\.pageNumber,\s*snippet: s\.content\.slice\(0, 180\)/,
     );
-    expect(route).not.toMatch(/sources: ragSnippets\.map\(\(s\) => \(\{\s*\.\.\.s/);
-    // ولا في ما يُحفظ مع الرسالة
-    expect(route).not.toMatch(/meta\.sources = ragSnippets\.map\(\(s\) => \(\{\s*\.\.\.s/);
+    // لا نشر للكائن في أي من المسارين
+    expect(route).not.toMatch(/ragSnippets\.map\(\(s\) => \(\{\s*\.\.\.s/);
+    // ولا تسريب لمعرّف المقطع إلى بطاقات العرض
+    expect(route).not.toMatch(/snippet: s\.content\.slice\(0, 180\),\s*chunkId/);
   });
 });

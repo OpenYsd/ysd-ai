@@ -30,6 +30,7 @@ import { detectUserGrounding } from "@/lib/ai/grounding-guard";
 import {
   buildSourceRegistry,
   buildSourcesContext,
+  dedupeSourceCards,
   NO_MATCH_HINT,
   retrieveSnippets,
   type RetrievedSnippet,
@@ -43,6 +44,7 @@ import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
 import {
+  buildSourceVocabulary,
   endsWithCompleteSentence,
   finalizeIncompleteText,
   INCOMPLETE_NOTICE_TEXT,
@@ -512,6 +514,14 @@ export async function POST(req: NextRequest) {
    * فتصير كل علامة «مرجعًا مجهولًا» وتُنفَق رموز الإخراج على تعليمات بلا معنى.
    */
   const evidenceEnabled = ragSnippets.length > 0;
+  /**
+   * مفردات المقاطع التي دخلت الموجّه — ترخيص لاتينيتها وحدها.
+   *
+   * حارس اللغة يعدّ كل كلمة لاتينية صغيرة في ردّ عربي تسريبًا، وهو صحيح إلا
+   * حين تكون في ملف المستخدم نفسه: «pgvector» في تقريره ليست تسريبًا، ونقلُها
+   * إليه هو الجواب. والترخيص محصور بمقاطع **هذا الطلب** فلا يتوسّع.
+   */
+  const sourceVocabulary = evidenceEnabled ? buildSourceVocabulary(ragSnippets) : undefined;
   /** نفس ترقيم `<source index="n">` بحكم البناء لا بالتصادف */
   const sourceRegistry = evidenceEnabled ? buildSourceRegistry(ragSnippets) : [];
 
@@ -604,15 +614,18 @@ export async function POST(req: NextRequest) {
       if (ragSnippets.length > 0) {
         send({
           type: "sources",
-          sources: ragSnippets.map((s) => ({
-            fileId: s.fileId,
-            fileName: s.fileName,
-            pageNumber: s.pageNumber,
-            snippet: s.content.slice(0, 180),
-            ...(process.env.NODE_ENV !== "production"
-              ? { similarity: s.similarity }
-              : {}),
-          })),
+          // بطاقة واحدة لكل (ملف، صفحة): الصفحة الواحدة قد تُنتج عدة مقاطع
+          sources: dedupeSourceCards(
+            ragSnippets.map((s) => ({
+              fileId: s.fileId,
+              fileName: s.fileName,
+              pageNumber: s.pageNumber,
+              snippet: s.content.slice(0, 180),
+              ...(process.env.NODE_ENV !== "production"
+                ? { similarity: s.similarity }
+                : {}),
+            })),
+          ),
         });
       }
 
@@ -687,6 +700,8 @@ export async function POST(req: NextRequest) {
           messages: history,
           systemPrompt,
           grounding,
+          // لاتينية المصادر ليست تسريبًا لغويًا (v0.9.0)
+          sourceVocabulary,
           // سقف الإخراج من usage_limits لا ثابتًا في المحوّل — يضبط كلفة
           // الطلب الواحد مركزيًا لكل خطة
           maxTokens: resolved.maxOutputTokens,
@@ -901,12 +916,15 @@ export async function POST(req: NextRequest) {
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
           if (ragSnippets.length > 0) {
-            meta.sources = ragSnippets.map((s) => ({
-              fileId: s.fileId,
-              fileName: s.fileName,
-              pageNumber: s.pageNumber,
-              snippet: s.content.slice(0, 180),
-            }));
+            // نفس التجميع المعروض — كي لا تفترق البطاقات بعد إعادة التحميل
+            meta.sources = dedupeSourceCards(
+              ragSnippets.map((s) => ({
+                fileId: s.fileId,
+                fileName: s.fileName,
+                pageNumber: s.pageNumber,
+                snippet: s.content.slice(0, 180),
+              })),
+            );
           }
           // حالة الاكتمال (v0.7.0 RC8): غيابها = مكتمل، فالرسائل القديمة تبقى
           // صالحة بلا ترحيل. لا نعلّم ردًّا مقطوعًا مكتملًا أبدًا.
