@@ -6,6 +6,8 @@ import { getRequestContext } from "@/lib/auth/request-context";
 import { listModelOptions } from "@/lib/ai/registry";
 import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
+import { loadConversationEvidence } from "@/lib/evidence/evidence-reader";
+import { evidenceSummaryFromMetadata } from "@/lib/evidence/client-citation";
 
 export default async function ConversationPage({
   params,
@@ -23,8 +25,20 @@ export default async function ConversationPage({
 
   // كل الاستعلامات مقيّدة بـuserId + RLS، فتُنفَّذ بالتوازي بأمان — بما فيها فحص
   // ملكية المحادثة. لو لم يملكها المستخدم، RLS يُرجع الكل فارغًا ثم redirect.
-  const [{ data: conv }, { data: rows }, { data: prefs }, { data: profile }, { data: convFiles }] =
-    await Promise.all([
+  /**
+   * أدلة الاستشهاد تُقرأ **داخل نفس الموازاة** (v0.9.0).
+   *
+   * نداء واحد لكل المحادثة، لا نداء لكل رسالة. ووضعه هنا لا بعد الحصول على
+   * الرسائل يعني ألّا يضيف رحلةً متسلسلة: الصفحة تنتظر أبطأ استعلام لا مجموعها.
+   */
+  const [
+    { data: conv },
+    { data: rows },
+    { data: prefs },
+    { data: profile },
+    { data: convFiles },
+    evidence,
+  ] = await Promise.all([
       supabase
         .from("conversations")
         .select("id, title, model_id")
@@ -54,6 +68,7 @@ export default async function ConversationPage({
         .is("deleted_at", null)
         .order("created_at", { ascending: true })
         .limit(20),
+      loadConversationEvidence(supabase, id),
     ]);
   if (!conv) redirect("/chat");
 
@@ -94,10 +109,18 @@ export default async function ConversationPage({
       // حالة الاكتمال (v0.7.0 RC8): تأتي من القاعدة وحدها — لا localStorage.
       // غيابها يعني رَدًّا مكتملًا، فالرسائل القديمة تُعرض كما كانت تمامًا.
       const status = meta.completion?.status;
+      /**
+       * الأدلة على ردود المساعد وحدها، والرسائل القديمة تحصل على
+       * `citations: []` و`evidence: null` — أي «لا أدلة» صراحةً بدل حقلٍ غائب
+       * تفرّقه الواجهة عن الفارغ. رسالة المستخدم لا تحمل استشهادًا أصلًا.
+       */
+      const isAssistant = m.role === "assistant";
       return {
         id: m.id,
         role: m.role as "user" | "assistant",
         content: m.content,
+        citations: isAssistant ? (evidence.byMessage.get(m.id) ?? []) : [],
+        evidence: isAssistant ? evidenceSummaryFromMetadata(m.metadata) : null,
         sources: Array.isArray(meta.sources)
           ? (meta.sources as import("@/components/chat/chat-view").MsgSource[])
           : undefined,

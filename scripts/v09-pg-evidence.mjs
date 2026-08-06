@@ -211,8 +211,12 @@ insert into public.file_chunks (id, file_id, user_id, chunk_index, content, page
   ('dddddddd-0000-4000-8000-000000000014', 'cccccccc-0000-4000-8000-000000000002', '${U1}', 4, 'نافذة أربعة', 5);
 `;
 
+const CONV1 = "aaaaaaaa-0000-4000-8000-000000000001"; // لمستخدم١
+const CONV2 = "aaaaaaaa-0000-4000-8000-000000000002"; // لمستخدم٢
 const M1 = "bbbbbbbb-0000-4000-8000-000000000001";
 const M2 = "bbbbbbbb-0000-4000-8000-000000000002";
+/** رسالة ثانية تُنشأ في ⑤ب — الأصلية تُحذف في ② لإثبات التتالي */
+const M2B = "bbbbbbbb-0000-4000-8000-000000000021";
 const MOTHER = "bbbbbbbb-0000-4000-8000-000000000009";
 const F1 = "cccccccc-0000-4000-8000-000000000001";
 const FWIN = "cccccccc-0000-4000-8000-000000000002";   // ملف النافذة الثابت
@@ -479,6 +483,103 @@ async function main() {
     `select string_agg(chunk_index || ':' || is_target, ',' order by chunk_index)
        from public.get_owned_file_chunk('${FWIN}','${CWIN}',1);`)} commit;`));
   ok(target === "1:false,2:true,3:false", "(★) is_target يميّز المقطع المطلوب", `= ${target}`);
+
+  // ───────── القراءة المجمّعة ─────────
+  console.log("\n⑤ب get_conversation_evidence — نداء واحد للمحادثة");
+
+  /**
+   * رسالة ثانية بأدلتها في **نفس المحادثة**: بلا رسالتين لا يُثبت أن النداء
+   * الواحد يجمعهما، ويمرّ نمط N+1 بلا أن يكشفه اختبار.
+   *
+   * (الرسالة `M2` الأصلية حُذفت في ② لإثبات التتالي، فتلزم رسالة جديدة.)
+   */
+  psql(`insert into public.messages (id, conversation_id, role, content)
+          values ('${M2B}', '${CONV1}', 'assistant', 'ردّ ثانٍ جديد');
+        insert into public.message_sources
+          (id, message_id, marker, chunk_id, file_id, chunk_index_snapshot,
+           file_name_snapshot, page_number_snapshot, quote, quote_start, quote_end,
+           relevance, verification)
+        values ('e0000000-0000-4000-8000-000000000040', '${M2B}', 1,
+                '${C1}', '${F1}', 1, 'لقطة ثانية.pdf', 21,
+                'اقتباس الرسالة الثانية', 0, 22, 0.6, 'exact');
+        ${seg("e0000000-0000-4000-8000-000000000040", 0)}`, { tuples: false });
+
+  const conv = (uid, cid) =>
+    lastValue(psql(`begin; ${asUser(uid,
+      `select count(*) from public.get_conversation_evidence('${cid}');`)} commit;`));
+
+  // (1) المالك يقرأ أدلة كل رسائل المحادثة
+  const ownerRows = conv(U1, CONV1);
+  ok(Number(ownerRows) >= 4, "(1) مالك المحادثة يقرأ أدلة كل رسائلها", `صفوف=${ownerRows}`);
+
+  // (5) نداء واحد يُعيد عدة رسائل
+  const distinctMsgs = lastValue(psql(`begin; ${asUser(U1,
+    `select count(distinct message_id) from public.get_conversation_evidence('${CONV1}');`)} commit;`));
+  ok(distinctMsgs === "2", "(5) نداء واحد يُعيد أدلة رسالتين", `رسائل=${distinctMsgs}`);
+
+  // (6) الترتيب message ثم segment ثم marker
+  const ordered = lastValue(psql(`begin; ${asUser(U1,
+    `select string_agg(message_id::text || '/' || segment_index || ':' || marker, ',' order by rn)
+       from (select message_id, segment_index, marker, row_number() over () rn
+               from public.get_conversation_evidence('${CONV1}')) q;`)} commit;`));
+  const seq = ordered.split(",");
+  const sortedSeq = [...seq].sort();
+  ok(JSON.stringify(seq) === JSON.stringify(sortedSeq),
+     "(6) الترتيب message ثم segment ثم marker", ordered.slice(0, 90));
+
+  // (2) مستخدم آخر ⇒ صفر صفوف
+  ok(conv(U2, CONV1) === "0", "(2) مستخدم آخر ⇒ صفر صفوف");
+
+  // (10) محادثة غير موجودة وليست لك ⇒ النتيجة نفسها
+  const ghostConv = conv(U1, "aaaaaaaa-0000-4000-8000-0000000fffff");
+  const othersConv = conv(U1, CONV2);
+  ok(ghostConv === "0" && othersConv === "0" && ghostConv === othersConv,
+     "(10) «غير موجودة» و«ليست لك» ⇒ نتيجة واحدة بلا تفريق");
+
+  // (3) anon ممنوع
+  const anonConv = tryPsql(`begin; set local role anon;
+    select * from public.get_conversation_evidence('${CONV1}'); commit;`);
+  ok(!anonConv.ok && /permission denied/i.test(anonConv.err), "(3) anon ممنوع من الدالة المجمّعة");
+
+  // (4) authenticated لا يقرأ الجداول مباشرة (مُثبَت في ③ كذلك)
+  const directRead = tryPsql(`begin; ${asUser(U1,
+    `select count(*) from public.message_sources;`)} commit;`);
+  ok(!directRead.ok && /permission denied/i.test(directRead.err),
+     "(4) authenticated لا يقرأ الجداول مباشرة");
+
+  // (9) source_available صحيح — الحيّ متاح والمحذوف لا
+  // المصدر الواحد قد يخدم فقرتين، فيتكرر صفّه — نميّز قبل التجميع
+  const avail = lastValue(psql(`begin; ${asUser(U1,
+    `select string_agg(marker || '=' || source_available, ',' order by marker)
+       from (select distinct marker, source_available
+               from public.get_conversation_evidence('${CONV1}')
+              where message_id = '${M1}') q;`)} commit;`));
+  ok(avail === "1=true,2=false,4=false,7=true",
+     "(9) source_available صحيح لكل مصدر", `= ${avail}`);
+
+  // (7)(8) اللقطات بعد الحذف
+  const snapAfter = lastValue(psql(`begin; ${asUser(U1,
+    `select file_name || '|' || page_number || '|' || chunk_index
+       from public.get_conversation_evidence('${CONV1}')
+      where message_id = '${M1}' and marker = 2;`)} commit;`));
+  ok(snapAfter === "تقرير حيّ.pdf|555|99",
+     "(7) حذف المقطع: الاسم حيّ والباقي من اللقطة", `= ${snapAfter}`);
+
+  const fileGone = lastValue(psql(`begin; ${asUser(U1,
+    `select file_name || '|' || page_number || '|' || chunk_index
+       from public.get_conversation_evidence('${CONV1}')
+      where message_id = '${M1}' and marker = 4;`)} commit;`));
+  ok(fileGone === "اسم اللقطة.pdf|555|99",
+     "(8) حذف الملف: كل الحقول من اللقطة", `= ${fileGone}`);
+
+  // ★ لا relevance في التوقيع أصلًا
+  const cols = psql(`select count(*) from information_schema.routines r
+                       join information_schema.parameters p
+                         on p.specific_name = r.specific_name
+                      where r.routine_schema = 'public'
+                        and r.routine_name = 'get_conversation_evidence'
+                        and p.parameter_name = 'relevance';`).trim();
+  ok(cols === "0", "(★) relevance غائبة من توقيع الدالة المجمّعة");
 
   // ───────── الخصوصية ─────────
   console.log("\n⑥ الخصوصية");

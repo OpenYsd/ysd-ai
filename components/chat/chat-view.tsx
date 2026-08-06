@@ -31,6 +31,7 @@ import {
   ERROR_MESSAGES,
   codeFromHttpStatus,
 } from "@/lib/ai/error-codes";
+import type { ClientCitation, EvidenceSummary } from "@/lib/evidence/client-citation";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { Markdown } from "./markdown";
@@ -107,6 +108,18 @@ interface Msg {
   model?: string;
   /** مصادر RAG المستند إليها الرد */
   sources?: MsgSource[];
+  /**
+   * استشهادات موثّقة (v0.9.0) — نفس الشكل من البثّ الحيّ ومن إعادة التحميل.
+   *
+   * مصفوفة فارغة للرسائل القديمة ولغير المدعومة، لا حقلٌ غائب: الواجهة تفرّق
+   * بين «لا استشهاد» و«لم يُقرأ بعد» بهذا وحده.
+   *
+   * `sources` أعلاه تبقى للتوافق في هذه المرحلة: هي كل ما استُرجع، وهذه ما
+   * ثبت الاستشهاد به.
+   */
+  citations?: ClientCitation[];
+  /** ملخّص الأدلة من `messages.metadata.evidence` — `null` يعني بلا أدلة */
+  evidence?: EvidenceSummary | null;
   /**
    * v0.8.1 — إشعار من الخادم يُفسّر ما حدث (تخفيض النموذج بالخطة مثلًا).
    * يبقى ملتصقًا بالرسالة لا كتنبيه عابر: المستخدم قد يقرأ الرد بعد دقائق.

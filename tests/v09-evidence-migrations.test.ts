@@ -138,18 +138,42 @@ describe("0032 — جدولا الاستشهاد", () => {
 });
 
 describe("0033 — دالتا القراءة", () => {
-  it("تُعلن الدالتين", () => {
+  it("تُعلن الدوالّ الثلاث", () => {
     expect(rpcsCode).toMatch(/create or replace function public\.get_message_evidence\(/i);
+    expect(rpcsCode).toMatch(/create or replace function public\.get_conversation_evidence\(/i);
     expect(rpcsCode).toMatch(/create or replace function public\.get_owned_file_chunk\(/i);
   });
 
-  it("كلتاهما SECURITY DEFINER بمسار بحث مغلق و STABLE", () => {
+  it("كلها SECURITY DEFINER بمسار بحث مغلق و STABLE", () => {
     const defs = rpcsCode.match(/security definer/gi) ?? [];
     const paths = rpcsCode.match(/set search_path\s*=\s*''/gi) ?? [];
     const stables = rpcsCode.match(/^\s*stable\s*$/gim) ?? [];
-    expect(defs).toHaveLength(2);
-    expect(paths).toHaveLength(2);
-    expect(stables).toHaveLength(2);
+    expect(defs).toHaveLength(3);
+    expect(paths).toHaveLength(3);
+    expect(stables).toHaveLength(3);
+  });
+
+  /**
+   * ★ الفرق بين الدالتين: الأولى للخادم فتُعيد `relevance`، والمجمّعة تُقرأ
+   * لتُرسل إلى المتصفح فالعمود **غائب من توقيعها**. الحذف من الطبقة التي
+   * تُنتج البيانات أقوى من الحذف في الطبقة التي تنقلها.
+   */
+  it("get_conversation_evidence لا تُعيد relevance", () => {
+    const at = rpcsCode.indexOf("function public.get_conversation_evidence");
+    const body = rpcsCode.slice(at, rpcsCode.indexOf("$$;", at));
+    const signature = body.slice(0, body.indexOf("as $$"));
+    expect(signature).not.toMatch(/relevance/i);
+    expect(body).not.toMatch(/ms\.relevance/i);
+  });
+
+  it("المجمّعة تفحص ملكية المحادثة وترتّب ترتيبًا ثابتًا", () => {
+    const at = rpcsCode.indexOf("function public.get_conversation_evidence");
+    const body = rpcsCode.slice(at, rpcsCode.indexOf("$$;", at));
+    expect(body).toMatch(/c\.id = p_conversation_id/i);
+    expect(body).toMatch(/c\.user_id\s*=\s*\(select auth\.uid\(\)\)/i);
+    expect(body).toMatch(/c\.deleted_at is null/i);
+    expect(body).toMatch(/m\.deleted_at is null/i);
+    expect(body).toMatch(/order by ms\.message_id,\s*seg\.segment_index,\s*ms\.marker/i);
   });
 
   /**
@@ -159,7 +183,7 @@ describe("0033 — دالتا القراءة", () => {
    */
   it("كل دالة تفحص الملكية بنفسها عبر auth.uid()", () => {
     const bodies = rpcsCode.split(/create or replace function/i).slice(1);
-    expect(bodies).toHaveLength(2);
+    expect(bodies).toHaveLength(3);
     for (const body of bodies) {
       expect(body).toMatch(/auth\.uid\(\)/);
     }
@@ -226,6 +250,7 @@ describe("0033 — دالتا القراءة", () => {
   it("الصلاحيات: سحب من public وanon · منح لـauthenticated وservice_role", () => {
     const sigs = [
       "public\\.get_message_evidence\\(uuid\\)",
+      "public\\.get_conversation_evidence\\(uuid\\)",
       "public\\.get_owned_file_chunk\\(uuid, uuid, integer\\)",
     ];
     for (const sig of sigs) {

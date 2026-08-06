@@ -8,6 +8,15 @@ import path from "node:path";
  *   تشغيل ملفات .spec.ts خارج بيئتها وفشل.
  */
 export default defineConfig({
+  /**
+   * JSX بالتحويل التلقائي (v0.9.0).
+   *
+   * `tsconfig` يضبط `jsx: "preserve"` لأن Next هو من يحوّلها في البناء. لكن
+   * vitest يحوّل بـesbuild مباشرةً، فكان ينتج `React.createElement` بلا
+   * استيراد React — و**أي** اختبار يستورد مكوّنًا يفشل بـ«React is not
+   * defined». الوضع التلقائي يستورد وقت التشغيل بنفسه.
+   */
+  esbuild: { jsx: "automatic" },
   test: {
     include: ["tests/**/*.test.ts"],
     exclude: ["node_modules", ".next", "e2e/**"],

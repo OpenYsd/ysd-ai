@@ -116,7 +116,88 @@ as $$
 $$;
 
 -- ------------------------------------------------------------
--- ٢) get_owned_file_chunk
+-- ٢) get_conversation_evidence — قراءة مجمّعة
+-- ------------------------------------------------------------
+--
+-- ── لماذا دالة ثانية بدل تكرار الأولى ──
+--
+-- تحميل المحادثة يعرض عشرات الرسائل. ونداء `get_message_evidence` لكل واحدة
+-- يعني N رحلة شبكية إلى القاعدة لصفحة واحدة — وهو نمط N+1 الكلاسيكي: يبدو
+-- سليمًا على محادثة من ثلاث رسائل، ويخنق الصفحة على محادثة من مئتين.
+--
+-- فحصُ الملكية هنا **مرة واحدة على المحادثة** لا مرة لكل رسالة، وهو أرخص
+-- وأصحّ معًا: مصدر الحقيقة واحد.
+--
+-- ── لا `relevance` ──
+--
+-- الأولى تُعيدها لأنها للخادم. وهذه تُقرأ لتُرسل إلى المتصفح، فالعمود **غائب
+-- من التوقيع أصلًا**. الحذف من الطبقة التي تُنتج البيانات أقوى من الحذف في
+-- الطبقة التي تنقلها: ما لا تُعيده القاعدة لا يمكن أن ينساه مُحوِّل لاحق.
+--
+-- الترتيب: `message_id` ثم `segment_index` ثم `marker` — ثابت، فلا يعتمد
+-- العميل على ترتيب عشوائي يتغيّر مع خطة التنفيذ.
+
+create or replace function public.get_conversation_evidence(p_conversation_id uuid)
+returns table (
+  source_id        uuid,
+  message_id       uuid,
+  segment_index    integer,
+  marker           integer,
+  chunk_id         uuid,
+  file_id          uuid,
+  chunk_index      integer,
+  file_name        text,
+  page_number      integer,
+  quote            text,
+  quote_start      integer,
+  quote_end        integer,
+  verification     text,
+  source_available boolean
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    ms.id,
+    ms.message_id,
+    seg.segment_index,
+    ms.marker,
+    ms.chunk_id,
+    ms.file_id,
+    coalesce(fc.chunk_index, ms.chunk_index_snapshot),
+    coalesce(f.original_name, f.file_name, ms.file_name_snapshot),
+    coalesce(fc.page_number, ms.page_number_snapshot),
+    ms.quote,
+    ms.quote_start,
+    ms.quote_end,
+    ms.verification,
+    (fc.id is not null and f.id is not null)
+  from public.message_sources ms
+    join public.message_citation_segments seg
+      on seg.message_source_id = ms.id
+    join public.messages m
+      on m.id = ms.message_id
+    join public.conversations c
+      on c.id = m.conversation_id
+    left join public.files f
+      on f.id = ms.file_id
+     and f.user_id = (select auth.uid())
+     and f.deleted_at is null
+    left join public.file_chunks fc
+      on fc.id = ms.chunk_id
+     and fc.file_id = f.id
+  where c.id = p_conversation_id
+    -- ★ الملكية داخل الدالة: SECURITY DEFINER يتجاوز RLS
+    and c.user_id = (select auth.uid())
+    and c.deleted_at is null
+    and m.deleted_at is null
+  order by ms.message_id, seg.segment_index, ms.marker;
+$$;
+
+-- ------------------------------------------------------------
+-- ٣) get_owned_file_chunk
 -- ------------------------------------------------------------
 --
 -- تُعيد المقطع المطلوب ومقاطع الجوار **من الملف نفسه** بحدود ضيّقة.
@@ -192,6 +273,11 @@ revoke all on function public.get_message_evidence(uuid) from public;
 revoke all on function public.get_message_evidence(uuid) from anon;
 grant execute on function public.get_message_evidence(uuid) to authenticated;
 grant execute on function public.get_message_evidence(uuid) to service_role;
+
+revoke all on function public.get_conversation_evidence(uuid) from public;
+revoke all on function public.get_conversation_evidence(uuid) from anon;
+grant execute on function public.get_conversation_evidence(uuid) to authenticated;
+grant execute on function public.get_conversation_evidence(uuid) to service_role;
 
 revoke all on function public.get_owned_file_chunk(uuid, uuid, integer) from public;
 revoke all on function public.get_owned_file_chunk(uuid, uuid, integer) from anon;
