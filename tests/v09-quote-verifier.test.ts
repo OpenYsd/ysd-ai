@@ -413,7 +413,8 @@ describe("★ عقد الوحدة", () => {
    * البوابة الوحيدة إلى حفظ استشهاد، ومستهلكٌ آخر يعني طريقًا يلتفّ عليها.
    */
   it("★ لا يستعملها إلا حلّ الأدلة", () => {
-    const ALLOWED = ["resolve-evidence.ts"];
+    // المتحقّق بوابة الحفظ الوحيدة: الحلّ والاسترداد يمرّان بها كلاهما
+    const ALLOWED = ["resolve-evidence.ts", "evidence-recovery.ts"];
     const hits: string[] = [];
     const walk = (dir: string) => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

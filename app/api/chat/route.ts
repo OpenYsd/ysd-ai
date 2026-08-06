@@ -40,6 +40,10 @@ import { extractEvidenceEnvelope } from "@/lib/evidence/evidence-envelope";
 import { createEvidenceStream } from "@/lib/evidence/evidence-stream";
 import { resolveEvidence } from "@/lib/evidence/resolve-evidence";
 import { replaceMessageEvidence } from "@/lib/evidence/evidence-repository";
+import {
+  attemptEvidenceRecovery,
+  type RecoveryStatus,
+} from "@/lib/evidence/evidence-recovery";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
@@ -575,6 +579,11 @@ export async function POST(req: NextRequest) {
    */
   let assistantText = "";
   const evidenceStream = createEvidenceStream({ enabled: evidenceEnabled });
+  /**
+   * تشخيص الأدلة — أرقام ورموز فقط، يُكتب في metadata بعد اكتمال المعالجة.
+   * `null` يعني أن المسار لم يعمل أصلًا (لا مصادر، أو ردّ ناقص، أو إجهاض).
+   */
+  let evidenceDiagnostics: Record<string, unknown> | null = null;
   // النموذج الفعلي الذي أجاب (قد يختلف عن المنطقي مثل ysd/free)
   let actualModelId: string | null = null;
   /** آخر استهلاك مرصود — يُكتب صفًّا واحدًا بعد البثّ (v0.8.0) */
@@ -984,13 +993,43 @@ export async function POST(req: NextRequest) {
         ) {
           try {
             const envelope = extractEvidenceEnvelope(evidenceStream.raw);
-            const resolved = resolveEvidence({
+            let resolved = resolveEvidence({
               responseText: envelope.visibleText,
               quoteCandidates: envelope.quoteCandidates,
               sourceRegistry,
               // ثابت خادمي — لا يُقرأ من الطلب ولا من الخطة
               maxVerifiedSources: MAX_VERIFIED_SOURCES,
             });
+
+            /**
+             * ═════ استرداد الأدلة — محاولة واحدة ═════
+             *
+             * الموجّه يصل إلى نموذج الاحتياط كاملًا (مُثبَت بقراءة جسم الطلب
+             * الثاني)، لكن الالتزام بالغلاف يبقى سلوك نموذج. فحين تكتمل إجابة
+             * مسنَدة إلى ملفات ولا يخرج منها استشهاد واحد، نسأل مرة أخرى —
+             * سؤالًا مستقلًّا عن الاستشهاد وحده، لا إعادةً لكتابة الجواب.
+             *
+             * الشرط ضيّق عمدًا: بلا مصادر لا استرداد، وبغلاف صالح لا استرداد،
+             * وبردٍّ ناقص لا استرداد.
+             */
+            const needsRecovery =
+              resolved.sources.length === 0 &&
+              envelope.status !== "valid" &&
+              sourceRegistry.length > 0;
+            let recoveryStatus: RecoveryStatus = "not_needed";
+
+            if (needsRecovery) {
+              const recovered = await attemptEvidenceRecovery({
+                cleanText: assistantText,
+                sourceRegistry,
+                model: actualModelId ?? effectiveModelId,
+                maxVerifiedSources: MAX_VERIFIED_SOURCES,
+                signal: req.signal,
+              });
+              recoveryStatus = recovered.status;
+              // النصّ المعروض لا يتغيّر — يُستبدل الحلّ وحده
+              if (recovered.evidence) resolved = recovered.evidence;
+            }
 
             const write = await Promise.race([
               replaceMessageEvidence({
@@ -1053,12 +1092,32 @@ export async function POST(req: NextRequest) {
               send({ type: "evidence_unavailable" });
             }
 
+            /**
+             * تشخيص غير حسّاس — أرقام ورموز فقط.
+             *
+             * لا اقتباس ولا مقتطف ولا مخرَج مزوّد خام ولا اسم ملف ولا أي محتوى
+             * مستخدم. الغرض أن يُعرف **أين** انقطع المسار بلا قراءة ما فيه.
+             */
+            evidenceDiagnostics = {
+              envelopeStatus: envelope.status,
+              requestedMarkers: resolved.stats.requestedMarkers,
+              candidateCount: envelope.quoteCandidates.length,
+              verifiedSources: resolved.stats.verifiedSources,
+              droppedUnknownMarkers: resolved.stats.droppedUnknownMarkers,
+              droppedMissingQuotes: resolved.stats.droppedMissingQuotes,
+              droppedInvalidQuotes: resolved.stats.droppedInvalidQuotes,
+              droppedByPlanLimit: resolved.stats.droppedByPlanLimit,
+              recoveryAttempted: recoveryStatus !== "not_needed",
+              recoveryStatus,
+            };
+
             // عدّادات ورموز فقط: لا نصّ مزوّد ولا اقتباس ولا اسم ملف
             console.log(
               `[chat] rid=${requestId} evidence_status=${envelope.status} ` +
                 `evidence_write=${write.ok ? "ok" : write.code} ` +
                 `evidence_sources=${resolved.stats.verifiedSources} ` +
                 `evidence_requested=${resolved.stats.requestedMarkers} ` +
+                `evidence_recovery=${recoveryStatus} ` +
                 `evidence_unsupported=${resolved.unsupportedSegments.length}`,
             );
           } catch {
@@ -1068,6 +1127,35 @@ export async function POST(req: NextRequest) {
              */
             send({ type: "evidence_unavailable" });
             console.error(`[chat] rid=${requestId} evidence_write=evidence_exception`);
+          }
+        }
+
+        /**
+         * التشخيص يُلحق بـ`metadata` بقراءة ثم دمج.
+         *
+         * `replace_message_evidence` كتبت `metadata.evidence` لتوّها، فالكتابة
+         * العمياء كانت ستمحوها. والقراءة هنا آمنة: هذا الطلب هو الكاتب الوحيد
+         * لرسالةٍ أنشأها هو قبل أسطر.
+         *
+         * وفشلها لا يعني شيئًا للمستخدم — تشخيصٌ لنا لا محتوى له.
+         */
+        if (evidenceDiagnostics && assistantMessageId) {
+          try {
+            const { data: current } = await supabase
+              .from("messages")
+              .select("metadata")
+              .eq("id", assistantMessageId)
+              .single();
+            const merged = {
+              ...((current?.metadata as Record<string, unknown>) ?? {}),
+              evidenceDiagnostics,
+            };
+            await supabase
+              .from("messages")
+              .update({ metadata: merged })
+              .eq("id", assistantMessageId);
+          } catch {
+            /* تشخيص فقط — لا يمسّ الرد */
           }
         }
 

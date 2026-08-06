@@ -1015,3 +1015,65 @@ export class OpenRouterProvider implements AIProviderAdapter {
     }
   }
 }
+
+/**
+ * نداء JSON غير متدفّق — **خارج سلسلة الاحتياط وخارج حرّاس اللغة** (v0.9.0).
+ *
+ * لماذا لا يمرّ بـ`streamChat`: مخرَجه JSON محض بالإنجليزية، وحارس اللغة
+ * سيقرأه نثرًا دخيلًا فيرفضه — وهو نفس جذر عطل الغلاف. وهذا المسار ليس كلامًا
+ * للمستخدم أصلًا: لا يُعرض، ولا يُحفظ، ولا يمرّ بأي حارس عرض.
+ *
+ * ومحدود عمدًا: نموذج واحد، محاولة واحدة، مهلة قصيرة، وسقف رموز صغير — فكلفته
+ * معروفة سلفًا ولا تتضاعف بالسلسلة.
+ */
+export async function requestJsonCompletion(input: {
+  model: string;
+  systemPrompt: string;
+  userText: string;
+  maxTokens: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }> {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) return { ok: false, reason: "error" };
+
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), input.timeoutMs);
+  const onAbort = () => timeout.abort();
+  input.signal?.addEventListener("abort", onAbort);
+
+  try {
+    const res = await fetch(providerUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ysd.ai",
+        "X-Title": "YSD AI",
+      },
+      body: JSON.stringify({
+        model: input.model,
+        messages: [
+          { role: "system", content: input.systemPrompt },
+          { role: "user", content: input.userText },
+        ],
+        stream: false,
+        max_tokens: input.maxTokens,
+        temperature: 0,
+      }),
+      signal: timeout.signal,
+    });
+    if (!res.ok) return { ok: false, reason: "error" };
+    const body = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const text = body.choices?.[0]?.message?.content;
+    if (typeof text !== "string" || text.length === 0) return { ok: false, reason: "error" };
+    return { ok: true, text };
+  } catch {
+    return { ok: false, reason: input.signal?.aborted ? "error" : "timeout" };
+  } finally {
+    clearTimeout(timer);
+    input.signal?.removeEventListener("abort", onAbort);
+  }
+}

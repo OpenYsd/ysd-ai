@@ -313,7 +313,11 @@ describe("حراسة الشيفرة", () => {
    * واجهة تستدعي المستودع مباشرةً فتتجاوز إثبات الجلسة.
    */
   it("لا يستعمله إلا مسار المحادثة", () => {
-    const INTERNAL = ["resolve-evidence.ts", "evidence-repository.ts"];
+    const INTERNAL = [
+      "resolve-evidence.ts",
+      "evidence-repository.ts",
+      "evidence-recovery.ts",
+    ];
     const ALLOWED_CONSUMERS = [join("api", "chat", "route.ts")];
     const hits: string[] = [];
     const walk = (dir: string) => {

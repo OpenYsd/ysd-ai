@@ -417,6 +417,7 @@ describe("★ عزل الإيداع — لا تكامل بعد", () => {
       "evidence-envelope.ts",
       "evidence-stream.ts",
       "evidence-segments.ts",
+      "evidence-recovery.ts",
     ];
     const roots = ["app", "components", "lib"];
     const hits: string[] = [];
