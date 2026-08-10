@@ -333,14 +333,27 @@ describe("④ ميزانية المهل", () => {
     expect(FIRST_BYTE_TIMEOUT_MS + PROVIDER_TIMEOUT_MS).toBe(CHAIN_BUDGET_MS);
   });
 
-  it("★ نبضة الإبقاء لا تُعيد تسليح المؤقّت", () => {
-    // التسليح انتقل من «كل دفعة خام» إلى «إطار data: فقط»
+  /**
+   * تشدّد لاحقًا: كان التسليح على «إطار `data:`»، وثبت أن المزوّد يفتتح البثّ
+   * بإطار بلا نصّ (`delta.role`)، فكان يُرقّي المؤقّت إلى مهلة الخمول قبل أن
+   * يبدأ التوليد. الشرط الآن **محتوى فعلي**.
+   */
+  it("★ لا نبضة الإبقاء ولا الإطار الفارغ يُعيدان تسليح المؤقّت", () => {
     expect(src).not.toMatch(/if \(done\) break;\s*armIdle\(\);/);
-    expect(src).toMatch(/if \(!trimmed\.startsWith\("data:"\)\) continue;[\s\S]{0,200}markProtocolFrame\(\);/);
+    expect(src).not.toMatch(/markProtocolFrame/);
+    expect(src).toMatch(/if \(!text\) continue;[\s\S]{0,160}markFirstContent\(\);/);
   });
 
-  it("★ مهلة أول بايت لا تُعاد تسليحها قبل أول إطار", () => {
-    expect(src).toMatch(/const armIdle = \(\) => \{\s*if \(!sawProtocolFrame\) return;/);
+  it("★ مهلة أول بايت لا تُعاد تسليحها قبل أول محتوى", () => {
+    expect(src).toMatch(/const armIdle = \(\) => \{\s*if \(!sawContent\) return;/);
+  });
+
+  /** ★ الميزانية موعد نهائي يُربط بكل محاولة — لا شرط يُفحص بينها وحدها */
+  it("★ ميزانية السلسلة إشارة إجهاض حقيقية", () => {
+    expect(src).toMatch(/const chainDeadline = new AbortController\(\)/);
+    expect(src).toMatch(/chainSignal\?\.addEventListener\("abort", onChainDeadline\)/);
+    // ولا تبتر بثًّا بدأ محتواه
+    expect(src).toMatch(/const onChainDeadline = \(\) => \{\s*if \(!sawContent\) timeout\.abort\(\);/);
   });
 
   it("★ ميزانية السلسلة تُفحص قبل كل محاولة تالية", () => {

@@ -5,7 +5,6 @@ import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { resolveProviderForModel } from "@/lib/ai/registry";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
-import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import {
   loadModelPolicy,
   resolveModelForUser,
@@ -590,6 +589,8 @@ export async function POST(req: NextRequest) {
   let pendingUsage: { inputTokens: number; outputTokens: number } | null = null;
   /** عدد إطارات usage الواردة — للتسجيل الآمن، رقم فقط */
   let usageFrameCount = 0;
+  /** محاولات النماذج التي جرت فعلًا — يصل من المزوّد مع `meta` */
+  let attemptCount = 0;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -758,6 +759,7 @@ export async function POST(req: NextRequest) {
             } else {
               actualModelId = chunk.model;
             }
+            if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
             if (chunk.mode) answerMode = chunk.mode;
             if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
             if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
@@ -1173,10 +1175,17 @@ export async function POST(req: NextRequest) {
             : undefined,
         });
 
-        // سجل آمن مرتبط بـrequest_id فقط — أرقام ومعرّف نموذج، بلا محتوى/بريد/توكن.
-        // fallback_count = ترتيب النموذج الفعلي في السلسلة (كم نموذجًا سبقه فشلًا/تخطيًا).
-        const idx = FREE_MODEL_CHAIN.indexOf(actualModelId ?? "");
-        const fallbackCount = idx > 0 ? idx : 0;
+        /**
+         * `fallback_count` = المحاولات التي سبقت النموذج المجيب — من **عدّاد
+         * فعلي** لا من ترتيب المعرّف.
+         *
+         * كان يُشتقّ من `indexOf(actualModelId)`، و`actualModelId` لا يُضبط إلا
+         * عند وصول إطار `meta` — أي بعد أن يبدأ المزوّد بالإرسال. فحين تتلكّأ
+         * النماذج بلا أول بايت يبقى null، و`indexOf("") = -1` فيُخرج صفرًا:
+         * يقرأ القارئ «لا احتياط جرى» بينما جرت محاولات وفشلت. وهو ما ضلّل
+         * تشخيص 47eb4342 و100279مل.
+         */
+        const fallbackCount = Math.max(0, attemptCount - 1);
         console.log(
           `[chat] rid=${requestId} model=${actualModelId ?? effectiveModelId} fallback_count=${fallbackCount} ` +
             `mode=${answerMode} regeneration_count=${regenerations} ` +

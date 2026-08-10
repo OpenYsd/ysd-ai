@@ -151,10 +151,10 @@ describe("★ ميزانيات الوقت", () => {
     expect(or).toContain("const armIdle");
     // لا تسليح على الدفعة الخام
     expect(or).not.toMatch(/if \(done\) break;\s*\n\s*armIdle\(\);/);
-    // بل بعد التعرّف على إطار `data:`
-    expect(or).toMatch(/if \(!trimmed\.startsWith\("data:"\)\) continue;[\s\S]{0,220}armIdle\(\);/);
-    // ومهلة أول بايت لا تُعاد تسليحها قبل أول إطار
-    expect(or).toMatch(/if \(!sawProtocolFrame\) return;/);
+    // بل عند وصول **محتوى** فعلي — لا مجرد إطار بروتوكول
+    expect(or).toMatch(/if \(!text\) continue;[\s\S]{0,160}markFirstContent\(\);[\s\S]{0,40}armIdle\(\);/);
+    // ومهلة أول بايت لا تُعاد تسليحها قبل أول محتوى
+    expect(or).toMatch(/if \(!sawContent\) return;/);
   });
 
   it("★ السقف يُلغي المزوّد فعليًا عبر AbortController", () => {

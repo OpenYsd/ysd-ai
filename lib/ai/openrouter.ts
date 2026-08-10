@@ -204,6 +204,14 @@ interface SSEDelta {
 /** عدّاد طلبات التوليد الفعلية — يُمرَّر بالمرجع عبر كل المحاولات */
 interface ProviderStats {
   providerCalls: number;
+  /**
+   * عدد محاولات النماذج المكتملة قبل النموذج الجاري (v0.9.0).
+   *
+   * `fallback_count` كان يُشتقّ من `indexOf(actualModelId)`، وهو مضلّل حين لا
+   * يصل أول بايت: المعرّف يبقى null فيُخرج `indexOf("") = -1` ⇒ صفر، فيبدو
+   * أن لا احتياط جرى بينما جرت محاولات. العدّاد يقول الحقيقة.
+   */
+  attempts: number;
 }
 
 /** نتيجة محاولة واحدة مع نموذج واحد — الرد الكامل يُرجَّع للفحص في streamChat */
@@ -300,7 +308,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // والبثّ الفوري لكل ما عداها — فلا تدفع المحادثة العامة ثمن التحقق.
     const verified = needsVerifiedMode(userText);
     const groundingSource = req.grounding?.source ?? "none";
-    const stats: ProviderStats = { providerCalls: 0 };
+    const stats: ProviderStats = { providerCalls: 0, attempts: 0 };
 
     /**
      * إنفاذ سؤال التوضيح (v0.6.6 RC2): اسم يحتمل أكثر من عمل.
@@ -314,6 +322,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       );
       yield {
         type: "meta",
+        attemptCount: stats.attempts,
         model: req.modelId,
         mode: verified ? "protected" : "general",
         regenerations: 0,
@@ -339,6 +348,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       yield { type: "status", text: VERIFYING_STATUS_MESSAGE };
       yield {
         type: "meta",
+        attemptCount: stats.attempts,
         model: req.modelId,
         mode: "protected",
         regenerations: 0,
@@ -374,6 +384,26 @@ export class OpenRouterProvider implements AIProviderAdapter {
     if (verified) yield { type: "status", text: VERIFYING_STATUS_MESSAGE };
 
     const chainStartedAt = Date.now();
+    /**
+     * ★ الميزانية موعدٌ نهائي **يُجهض محاولةً جارية** لا شرطٌ يُفحص بينها.
+     *
+     * كان الفحص `if (i > 0 && elapsed >= budget)` يقع **قبل** كل محاولة فقط،
+     * فمحاولة واحدة تتجاوز الميزانية كلها تعيش حتى مهلتها الخاصة بلا رقيب —
+     * قِيس: محاولة عاشت 1351مل بميزانية 450مل. والمزوّد البطيء يجعل ذلك
+     * انتظارًا مفتوحًا للمستخدم.
+     *
+     * الآن إشارة واحدة تُربط بكل محاولة، فتنقطع أينما كانت.
+     */
+    const chainDeadline = new AbortController();
+    const chainTimer = setTimeout(() => chainDeadline.abort(), chainBudgetMs());
+    /**
+     * `unref` كي لا يُبقي المؤقّت حلقة الأحداث حيّة بعد ردٍّ سريع.
+     *
+     * لـ`streamChat` مخارج كثيرة (نجاح، خطأ، اختصار، إجهاض)، ووضعُ `clearTimeout`
+     * عند كلٍّ منها يترك واحدًا منسيًّا يومًا ما. و`unref` تجعل النسيان غير مؤذٍ:
+     * المؤقّت محلّي لهذا النداء، وإطلاقه بعد انتهائه يُجهض مراقبًا لا أحد يقرأه.
+     */
+    (chainTimer as unknown as { unref?: () => void }).unref?.();
     for (let i = 0; i < usable.length; i++) {
       const model = usable[i];
       if (!model) continue;
@@ -391,6 +421,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         return;
       }
 
+      stats.attempts++;
       const result: AttemptResult = yield* this.attempt(
         req,
         model,
@@ -398,6 +429,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         userText,
         expected,
         stats,
+        chainDeadline.signal,
       );
 
       if (result.status === "aborted") return;
@@ -491,7 +523,13 @@ export class OpenRouterProvider implements AIProviderAdapter {
             return;
           }
           // سبق أن أُعيد التوليد بصرامة وما زال يخمّن → رسالة عدم تأكّد آمنة
-          yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+          yield {
+          type: "meta",
+          attemptCount: stats.attempts,
+          model: actualModel,
+          mode: "protected",
+          regenerations: 1,
+        };
           yield { type: "text", text: UNCERTAINTY_FALLBACK_MESSAGE };
           yield { type: "done" };
           return;
@@ -510,6 +548,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
           }
           yield {
             type: "meta",
+          attemptCount: stats.attempts,
             model: actualModel,
             mode: "protected",
             regenerations: 1,
@@ -525,6 +564,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         // رد نظيف → سلّمه
         yield {
           type: "meta",
+          attemptCount: stats.attempts,
           model: actualModel,
           mode: "protected",
           regenerations: 0,
@@ -598,6 +638,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       );
       yield {
         type: "meta",
+        attemptCount: stats.attempts,
         model: usable[usable.length - 1] ?? req.modelId,
         mode: verified ? "protected" : "general",
         regenerations: 0,
@@ -763,14 +804,26 @@ export class OpenRouterProvider implements AIProviderAdapter {
         !violatesLanguage(text, expected, userText, req.sourceVocabulary).violated &&
         !violatesUncertainty(userText, text).violated;
       if (clean && text) {
-        yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+        yield {
+          type: "meta",
+          attemptCount: stats.attempts,
+          model: actualModel,
+          mode: "protected",
+          regenerations: 1,
+        };
         yield { type: "text", text };
         if (retry.usage) yield { type: "usage", usage: retry.usage };
         yield { type: "done" };
         return;
       }
       // ما زال يخمّن (أو كسر اللغة) بعد الصرامة → رسالة آمنة
-      yield { type: "meta", model: actualModel, mode: "protected", regenerations: 1 };
+      yield {
+          type: "meta",
+          attemptCount: stats.attempts,
+          model: actualModel,
+          mode: "protected",
+          regenerations: 1,
+        };
       yield { type: "text", text: UNCERTAINTY_FALLBACK_MESSAGE };
       yield { type: "done" };
       return;
@@ -798,6 +851,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
     userText: string,
     expected: ReturnType<typeof detectExpectedLanguage>,
     stats: ProviderStats,
+    /** موعد السلسلة النهائي — يُجهض هذه المحاولة أينما بلغت */
+    chainSignal?: AbortSignal,
   ): AsyncGenerator<StreamChunk, AttemptResult> {
     const system =
       (req.systemPrompt ?? "") +
@@ -821,22 +876,46 @@ export class OpenRouterProvider implements AIProviderAdapter {
      * التمييز هو الإصلاح: نبضة الإبقاء بايتٌ بلا محتوى، وعدُّها تقدّمًا يُبقي
      * الطلب معلّقًا على نموذج لم يبدأ التوليد.
      */
-    let sawProtocolFrame = false;
+    /**
+     * ★ «أول بايت» تعني أول **محتوى**، لا أول إطار بروتوكول.
+     *
+     * المزوّد يفتتح البثّ بإطار `data:` بلا نصّ (`delta.role` وحده)، وقد يتبعه
+     * إطارات وصفية. وعدُّ ذلك بدايةً للتوليد كان يُرقّي المؤقّت من مهلة أول
+     * بايت (20 ث) إلى مهلة الخمول (25 ث)، فتصير كل محاولة متلكّئة أطول مما
+     * قُدّر لها — والمقياس أثبته: محاولتان بإطار فارغ استغرقتا 530مل بمهل
+     * 200/250، أي أن الفعّال كان 250 لا 200.
+     */
+    let sawContent = false;
     let timeoutId = setTimeout(() => timeout.abort(), firstByteTimeoutMs());
     const armIdle = () => {
-      if (!sawProtocolFrame) return; // لم يبدأ البثّ بعد — مهلة أول بايت قائمة
+      if (!sawContent) return; // لم يصل محتوى بعد — مهلة أول بايت قائمة
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => timeout.abort(), idleMs);
     };
-    /** يُستدعى عند أول إطار `data:` — ينقل المؤقّت من «أول بايت» إلى «خمول» */
-    const markProtocolFrame = () => {
-      if (sawProtocolFrame) return;
-      sawProtocolFrame = true;
+    /** يُستدعى عند أول **محتوى** — ينقل المؤقّت من «أول بايت» إلى «خمول» */
+    const markFirstContent = () => {
+      if (sawContent) return;
+      sawContent = true;
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => timeout.abort(), idleMs);
     };
     const onClientAbort = () => timeout.abort();
     req.signal?.addEventListener("abort", onClientAbort);
+    /**
+     * موعد السلسلة يقطع المحاولة **ما لم يكن المحتوى قد بدأ**.
+     *
+     * غرض الميزانية أن تحدّ من تجريب النماذج، لا أن تبتر جوابًا يعمل: نموذج
+     * يبثّ ببطء لكنه يتقدّم قد يتجاوز 45 ث وهو سليم، وقطعه يُري المستخدم ردًّا
+     * مبتورًا — وهو أسوأ من الانتظار الذي جئنا نعالجه.
+     *
+     * فبعد أول محتوى تتولّى مهلة الخمول (25 ث بين الدفعات) وسقف المسار
+     * (110 ث) الحراسة، وقبله يحكم موعد السلسلة.
+     */
+    const onChainDeadline = () => {
+      if (!sawContent) timeout.abort();
+    };
+    chainSignal?.addEventListener("abort", onChainDeadline);
+    if (chainSignal?.aborted) timeout.abort();
 
     let res: Response;
     stats.providerCalls++; // طلب توليد فعلي واحد
@@ -943,9 +1022,6 @@ export class OpenRouterProvider implements AIProviderAdapter {
           const trimmed = line.trim();
           // تعليق SSE (`: PROCESSING`) نبضةُ إبقاء — لا تُعدّ تقدّمًا
           if (!trimmed.startsWith("data:")) continue;
-          // ★ إطار بروتوكول فعلي ⇒ المزوّد بدأ يُرسل: انقل إلى مهلة الخمول
-          markProtocolFrame();
-          armIdle();
           const payload = trimmed.slice(5).trim();
           if (payload === "[DONE]") continue;
 
@@ -979,6 +1055,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
           const text = choice?.delta?.content;
           if (!text) continue;
+          // ★ هنا وحده «بدأ التوليد»: محتوى فعلي لا إطار وصفي
+          markFirstContent();
+          armIdle();
           full += text;
           if (opts.buffered) continue; // الوضع المحمي: تجميع بلا عرض
 
