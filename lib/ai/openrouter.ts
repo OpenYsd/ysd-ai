@@ -59,7 +59,7 @@ const API_URL = "https://openrouter.ai/api/v1/chat/completions";
  * قِيس حيًّا أن أول بايت من النماذج المجانية يصل خلال 2–10s في الحالة السوية،
  * و60s كانت تعني انتظارًا طويلًا بلا طائل قبل الانتقال للتالي.
  */
-const PROVIDER_TIMEOUT_MS = 25_000;
+export const PROVIDER_TIMEOUT_MS = 25_000;
 
 /**
  * منافذ اختبار **خادمية بحتة** (v0.7.0) — لا تعمل إلا خلف بوابة صريحة.
@@ -97,7 +97,38 @@ function idleTimeoutMs(): number {
  * بدونه كانت أربع محاولات × مهلة كل منها تعني انتظارًا مفتوحًا (رُصد حيًّا 129
  * ثانية). عند بلوغ السقف نتوقف فورًا ونعرض رسالة واضحة بدل إطالة الصمت.
  */
-const CHAIN_BUDGET_MS = 45_000;
+export const CHAIN_BUDGET_MS = 45_000;
+
+/**
+ * مهلة **أول بايت ذي محتوى** — منفصلة عن مهلة الخمول (v0.9.0).
+ *
+ * ── لماذا لزمت ──
+ *
+ * مهلة الخمول تُعاد تسليحها عند كل بايت يصل، وهذا صحيح للبثّ المتدفّق. لكن
+ * المزوّد يُرسل **نبضات إبقاء** (`: OPENROUTER PROCESSING`) بينما النموذج في
+ * الطابور، وهي بايتات بلا محتوى. فكانت كل نبضة تُعيد تسليح المهلة، فلا تنقضي
+ * أبدًا، ويبقى الطلب معلّقًا على نموذج لم يبدأ التوليد أصلًا — حتى يقتله سقف
+ * المسار (110 ث). ولا احتياط يُجرَّب لأن المحاولة الأولى لم تنتهِ قط.
+ *
+ * رُصد حيًّا (المحادثة 47eb4342): طلبان بـ`first_byte_ms = -1` واستهلكا
+ * 109769مل و73820مل بلا رسالة ولا احتياط.
+ *
+ * ── القيمة ──
+ *
+ * 20 ثانية ليست اعتباطية: مهلة الخمول 25 ث وميزانية السلسلة 45 ث، فـ
+ * `20 + 25 = 45` — أي أن فشل أول بايت **يترك محاولة احتياط كاملة داخل
+ * الميزانية القائمة بلا تغييرها**.
+ */
+export const FIRST_BYTE_TIMEOUT_MS = 20_000;
+
+/** مهلة أول بايت — تُقصَّر في الاختبار وحده خلف البوابة */
+function firstByteTimeoutMs(): number {
+  if (testHooksEnabled() && process.env.YSD_TEST_FIRST_BYTE_MS) {
+    const n = Number(process.env.YSD_TEST_FIRST_BYTE_MS);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return FIRST_BYTE_TIMEOUT_MS;
+}
 
 /** ميزانية السلسلة — تُقصَّر في الاختبار وحده خلف البوابة */
 function chainBudgetMs(): number {
@@ -185,6 +216,13 @@ interface AttemptResult {
     | "http_error"
     | "network_error"
     | "aborted";
+  /**
+   * هل كان الفشل **مهلتنا** لا عطل شبكة؟ (v0.9.0)
+   *
+   * كلاهما يُنهي المحاولة، والفرق يظهر للمستخدم وللتشخيص: «تعذّر الاتصال»
+   * تُوجّهه إلى شبكته، و«استغرق وقتًا أطول» تصف ما جرى فعلًا — مزوّد تلكّأ.
+   */
+  timedOut?: boolean;
   /** سبب الإنهاء كما أرسله المزوّد — للتسجيل الآمن فقط */
   finishReason?: string | null;
   /** هل أرسل النموذج تفكيرًا داخليًا؟ قيمة منطقية فقط — لا يُعرض ولا يُحفظ */
@@ -526,10 +564,17 @@ export class OpenRouterProvider implements AIProviderAdapter {
       // فشل تقني (429/5xx/شبكة) — هدّئ النموذج ثم جرّب التالي في السلسلة
       lastError =
         result.status === "network_error"
-          ? {
-              kind: "network",
-              userMessage: "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
-            }
+          ? result.timedOut
+            ? {
+                kind: "timeout",
+                userMessage:
+                  "استغرق الرد وقتًا أطول من المتوقع. رسالتك محفوظة — أعد المحاولة.",
+              }
+            : {
+                kind: "network",
+                userMessage:
+                  "تعذّر الاتصال بخدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا.",
+              }
           : mapOpenRouterError(result.httpStatus ?? null, result.errorRaw ?? "");
 
       const reason: CooldownReason | null = cooldownReasonFor(lastError.kind);
@@ -769,8 +814,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // والمطلوب قتل الخامل فقط. تُعاد تسليحها عند كل دفعة (armIdle أدناه).
     const timeout = new AbortController();
     const idleMs = idleTimeoutMs();
-    let timeoutId = setTimeout(() => timeout.abort(), idleMs);
+    /**
+     * قبل أول إطار بروتوكول: المهلة مهلةُ **أول بايت** ولا تُعاد تسليحها.
+     * وبعده: مهلة خمول تُعاد تسليحها عند كل إطار `data:` — لا عند كل بايت.
+     *
+     * التمييز هو الإصلاح: نبضة الإبقاء بايتٌ بلا محتوى، وعدُّها تقدّمًا يُبقي
+     * الطلب معلّقًا على نموذج لم يبدأ التوليد.
+     */
+    let sawProtocolFrame = false;
+    let timeoutId = setTimeout(() => timeout.abort(), firstByteTimeoutMs());
     const armIdle = () => {
+      if (!sawProtocolFrame) return; // لم يبدأ البثّ بعد — مهلة أول بايت قائمة
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => timeout.abort(), idleMs);
+    };
+    /** يُستدعى عند أول إطار `data:` — ينقل المؤقّت من «أول بايت» إلى «خمول» */
+    const markProtocolFrame = () => {
+      if (sawProtocolFrame) return;
+      sawProtocolFrame = true;
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => timeout.abort(), idleMs);
     };
@@ -803,8 +864,8 @@ export class OpenRouterProvider implements AIProviderAdapter {
       clearTimeout(timeoutId);
       req.signal?.removeEventListener("abort", onClientAbort);
       if (req.signal?.aborted) return { status: "aborted" };
-      // مهلة الموفر أو انقطاع الشبكة — قابل لإعادة المحاولة
-      return { status: "network_error" };
+      // مهلتنا نحن (أول بايت/خمول) تُميَّز عن انقطاع الشبكة — كلاهما قابل للإعادة
+      return { status: "network_error", timedOut: timeout.signal.aborted };
     }
     // ملاحظة (v0.6.6 RC2): المهلة تبقى **مسلّحة** حتى نهاية قراءة البثّ.
     // كانت تُلغى هنا فور وصول الترويسات، فمزوّد يرسل الترويسات بسرعة ثم يتلكّأ
@@ -873,14 +934,18 @@ export class OpenRouterProvider implements AIProviderAdapter {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        armIdle(); // وصلت بيانات → أعد تسليح مهلة الخمول من هذه اللحظة
+        // ★ لا تسليح هنا: البايت قد يكون نبضة إبقاء بلا محتوى
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
 
         for (const line of lines) {
           const trimmed = line.trim();
+          // تعليق SSE (`: PROCESSING`) نبضةُ إبقاء — لا تُعدّ تقدّمًا
           if (!trimmed.startsWith("data:")) continue;
+          // ★ إطار بروتوكول فعلي ⇒ المزوّد بدأ يُرسل: انقل إلى مهلة الخمول
+          markProtocolFrame();
+          armIdle();
           const payload = trimmed.slice(5).trim();
           if (payload === "[DONE]") continue;
 
@@ -1009,7 +1074,12 @@ export class OpenRouterProvider implements AIProviderAdapter {
       console.error("[openrouter] stream read failed or timed out");
       // v0.7.0 RC8: نُعيد ما عُرض فعلًا. بدونه كان النص الذي شاهده المستخدم
       // يضيع، ويُستأنف احتياط بنموذج آخر وكأن شيئًا لم يُعرض.
-      return { status: "network_error", emitted, model: actualModel };
+      return {
+        status: "network_error",
+        emitted,
+        model: actualModel,
+        timedOut: timeout.signal.aborted,
+      };
     } finally {
       clearTimeout(timeoutId);
     }

@@ -102,7 +102,11 @@ describe("★ RC8: عقد انقطاع المزوّد بعد أول نص", () =>
   const OR = readOpenRouter();
 
   it("★ network_error يُعيد ما عُرض بدل إسقاطه", () => {
-    expect(OR).toMatch(/return \{ status: "network_error", emitted, model: actualModel \}/);
+    /**
+     * الحقول هي الشرط لا شكل السطر: `timedOut` أُضيف في v0.9.0 لتمييز مهلتنا
+     * عن عطل الشبكة، فتعدّد السطر ولم يتغيّر ما يُعاد للمستخدم.
+     */
+    expect(OR).toMatch(/return \{\s*status: "network_error",\s*emitted,\s*model: actualModel,/);
   });
 
   it("★ لا احتياط بعد أن شاهد المستخدم نصًّا", () => {

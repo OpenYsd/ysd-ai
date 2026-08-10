@@ -138,11 +138,23 @@ describe("★ ميزانيات الوقت", () => {
     expect(or).toContain("const PROVIDER_TIMEOUT_MS = 25_000");
   });
 
-  it("★ مهلة الخمول تُعاد تسليحها عند كل دفعة (لا مهلة كلية للمحاولة)", () => {
+  /**
+   * الغرض: ألّا تكون مهلة المحاولة سقفًا كليًّا يقتل بثًّا متدفّقًا بطيئًا.
+   *
+   * كان الحارس مثبَّتًا على `armIdle()` بعد `if (done) break;` مباشرةً — أي على
+   * **كل بايت**. وذلك بالضبط ما أنتج عطل 47eb4342: نبضة الإبقاء بايتٌ بلا
+   * محتوى، فكانت تُعيد التسليح إلى الأبد فلا تنقضي المهلة. التسليح الآن على
+   * إطار `data:` وحده، والغرض الأصلي محفوظ.
+   */
+  it("★ مهلة الخمول تُعاد تسليحها عند كل إطار بروتوكول لا عند كل بايت", () => {
     const or = read("lib/ai/openrouter.ts");
     expect(or).toContain("const armIdle");
-    // تُستدعى مباشرة بعد قراءة دفعة
-    expect(or).toMatch(/if \(done\) break;\s*\n\s*armIdle\(\);/);
+    // لا تسليح على الدفعة الخام
+    expect(or).not.toMatch(/if \(done\) break;\s*\n\s*armIdle\(\);/);
+    // بل بعد التعرّف على إطار `data:`
+    expect(or).toMatch(/if \(!trimmed\.startsWith\("data:"\)\) continue;[\s\S]{0,220}armIdle\(\);/);
+    // ومهلة أول بايت لا تُعاد تسليحها قبل أول إطار
+    expect(or).toMatch(/if \(!sawProtocolFrame\) return;/);
   });
 
   it("★ السقف يُلغي المزوّد فعليًا عبر AbortController", () => {
