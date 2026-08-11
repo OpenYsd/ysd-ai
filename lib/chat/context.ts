@@ -20,6 +20,20 @@ export interface ChatContextResult {
  * allSettled يضمن أن فشل عملية غير حرجة (ج/د) لا يُسقط الحرجتين (أ/ب) ولا الرد.
  * ترتيب فحوص الملكية/الحظر/الحدود يبقى **قبل** استدعاء هذه الدالة في المسار.
  */
+/**
+ * هل هذا الصفّ إشعارَ فشل مزوّد لا جوابَ نموذج؟
+ *
+ * `metadata.completion.status === "incomplete_provider"` هي العلامة التي
+ * يكتبها المسار عند الفشل الطرفي. وأي شكل آخر للبيانات يُقرأ **جوابًا**
+ * عاديًا — فالتصفية تخصّ العلامة الصريحة وحدها ولا تُسقط شيئًا بالشك.
+ */
+function isProviderFailureNotice(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object") return false;
+  const completion = (metadata as { completion?: unknown }).completion;
+  if (!completion || typeof completion !== "object") return false;
+  return (completion as { status?: unknown }).status === "incomplete_provider";
+}
+
 export async function gatherChatContext(
   supabase: SupabaseClient,
   params: {
@@ -36,7 +50,7 @@ export async function gatherChatContext(
   const [historyRes, fileIdsRes, convUpdRes, projUpdRes] = await Promise.allSettled([
     supabase
       .from("messages")
-      .select("role, content")
+      .select("role, content, metadata")
       .eq("conversation_id", conversationId)
       .is("deleted_at", null)
       .order("created_at", { ascending: true })
@@ -66,12 +80,29 @@ export async function gatherChatContext(
   // (أ) السياق — سلوك حالي: فشل ⇒ سياق فارغ يُكمل
   const historyRows =
     historyRes.status === "fulfilled"
-      ? ((historyRes.value as { data?: { role: string; content: string }[] | null }).data ?? [])
+      ? ((
+          historyRes.value as {
+            data?: { role: string; content: string; metadata?: unknown }[] | null;
+          }
+        ).data ?? [])
       : [];
-  const history: ChatMessage[] = historyRows.map((m) => ({
-    role: m.role as ChatMessage["role"],
-    content: m.content,
-  }));
+  const history: ChatMessage[] = historyRows
+    /**
+     * ★ إشعار فشل المزوّد يُعرض ولا يُغذّى.
+     *
+     * الفشل الطرفي يُحفظ رسالةَ مساعد كي يبقى للمستخدم أثرٌ مفهوم بعد إعادة
+     * التحميل. لكنه **ليس جواب نموذج**: تمريره في السياق يجعل النموذج يقرأ
+     * «الخدمة غير متاحة» على أنه ردُّه السابق، فيقلّد نبرته أو يعتذر عمّا لم
+     * يقله — وقد يتكرّر الاعتذار في كل دور لاحق.
+     *
+     * الاستبعاد هنا وحده: الصفّ يبقى في القاعدة، ويبقى ظاهرًا في الواجهة،
+     * ويبقى في سجلّ المحادثة للمستخدم. المحذوف هو دخوله **موجّه النموذج**.
+     */
+    .filter((m) => !isProviderFailureNotice(m.metadata))
+    .map((m) => ({
+      role: m.role as ChatMessage["role"],
+      content: m.content,
+    }));
 
   // (ب) معرّفات ملفات السياق — سلوك حالي: فشل ⇒ لا RAG
   const contextFileIds = fileIdsRes.status === "fulfilled" ? fileIdsRes.value : [];
