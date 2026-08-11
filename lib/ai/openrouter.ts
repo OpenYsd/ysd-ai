@@ -2,7 +2,10 @@ import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk, UsageRepor
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "./free-models";
 import {
   type CooldownReason,
+  acquireProbeSlot,
   cooldownRemainingMs,
+  probeGateRemainingMs,
+  releaseProbeSlot,
   isCoolingDown,
   markCooldown,
   parseRetryAfterMs,
@@ -233,6 +236,8 @@ interface ProviderStats {
    * `provider_unavailable` وحده لا يقول هل جُرّب شيء أصلًا. هذا يقوله.
    */
   outcome: ChainOutcome;
+  /** النموذج المسبور إن حُجزت بوابة السبر — يُحرَّر مركزيًا عند الانتهاء */
+  probeModel?: string;
 }
 
 /** نهايات السلسلة الممكنة — رموز مغلقة لا نصوص */
@@ -378,6 +383,15 @@ export class OpenRouterProvider implements AIProviderAdapter {
         yield chunk;
       }
     } finally {
+      /**
+       * تحرير حق السبر **مركزيًا** — كالحدث الختامي تمامًا.
+       *
+       * لو وُضع عند كل مخرج لَنُسي واحد يومًا ما، ونسيانه يُبقي البوابة
+       * مقفلة `inFlight` إلى الأبد فتتوقف كل محاولات السبر.
+       */
+      if (stats.probeModel) {
+        releaseProbeSlot(stats.probeModel, stats.outcome === "success");
+      }
       // مسارات لا تُنهي بـ`done` (خطأ، إجهاض) — الضمانة تبقى قائمة
       if (!terminalSent) {
         terminalSent = true;
@@ -496,32 +510,29 @@ export class OpenRouterProvider implements AIProviderAdapter {
      */
     let cooledProbe = false;
     if (usable.length === 0 && chain.length > 0) {
-      /**
-       * لقطة واحدة للمُدد **قبل** المقارنة — لا قياس داخلها.
-       *
-       * `cooldownRemainingMs` تُشتقّ من الساعة، فاستدعاؤها داخل مُقارِن الفرز
-       * يجعل المفتاح يتحرّك أثناء الفرز نفسه: مُدد تفصلها ميلي ثانية واحدة
-       * تنقلب ترتيبًا بين مقارنتين، فيُخالَف عقد المُقارِن ويصير الناتج غير
-       * حتمي — وهو نقيض المطلوب هنا بالذات.
-       *
-       * و`<` الصارمة تُبقي الأول عند التساوي، فالمتساويان يُحسمان بالترتيب.
-       */
-      const measured = chain.map((m) => ({ model: m, remainingMs: cooldownRemainingMs(m) }));
-      const soonestEntry = measured.reduce((best, cur) =>
-        cur.remainingMs < best.remainingMs ? cur : best,
-      );
-      const soonest = soonestEntry.model;
-      usable = [soonest];
-      cooledProbe = true;
-      console.error(
-        `[openrouter] all cooled — probing soonest: remaining_ms=${soonestEntry.remainingMs}`,
-      );
+      const probe = acquireProbeSlot(chain);
+      if (probe) {
+        usable = [probe];
+        cooledProbe = true;
+        stats.probeModel = probe;
+        console.error("[openrouter] all cooled — probe acquired (gate open)");
+      } else {
+        console.error(
+          `[openrouter] all cooled — probe gate closed: remaining_ms=${probeGateRemainingMs()}`,
+        );
+      }
     }
 
     if (usable.length === 0) {
       setOutcome("all_models_cooling");
       // الجميع مهدّأ — لا ننتظر ولا نكرر المحاولات. نُبلغ المستخدم بمدة صادقة.
-      const soonestMs = Math.min(...chain.map((m) => cooldownRemainingMs(m)));
+      /**
+       * المدة الصادقة هي الأقرب من: تعافي نموذج، أو فتح بوابة السبر.
+       * فذكر ست ساعات بينما سيُعاد السبر بعد نصف دقيقة تضليلٌ للمستخدم.
+       */
+      const soonestCooldown = Math.min(...chain.map((m) => cooldownRemainingMs(m)));
+      const gateMs = probeGateRemainingMs();
+      const soonestMs = gateMs > 0 ? Math.min(soonestCooldown, gateMs) : soonestCooldown;
       const minutes = Math.max(1, Math.ceil(soonestMs / 60_000));
       console.error(
         `[openrouter] all models cooling down: count=${chain.length} soonest_ms=${soonestMs}`,

@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OpenRouterProvider } from "@/lib/ai/openrouter";
-import { _resetCooldowns, cooldownRemainingMs, isCoolingDown } from "@/lib/ai/model-cooldown";
+import {
+  _resetCooldowns,
+  cooldownRemainingMs,
+  isCoolingDown,
+  probeGateRemainingMs,
+} from "@/lib/ai/model-cooldown";
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "@/lib/ai/free-models";
 import type { ChatRequest, StreamChunk } from "@/lib/ai/types";
 
@@ -93,12 +98,18 @@ beforeEach(() => {
   process.env.YSD_TEST_FIRST_BYTE_MS = "200";
   process.env.YSD_TEST_IDLE_MS = "250";
   process.env.YSD_TEST_CHAIN_BUDGET_MS = "3000";
+  /**
+   * البوابة مفتوحة افتراضيًا هنا: أقسام ①–④ تقيس **الاختيار والعدّاد**، والتقنين
+   * يخصّها بشيء. قسم ⑤ وحده يغلقها بنافذة مصغّرة ويقيسها مباشرة.
+   */
+  process.env.YSD_TEST_PROBE_GATE_MS = "0";
   calls = [];
 });
 afterEach(() => {
   delete process.env.YSD_TEST_FIRST_BYTE_MS;
   delete process.env.YSD_TEST_IDLE_MS;
   delete process.env.YSD_TEST_CHAIN_BUDGET_MS;
+  delete process.env.YSD_TEST_PROBE_GATE_MS;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -302,5 +313,175 @@ describe("④ صفر نداءات ⇒ صفر محاولات", () => {
       const doneAt = out.findIndex((c) => c.type === "done");
       if (doneAt !== -1) expect(doneAt).toBe(out.length - 1);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  ⑤ بوابة السبر — معدّل السبر لا يحدده عدد المستخدمين
+// ════════════════════════════════════════════════════════════
+
+describe("⑤ بوابة السبر", () => {
+  /** يُهدّئ السلسلة كلها بأربعة إخفاقات، ثم يصفّر العدّاد */
+  async function coolEverything(): Promise<void> {
+    vi.stubGlobal("fetch", transport(() => err(503)));
+    await run();
+    calls = [];
+  }
+
+  beforeEach(() => {
+    // نافذة مصغّرة قابلة للحقن — القيمة الإنتاجية (30 ثانية) لم تُمسّ
+    process.env.YSD_TEST_PROBE_GATE_MS = "400";
+  });
+  afterEach(() => {
+    delete process.env.YSD_TEST_PROBE_GATE_MS;
+  });
+
+  /**
+   * ★ (A) الحمل لا يصنع السبر.
+   *
+   * «سبرٌ واحد لكل طلب» يجعل معدّل السبر تابعًا لحركة المستخدمين: مئة طلب
+   * متزامن = مئة نداء على مزوّد أعلن للتو أنه غير قادر. البوابة تفصل الأمرين.
+   */
+  it("★ (A) مئة طلب متزامن والجميع مهدّأ ⇒ نداء واحد لا مئة", async () => {
+    await coolEverything();
+    vi.stubGlobal("fetch", transport(() => err(503)));
+
+    const results = await Promise.all(Array.from({ length: 100 }, () => run()));
+
+    // eslint-disable-next-line no-console
+    console.log(`[قياس] طلبات=100 provider_calls=${calls.length}`);
+    expect(calls.length).toBe(1); // (B) سبر واحد داخل النافذة
+    expect(results).toHaveLength(100);
+    // (C) البقية تفشل سريعًا بلا نداء — وبالعقد العام نفسه
+    const gated = results.filter((r) => r.outcome === "all_models_cooling");
+    expect(gated.length).toBe(99);
+    for (const r of gated) {
+      expect(r.errorCode).toBe("provider_unavailable");
+      expect(r.attemptCount).toBe(0);
+    }
+  });
+
+  it("★ (C) الطلبات اللاحقة داخل النافذة لا تضرب المزوّد", async () => {
+    await coolEverything();
+    vi.stubGlobal("fetch", transport(() => err(503)));
+
+    await run(); // يستهلك السبر
+    expect(calls.length).toBe(1);
+    for (let i = 0; i < 5; i++) await run();
+    expect(calls.length).toBe(1); // لا شيء إضافي
+  });
+
+  it("★ (D) بعد انقضاء النافذة يُسمح بسبر جديد", async () => {
+    await coolEverything();
+    vi.stubGlobal("fetch", transport(() => err(503)));
+
+    await run();
+    expect(calls.length).toBe(1);
+    await new Promise((r) => setTimeout(r, 450)); // > نافذة الاختبار
+    await run();
+    expect(calls.length).toBe(2);
+  });
+
+  /**
+   * ★ (E) السبر الناجح يُعيد الخدمة — لا يُبقيها في وضع السبر.
+   *
+   * النموذج أثبت عمله للتوّ، فإبقاء تهدئته يعني الاستمرار في تقنين الخدمة
+   * بلا سبب. تُرفع تهدئته وتُفتح البوابة، فالطلب التالي يمرّ طبيعيًا.
+   */
+  it("★ (E) سبر ناجح ⇒ رفع التهدئة وعودة الخدمة", async () => {
+    await coolEverything();
+    vi.stubGlobal("fetch", transport((_i, model) => sse(ARABIC, model)));
+
+    const first = await run();
+    expect(first.text).toContain(ARABIC);
+    expect(first.outcome).toBe("success");
+    const probed = calls[0]!;
+    expect(isCoolingDown(probed)).toBe(false); // رُفعت
+
+    // الطلب التالي طبيعي: بلا بوابة وبلا انتظار
+    calls = [];
+    const second = await run();
+    expect(second.text).toContain(ARABIC);
+    expect(calls.length).toBe(1);
+  });
+
+  it("★ (F) سبر فاشل ⇒ تهدئة تعود وبوابة تُغلق", async () => {
+    await coolEverything();
+    vi.stubGlobal("fetch", transport(() => err(503)));
+
+    await run();
+    const probed = calls[0]!;
+    expect(isCoolingDown(probed)).toBe(true);
+    expect(cooldownRemainingMs(probed)).toBeGreaterThan(0);
+    expect(probeGateRemainingMs()).toBeGreaterThan(0);
+
+    calls = [];
+    await run();
+    expect(calls.length).toBe(0); // مغلقة فعلًا
+  });
+
+  /**
+   * ★ (G) التدوير يبقى صحيحًا عبر النوافذ.
+   *
+   * كل سبر فاشل يُعيد تهدئة مَن سُبر فيصير أبعدهم انتهاءً، فيأخذ التالي دوره
+   * في النافذة التالية. أي أن نموذجًا معطوبًا لا يبتلع كل السبر.
+   */
+  it("★ (G) التدوير بين النماذج عبر نوافذ متتالية", async () => {
+    /**
+     * تهدئة أولية **متباعدة** عمدًا.
+     *
+     * التهدئات الأربع تقع عادةً داخل ميلي ثانية واحدة، فتتساوى مواعيد
+     * انتهائها ويحسم الترتيبَ تعادلٌ لا سياسة — وهو ما يجعل الاختبار يقيس
+     * دقّة الساعة بدل قياس التدوير. الفواصل هنا تجعل «الأقرب انتهاءً»
+     * سؤالًا له جواب واحد لا لبس فيه.
+     */
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: string, init: RequestInit) => {
+        calls.push((JSON.parse(String(init.body)) as { model: string }).model);
+        await new Promise((r) => setTimeout(r, 12));
+        return err(503);
+      }),
+    );
+    await run();
+    calls = [];
+
+    const probes: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      calls = [];
+      await run();
+      if (calls[0]) probes.push(calls[0]);
+      await new Promise((r) => setTimeout(r, 450));
+    }
+
+    // ★ ثلاثة سبور ⇒ ثلاثة نماذج مختلفة، بترتيب الاستحقاق
+    expect(probes).toEqual([FREE_MODEL_CHAIN[0]!, FREE_MODEL_CHAIN[1]!, FREE_MODEL_CHAIN[2]!]);
+  });
+
+  /**
+   * ★ (H) لا سباق داخل العملية الواحدة.
+   *
+   * الحجز متزامن بالكامل: لا `await` بين الفحص والضبط، وحلقة أحداث جافاسكربت
+   * لا تُقاطَع بينهما. فمهما تزامن الطلبان لا يفوزان معًا.
+   */
+  it("★ (H) طلبان متزامنان تمامًا ⇒ سبر واحد", async () => {
+    await coolEverything();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: string, init: RequestInit) => {
+        calls.push((JSON.parse(String(init.body)) as { model: string }).model);
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 30));
+        inFlight -= 1;
+        return err(503);
+      }),
+    );
+
+    await Promise.all([run(), run()]);
+    expect(calls.length).toBe(1);
+    expect(maxInFlight).toBe(1);
   });
 });
