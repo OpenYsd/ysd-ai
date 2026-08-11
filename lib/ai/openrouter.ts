@@ -1393,11 +1393,22 @@ export class OpenRouterProvider implements AIProviderAdapter {
       console.error("[openrouter] stream read failed or timed out");
       // v0.7.0 RC8: نُعيد ما عُرض فعلًا. بدونه كان النص الذي شاهده المستخدم
       // يضيع، ويُستأنف احتياط بنموذج آخر وكأن شيئًا لم يُعرض.
+      /**
+       * ★ القياسات تُرفق هنا أيضًا — وغيابها كان يقلب قراءة السجل.
+       *
+       * هذا مسار **قراءة البثّ**: الترويسات وصلت والجسم فُتح ثم انقضت المهلة
+       * أو انقطع الاتصال. وكان يعود بلا قياسات، فتُطبع بقيمها الافتراضية:
+       * `timeout_stage=none` و`headers_received=false` — أي أن السجل كان
+       * يقول «لم تصل ترويسات» بينما وصلت فعلًا، ويُخفي أن الانتظار كان
+       * لمحتوى لا لاستجابة. وهو الفرق الذي يفصل «المزوّد لم يردّ» عن
+       * «المزوّد ردّ ثم لم يُنتج».
+       */
       return {
         status: "network_error",
         emitted,
         model: actualModel,
         timedOut: timeout.signal.aborted,
+        ...telemetry(),
       };
     } finally {
       clearTimeout(timeoutId);

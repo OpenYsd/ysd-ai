@@ -143,11 +143,20 @@ describe("سلسلة الإنتاج", () => {
     expect(FREE_MODEL_CANDIDATES.some((c) => c.id.includes("openrouter/"))).toBe(false);
   });
 
-  it("الترتيب: المُختبَران أولًا، ثم gpt-oss-20b، وgpt-oss-120b في النهاية", () => {
+  /**
+   * الترتيب محفوظ، والسلسلة **ثلاثة** بعد إخراج `gpt-oss-120b:free`.
+   *
+   * الدليل طلب توليد حيّ من الإنتاج لا فهرسًا: سجلّ Railway 2026-08-11 أعاد
+   * status=404 · kind=no_free_model · headers_received=true — أي أن المزوّد
+   * نفسه ردّ على مفتاحنا بأن لا نقطة نهاية. (حكمٌ سابق من الفهرس العام كان
+   * خاطئًا وأُلغي؛ الفهرس يعرض ما يراه مستعلِمٌ بعينه لا ما هو متاح فعلًا.)
+   */
+  it("الترتيب: المُختبَران أولًا ثم gpt-oss-20b — وثلاثة لا أربعة", () => {
     expect(FREE_MODEL_CHAIN[0]).toBe("google/gemma-4-31b-it:free");
     expect(FREE_MODEL_CHAIN[1]).toBe("nvidia/nemotron-3-super-120b-a12b:free");
     expect(FREE_MODEL_CHAIN[2]).toBe("openai/gpt-oss-20b:free");
-    expect(FREE_MODEL_CHAIN.at(-1)).toBe("openai/gpt-oss-120b:free");
+    expect(FREE_MODEL_CHAIN).toHaveLength(3);
+    expect(FREE_MODEL_CHAIN).not.toContain("openai/gpt-oss-120b:free");
   });
 
   it("كل النماذج مجانية (:free)", () => {
