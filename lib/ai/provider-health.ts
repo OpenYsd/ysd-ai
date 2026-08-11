@@ -1,4 +1,5 @@
 import { cooldownRemainingMs, isCoolingDown, probeGateRemainingMs } from "./model-cooldown";
+import { GROQ_PROVIDER_ID } from "./groq-models";
 
 /**
  * صحة المزوّدين وتوجيه ذكي — تقليل زمن أول رمز بلا كسر النجاح القائم.
@@ -18,8 +19,16 @@ import { cooldownRemainingMs, isCoolingDown, probeGateRemainingMs } from "./mode
 
 /** ميزانية السلسلة حين يكون المزوّد الأساسي متدهورًا */
 export const SMART_PROBE_BUDGET_MS = 6_000;
-/** مدة التدهور قبل الشفاء الذاتي */
+/** مدة تدهور المزوّد الأساسي قبل الشفاء الذاتي */
 export const DEGRADED_WINDOW_MS = 90_000;
+/**
+ * مدة اعتبار **الاحتياط** غير صحيح — أقصر عمدًا.
+ *
+ * تدهور الاحتياط يُعيد الأساسي إلى حدوده الكاملة، أي يُلغي فائدة التوجيه
+ * كلها. فكلّما قصرت هذه النافذة عاد التوجيه أسرع. وستون ثانية تكفي لتجاوز
+ * موجة أعطال عابرة بلا حبس التوجيه دقيقةً ونصفًا.
+ */
+export const GROQ_RECENT_FAILURE_WINDOW_MS = 60_000;
 /** نافذة تجميع الإخفاقات المتتالية */
 export const FAILURE_WINDOW_MS = 60_000;
 /** عدد إخفاقات المزوّد الطرفية الموجب للتدهور */
@@ -54,6 +63,14 @@ interface Health {
   consecutiveFailures: number;
   /** 0 = غير متدهور. وإلا لحظة الشفاء الذاتي */
   degradedUntil: number;
+  /**
+   * قيمة `degradedUntil` التي استُهلكت رخصتها.
+   *
+   * كل دورة تدهور تمنح **تجربة كاملة واحدة** عند انقضائها. وربطُ الرخصة
+   * بقيمة `degradedUntil` نفسها يجعل الاستهلاك مرةً واحدة لكل دورة تلقائيًا،
+   * بلا عَلَم منفصل يحتاج تصفيرًا ويُنسى.
+   */
+  recoveryConsumedFor: number;
 }
 
 const health = new Map<string, Health>();
@@ -61,7 +78,13 @@ const health = new Map<string, Health>();
 function entry(id: string): Health {
   let h = health.get(id);
   if (!h) {
-    h = { lastSuccessAt: 0, lastFailureAt: 0, consecutiveFailures: 0, degradedUntil: 0 };
+    h = {
+      lastSuccessAt: 0,
+      lastFailureAt: 0,
+      consecutiveFailures: 0,
+      degradedUntil: 0,
+      recoveryConsumedFor: 0,
+    };
     health.set(id, h);
   }
   return h;
@@ -71,7 +94,10 @@ function testMs(name: string, fallback: number): number {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v >= 0 ? v : fallback;
 }
-const degradedWindowMs = () => testMs("YSD_TEST_DEGRADED_WINDOW_MS", DEGRADED_WINDOW_MS);
+const degradedWindowMs = (id: string) =>
+  id === GROQ_PROVIDER_ID
+    ? testMs("YSD_TEST_GROQ_FAILURE_WINDOW_MS", GROQ_RECENT_FAILURE_WINDOW_MS)
+    : testMs("YSD_TEST_DEGRADED_WINDOW_MS", DEGRADED_WINDOW_MS);
 const failureWindowMs = () => testMs("YSD_TEST_FAILURE_WINDOW_MS", FAILURE_WINDOW_MS);
 
 /**
@@ -86,6 +112,7 @@ export function recordProviderSuccess(id: string, now = Date.now()): void {
   h.lastSuccessAt = now;
   h.consecutiveFailures = 0;
   h.degradedUntil = 0;
+  h.recoveryConsumedFor = 0;
 }
 
 /**
@@ -120,8 +147,41 @@ export function recordProviderTerminalFailure(
    * يحصل على فرصة كاملة أبدًا حتى لو تعافى وصار أبطأ من ٦ ثوانٍ فقط.
    */
   if (h.consecutiveFailures >= CONSECUTIVE_FAILURE_THRESHOLD && h.degradedUntil <= now) {
-    h.degradedUntil = now + degradedWindowMs();
+    h.degradedUntil = now + degradedWindowMs(id);
   }
+}
+
+/**
+ * ★ رخصة التجربة الكاملة — تُطلب مرة واحدة لكل دورة تدهور.
+ *
+ * انتهاء `degradedUntil` وحده لم يكن كافيًا: إشارة التهدئة (⅔ مهدّأة) كانت
+ * تُعيد إدخال المزوّد في **القرار نفسه**، فيخرج من نافذة التسعين ثانية إلى
+ * سبرٍ من ست ثوانٍ بلا أن يذوق فرصة كاملة قط. أي أن شرط عدم الانزلاق كان
+ * صحيحًا في طبقته ومُبطَلًا عبر الطبقة الأخرى — قِيس ذلك حيًّا قبل الإصلاح.
+ *
+ * الرخصة تكسر ذلك: أول قرار بعد الانقضاء يتجاوز **كل** إشارات التدهور مرةً
+ * واحدة. ولا تمسّ التهدئة ولا تجعل نموذجًا مهدّأً صالحًا — المهدّأ يبقى
+ * مهدّأً، والمتغيّر الوحيد أننا لا نقصّ الميزانية إلى ٦ ثوانٍ.
+ *
+ * دالة **تُعدّل** الحالة عند النجاح — والاستهلاك هو المقصود: لولاه لَحصل كل
+ * طلب على تجربة كاملة، فتضيع فائدة التوجيه تمامًا.
+ */
+function claimRecoveryTrial(id: string, now: number): boolean {
+  const h = health.get(id);
+  if (!h) return false;
+  if (h.degradedUntil === 0) return false; // لم يتدهور، أو شفاه نجاح
+  if (h.degradedUntil > now) return false; // ما زال داخل النافذة
+  if (h.recoveryConsumedFor === h.degradedUntil) return false; // استُهلكت لهذه الدورة
+  h.recoveryConsumedFor = h.degradedUntil;
+  return true;
+}
+
+/** هل توجد رخصة غير مستهلكة؟ قراءة **بلا** استهلاك — للاختبار والتشخيص */
+export function hasPendingRecoveryTrial(id: string, now = Date.now()): boolean {
+  const h = health.get(id);
+  return Boolean(
+    h && h.degradedUntil > 0 && h.degradedUntil <= now && h.recoveryConsumedFor !== h.degradedUntil,
+  );
 }
 
 /** هل المزوّد متدهور الآن؟ (انقضاء المدة يشفيه تلقائيًا بلا أي طلب) */
@@ -184,9 +244,12 @@ export function decideProviderRouting(params: {
   const allCooledAndGated =
     chain.length > 0 && cooled === chain.length && probeGateRemainingMs(now) > 0;
 
-  const degraded = isProviderDegraded(primaryId, now) || cooledRatio >= DEGRADED_MODEL_RATIO;
-
-  // (١) لا مرشّح صالح في الأساسي، وبوابة السبر مغلقة ⇒ الاحتياط وحده
+  /**
+   * (١) لا مرشّح صالح في الأساسي وبوابة السبر مغلقة ⇒ الاحتياط وحده.
+   *
+   * **قبل** طلب الرخصة عمدًا: قرارٌ لا يشمل الأساسي أصلًا لا يصلح تجربةً له،
+   * واستهلاك الرخصة فيه يُضيّعها على طلب لن يجرّبه. تبقى محفوظة للطلب التالي.
+   */
   if (fallbackUsable && allCooledAndGated) {
     return {
       order: [fallbackId!],
@@ -195,6 +258,11 @@ export function decideProviderRouting(params: {
       cooledRatio,
     };
   }
+
+  // الرخصة تتقدّم على كل إشارات التدهور — مرة واحدة لكل دورة
+  const recovery = claimRecoveryTrial(primaryId, now);
+  const degraded =
+    !recovery && (isProviderDegraded(primaryId, now) || cooledRatio >= DEGRADED_MODEL_RATIO);
 
   // (٢) الأساسي متدهور والاحتياط صالح ⇒ سبرٌ قصير ثم الاحتياط
   if (fallbackUsable && degraded) {

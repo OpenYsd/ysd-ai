@@ -11,12 +11,21 @@ import {
   _resetProviderHealth,
   consecutiveFailures,
   decideProviderRouting,
+  GROQ_RECENT_FAILURE_WINDOW_MS,
   degradedRemainingMs,
+  hasPendingRecoveryTrial,
   isProviderDegraded,
   recordProviderSuccess,
   recordProviderTerminalFailure,
 } from "@/lib/ai/provider-health";
-import { _resetCooldowns, markCooldown } from "@/lib/ai/model-cooldown";
+import {
+  _resetCooldowns,
+  acquireProbeSlot,
+  cooldownRemainingMs,
+  isCoolingDown,
+  markCooldown,
+  releaseProbeSlot,
+} from "@/lib/ai/model-cooldown";
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 
 /**
@@ -395,5 +404,144 @@ describe("عدم الانحدار", () => {
     for (const bad of ["messages", "prompt", "userId", "content", "assistantText"]) {
       expect(SRC).not.toContain(bad);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  تكامل الطبقتين: صحة المزوّد × تهدئة النماذج
+// ════════════════════════════════════════════════════════════
+
+/**
+ * ★ ثغرة مقيسة قبل الإصلاح.
+ *
+ * `degradedUntil` غير المنزلق كان صحيحًا في طبقته ومُبطَلًا عبر الأخرى:
+ * تنتهي نافذة التسعين ثانية، فتُعيد إشارة «⅔ مهدّأة» إدخال المزوّد في
+ * **القرار نفسه** — فلا يذوق فرصة كاملة قط. القياس قبل الإصلاح:
+ *   degraded=false · cooledRatio=0.67 · decision=degraded_probe · budget=6000
+ *
+ * رخصة التجربة الكاملة تكسر ذلك مرةً واحدة لكل دورة، بلا أن تمسّ التهدئة.
+ */
+describe("★ رخصة التجربة الكاملة بعد الشفاء", () => {
+  /** يبني السيناريو: Gemma 15د · Nemotron دقيقتان · تدهور المزوّد */
+  function setupScenario(): number {
+    markCooldown(FREE_MODEL_CHAIN[0]!, "rate_limit", 15 * 60_000, T0);
+    markCooldown(FREE_MODEL_CHAIN[1]!, "provider_error", null, T0);
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + 1);
+    return T0 + 1 + DEGRADED_WINDOW_MS; // لحظة الانقضاء
+  }
+
+  it("★ (١) ⅔ مهدّأة أطول من النافذة ⇒ الطلب التالي تجربة كاملة", () => {
+    const expiry = setupScenario();
+    const at = expiry + 1;
+
+    // التهدئتان ما زالتا فعّالتين
+    expect(isCoolingDown(FREE_MODEL_CHAIN[0]!, at)).toBe(true);
+    expect(isCoolingDown(FREE_MODEL_CHAIN[1]!, at)).toBe(true);
+
+    const r = route(at);
+    expect(r.cooledRatio).toBeGreaterThanOrEqual(DEGRADED_MODEL_RATIO);
+    expect(r.primaryBudgetMs).toBeUndefined(); // ★ كاملة رغم النسبة
+    expect(r.decision).toBe("healthy");
+  });
+
+  it("★ (٢) خمسة إخفاقات سبر داخل النافذة لا تمنع التجربة الكاملة", () => {
+    const expiry = setupScenario();
+    for (const d of [10_000, 30_000, 50_000, 70_000, 88_000]) {
+      recordProviderTerminalFailure(OR, "provider_unavailable", T0 + d);
+    }
+    // النافذة الأصلية لم تتحرك
+    expect(degradedRemainingMs(OR, expiry - 1)).toBe(1);
+
+    const r = route(expiry + 1);
+    expect(r.primaryBudgetMs).toBeUndefined();
+  });
+
+  it("★ (٣) نجاح التجربة ⇒ HEALTHY وبلا رخصة معلّقة", () => {
+    const expiry = setupScenario();
+    const at = expiry + 1;
+    expect(route(at).primaryBudgetMs).toBeUndefined();
+
+    recordProviderSuccess(OR, at + 1_000);
+    expect(isProviderDegraded(OR, at + 1_000)).toBe(false);
+    expect(hasPendingRecoveryTrial(OR, at + 1_000)).toBe(false);
+    // ويعود التوجيه لقواعده: النسبة وحدها تكفي للسبر القصير
+    expect(route(at + 2_000).primaryBudgetMs).toBe(SMART_PROBE_BUDGET_MS);
+  });
+
+  it("★ (٤) فشل التجربة ⇒ يمكن دخول التدهور من جديد", () => {
+    const expiry = setupScenario();
+    const at = expiry + 1;
+    expect(route(at).primaryBudgetMs).toBeUndefined(); // استُهلكت الرخصة
+
+    // فشلان جديدان بعد الشفاء
+    recordProviderTerminalFailure(OR, "timeout", at + 1_000);
+    recordProviderTerminalFailure(OR, "timeout", at + 2_000);
+    expect(isProviderDegraded(OR, at + 2_000)).toBe(true);
+    expect(route(at + 2_000).primaryBudgetMs).toBe(SMART_PROBE_BUDGET_MS);
+
+    // ودورة جديدة ⇒ رخصة جديدة عند انقضائها
+    const nextExpiry = at + 2_000 + DEGRADED_WINDOW_MS;
+    expect(route(nextExpiry + 1).primaryBudgetMs).toBeUndefined();
+  });
+
+  it("★ (٥) الرخصة مرة واحدة لكل دورة — لا لكل طلب", () => {
+    const expiry = setupScenario();
+    const at = expiry + 1;
+
+    expect(route(at).primaryBudgetMs).toBeUndefined(); // الأولى: كاملة
+    // والطلبات التالية تعود للسبر القصير ما دامت النسبة قائمة
+    for (const d of [1, 2, 3, 4, 5]) {
+      const r = route(at + d * 1_000);
+      expect(r.primaryBudgetMs).toBe(SMART_PROBE_BUDGET_MS);
+      expect(r.decision).toBe("degraded_probe");
+    }
+  });
+
+  it("★ (٦) كل النماذج مهدّأة والبوابة مغلقة ⇒ لا صفر مزوّدين، والرخصة محفوظة", () => {
+    for (const m of FREE_MODEL_CHAIN) markCooldown(m, "no_free_model", null, T0);
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + 1);
+    const expiry = T0 + 1 + DEGRADED_WINDOW_MS;
+
+    // بوابة السبر: نستهلكها بسبر ثم تُغلق
+    const soonest = FREE_MODEL_CHAIN[0]!;
+    acquireProbeSlot(FREE_MODEL_CHAIN, expiry + 1);
+    releaseProbeSlot(soonest, false, expiry + 1);
+
+    const r = route(expiry + 2);
+    expect(r.order.length).toBeGreaterThanOrEqual(1);
+    expect(r.decision).toBe("skip_openrouter");
+    expect(r.order).toEqual([GROQ]); // الاحتياط ما زال قائمًا
+    // ★ ولم تُستهلك الرخصة في قرار لا يشمل الأساسي أصلًا
+    expect(hasPendingRecoveryTrial(OR, expiry + 2)).toBe(true);
+  });
+
+  /**
+   * ★ (٧) الرخصة **لا تمسّ** التهدئة.
+   *
+   * لا تُلغيها ولا تُقصّرها ولا تجعل نموذجًا مهدّأً صالحًا. المتغيّر الوحيد
+   * أننا لا نقصّ الميزانية — والنماذج تبقى كما هي بالضبط.
+   */
+  it("★ (٧) طوابع التهدئة لا تتغيّر بسبب منطق الرخصة", () => {
+    const expiry = setupScenario();
+    const at = expiry + 1;
+
+    const before = FREE_MODEL_CHAIN.map((m) => cooldownRemainingMs(m, at));
+    route(at); // يستهلك الرخصة
+    route(at); // ومرة أخرى
+    const after = FREE_MODEL_CHAIN.map((m) => cooldownRemainingMs(m, at));
+
+    expect(after).toEqual(before);
+    expect(isCoolingDown(FREE_MODEL_CHAIN[0]!, at)).toBe(true);
+    expect(isCoolingDown(FREE_MODEL_CHAIN[1]!, at)).toBe(true);
+  });
+
+  it("★ نافذة الاحتياط أقصر وصريحة", () => {
+    expect(GROQ_RECENT_FAILURE_WINDOW_MS).toBe(60_000);
+    recordProviderTerminalFailure(GROQ, "timeout", T0);
+    recordProviderTerminalFailure(GROQ, "timeout", T0 + 1);
+    expect(isProviderDegraded(GROQ, T0 + GROQ_RECENT_FAILURE_WINDOW_MS)).toBe(true);
+    expect(isProviderDegraded(GROQ, T0 + GROQ_RECENT_FAILURE_WINDOW_MS + 2)).toBe(false);
   });
 });
