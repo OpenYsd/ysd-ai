@@ -117,19 +117,28 @@ describe("التهدئة داخل مسار البث", () => {
     expect(isCoolingDown(FREE_MODEL_CHAIN[0]!)).toBe(true);
   });
 
-  it("★ كل السلسلة مهدّأة → رسالة عربية واضحة بلا أي طلب", async () => {
-    // أفشل الجميع أولًا
+  /**
+   * تغيّر مقصود (v0.9.0): كان «بلا أي طلب»، وصار **سبرًا واحدًا**.
+   *
+   * التهدئة كانت قادرة على إفراغ السلسلة تمامًا فتتوقف الخدمة حتى ينقضي أطول
+   * تهدئة — ست ساعات في حالة `no_free_model` — ولو تعافى المزوّد بعد دقيقة.
+   * السياسة الجديدة تُبقي طريقًا واحدًا: نموذج واحد، الأقرب انتهاءً.
+   * والحدّ محفوظ: نداء واحد لكل طلب لا أربعة، فلا طَرْق للمزوّد.
+   */
+  it("★ كل السلسلة مهدّأة → سبر واحد فقط ورسالة عربية واضحة", async () => {
     for (let i = 0; i < FREE_MODEL_CHAIN.length; i++) fetchMock.mockResolvedValueOnce(errResponse(429, "rl"));
     await collect(new OpenRouterProvider().streamChat(req(YSD_FREE_MODEL_ID)));
     const callsAfterFirst = fetchMock.mock.calls.length;
 
+    // السبر يفشل أيضًا
+    fetchMock.mockResolvedValueOnce(errResponse(429, "rl"));
     const out = await collect(new OpenRouterProvider().streamChat(req(YSD_FREE_MODEL_ID)));
     const err = out.find((c) => c.type === "error");
     expect(err).toBeDefined();
     expect(err!.error).toMatch(/[؀-ۿ]/); // عربية
     expect(err!.error).toMatch(/مضغوطة|أعد المحاولة/);
-    // لم يُرسل ولا طلب واحد في الجولة الثانية
-    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+    // ★ نداء واحد لا أكثر — لا انهيار للسلسلة ولا طَرْق
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst + 1);
   });
 
   it("auth (401) لا يُهدّئ النموذج — مشكلة إعداد لا عطل نموذج", async () => {

@@ -591,6 +591,8 @@ export async function POST(req: NextRequest) {
   let usageFrameCount = 0;
   /** محاولات النماذج التي جرت فعلًا — يصل من المزوّد مع `meta` */
   let attemptCount = 0;
+  /** تصنيف نهاية سلسلة المزوّد — رمز مغلق للتشخيص، بلا محتوى */
+  let chainOutcome = "unknown";
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -760,6 +762,7 @@ export async function POST(req: NextRequest) {
               actualModelId = chunk.model;
             }
             if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
+            if (typeof chunk.chainOutcome === "string") chainOutcome = chunk.chainOutcome;
             if (chunk.mode) answerMode = chunk.mode;
             if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
             if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
@@ -1188,6 +1191,7 @@ export async function POST(req: NextRequest) {
         const fallbackCount = Math.max(0, attemptCount - 1);
         console.log(
           `[chat] rid=${requestId} model=${actualModelId ?? effectiveModelId} fallback_count=${fallbackCount} ` +
+            `chain_outcome=${chainOutcome} attempts=${attemptCount} ` +
             `mode=${answerMode} regeneration_count=${regenerations} ` +
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +

@@ -145,10 +145,25 @@ export function mapOpenRouterError(status: number | null, raw: string): {
   userMessage: string;
 } {
   const lower = raw.toLowerCase();
-  if (status === 401 || status === 403) {
+  if (status === 401) {
     return {
       kind: "auth",
       userMessage: "إعدادات موفر الذكاء الاصطناعي غير صحيحة. تواصل مع إدارة المنصة.",
+    };
+  }
+  /**
+   * 403 **ليس** خطأ حساب بالضرورة.
+   *
+   * 401 يعني مفتاحًا مرفوضًا — حكمٌ على الحساب، لا يتغيّر بتبديل النموذج.
+   * أما 403 فتستعمله OpenRouter أيضًا للحجب والإشراف، وذلك **قد** يخصّ نموذجًا
+   * بعينه. فإلحاقه بـ`auth` كان يجعل حجب نموذج واحد يوقف السلسلة كلها.
+   *
+   * يبقى رمزه العام `provider_unavailable` كما كان، لكنه **قابل للإعادة**.
+   */
+  if (status === 403) {
+    return {
+      kind: "forbidden",
+      userMessage: "هذا النموذج غير متاح حاليًا. جرّب نموذجًا آخر أو أعد المحاولة.",
     };
   }
   if (status === 402) {
@@ -212,7 +227,25 @@ interface ProviderStats {
    * أن لا احتياط جرى بينما جرت محاولات. العدّاد يقول الحقيقة.
    */
   attempts: number;
+  /**
+   * تصنيف داخلي لنهاية السلسلة — للتشخيص وحده، بلا محتوى ولا هوية.
+   *
+   * `provider_unavailable` وحده لا يقول هل جُرّب شيء أصلًا. هذا يقوله.
+   */
+  outcome: ChainOutcome;
 }
+
+/** نهايات السلسلة الممكنة — رموز مغلقة لا نصوص */
+export type ChainOutcome =
+  | "unknown"
+  | "success"
+  | "chain_exhausted"
+  | "all_models_cooling"
+  | "cooled_probe_failed"
+  | "account_auth"
+  | "insufficient_credit"
+  | "short_circuit"
+  | "client_abort";
 
 /** نتيجة محاولة واحدة مع نموذج واحد — الرد الكامل يُرجَّع للفحص في streamChat */
 interface AttemptResult {
@@ -257,8 +290,23 @@ interface AttemptResult {
 function cooldownReasonFor(kind: string): CooldownReason | null {
   if (kind === "rate_limit") return "rate_limit";
   if (kind === "no_free_model") return "no_free_model";
-  // 5xx أو مهلة/شبكة — عطل مزوّد عابر
-  if (kind === "overloaded" || kind === "network") return "provider_error";
+  /**
+   * 5xx أو شبكة أو **مهلة** — عطل مزوّد عابر.
+   *
+   * `timeout` أُعيد هنا بعد أن أسقطته رقعة سابقة سهوًا: كانت المهلة تُصنَّف
+   * `network` فتُهدَّأ، ثم صار لها نوعها الخاص فسقطت من هذا الجدول ⇒ نموذج
+   * يتلكّأ يُجرَّب في كل طلب بدل أن يُبعَد دقيقتين.
+   *
+   * و`forbidden` معه: حجبٌ قد يكون مؤقتًا وخاصًّا بنموذج.
+   */
+  if (
+    kind === "overloaded" ||
+    kind === "network" ||
+    kind === "timeout" ||
+    kind === "forbidden"
+  ) {
+    return "provider_error";
+  }
   // auth / insufficient_credit / api_error: مشكلة إعداد أو حساب لا تخصّ نموذجًا
   // بعينه — تهدئته تحجب نموذجًا سليمًا بلا سبب.
   return null;
@@ -285,7 +333,66 @@ export class OpenRouterProvider implements AIProviderAdapter {
     ];
   }
 
+  /**
+   * ★ الحدث الختامي — **ضمانة مركزية لا تذكُّرٌ يدوي**.
+   *
+   * كان `attemptCount` يُضاف إلى إطارات `meta` واحدًا واحدًا، فسقط من ثلاثة
+   * منها — بينها مسار البثّ العام الناجح — ومن مسار الفشل الذي لا يُصدر `meta`
+   * أصلًا. فبقي `fallback_count` صفرًا في أكثر الحالات، وهو ما ضلّل تشخيص
+   * ثلاث حوادث متتالية.
+   *
+   * الآن السلسلة كلها ملفوفة: أيًّا كانت نهايتها — نجاح، خطأ مزوّد، مهلة،
+   * استنفاد، أو صفر نماذج — يُصدَر إطار ختامي واحد يحمل العدّاد الحقيقي
+   * ونتيجة السلسلة. و`finally` تضمن إصداره حتى مع الخروج المبكر، فلا يمكن
+   * لمسارٍ جديد أن «ينسى» العدّاد.
+   */
   async *streamChat(req: ChatRequest): AsyncGenerator<StreamChunk> {
+    const stats: ProviderStats = { providerCalls: 0, attempts: 0, outcome: "unknown" };
+    let terminalSent = false;
+    const terminalFrame = (): StreamChunk => ({
+      type: "meta",
+      attemptCount: stats.attempts,
+      chainOutcome: stats.outcome,
+      providerCalls: stats.providerCalls,
+    });
+    try {
+      /**
+       * النجاح يُستنتج مركزيًا من **وصول نصّ للمستخدم**، لا من تعليمٍ في كل
+       * مسار نجاح. فمسارات النجاح متعددة (عام، محمي، متابعة، إعادة صارمة)،
+       * ووسمها واحدًا واحدًا يعيد الخطأ نفسه الذي عالجه الحدث الختامي.
+       */
+      for await (const chunk of this.runChain(req, stats)) {
+        if (chunk.type === "text" && chunk.text && stats.outcome === "chain_exhausted") {
+          stats.outcome = "success";
+        }
+        /**
+         * الحدث الختامي يسبق `done` — لا يليه.
+         *
+         * `done` آخر ما يصل المستهلك بحكم العقد القائم، ووضع إطارٍ بعده يكسر
+         * كل قارئ يعتبره النهاية. فيُدرَج قبله، ويبقى `done` خاتمةً كما كان.
+         */
+        if (chunk.type === "done" && !terminalSent) {
+          terminalSent = true;
+          yield terminalFrame();
+        }
+        yield chunk;
+      }
+    } finally {
+      // مسارات لا تُنهي بـ`done` (خطأ، إجهاض) — الضمانة تبقى قائمة
+      if (!terminalSent) {
+        terminalSent = true;
+        yield terminalFrame();
+      }
+    }
+  }
+
+  private async *runChain(req: ChatRequest, stats: ProviderStats): AsyncGenerator<StreamChunk> {
+    /** يُكتب في `stats.outcome` عند كل خروج — والغلاف يبثّه */
+    const setOutcome = (o: ChainOutcome) => {
+      stats.outcome = o;
+    };
+    setOutcome("chain_exhausted");
+
     const chain: readonly string[] =
       req.modelId === YSD_FREE_MODEL_ID ? FREE_MODEL_CHAIN : [req.modelId];
 
@@ -308,7 +415,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     // والبثّ الفوري لكل ما عداها — فلا تدفع المحادثة العامة ثمن التحقق.
     const verified = needsVerifiedMode(userText);
     const groundingSource = req.grounding?.source ?? "none";
-    const stats: ProviderStats = { providerCalls: 0, attempts: 0 };
+
 
     /**
      * إنفاذ سؤال التوضيح (v0.6.6 RC2): اسم يحتمل أكثر من عمل.
@@ -358,14 +465,61 @@ export class OpenRouterProvider implements AIProviderAdapter {
         shortCircuit: true,
         providerCalls: 0,
       };
+      setOutcome("short_circuit");
       yield { type: "text", text: buildUnsourcedMessage(userText) };
       yield { type: "done" };
       return;
     }
 
     // تخطٍّ **قبل** أي طلب: نموذج مهدّأ لا يُرسَل إليه أصلًا.
-    const usable = chain.filter((m) => !isCoolingDown(m));
+    let usable = chain.filter((m) => !isCoolingDown(m));
+
+    /**
+     * ★ سياسة منع انهيار السلسلة — **سبرٌ واحد** لا أكثر.
+     *
+     * التهدئة تحمي المزوّد، لكنها كانت قادرة على إفراغ السلسلة تمامًا: 404
+     * واحد يُبعد نموذجًا ست ساعات، وأربعة منها تعني ستّ ساعات بلا خدمة ولو
+     * تعافى المزوّد بعد دقيقة. ولا شيء يكسر ذلك إلا مرور الوقت.
+     *
+     * قُورن خياران:
+     *
+     *   (أ) سبر نموذج واحد — الأقرب انتهاءً — حين تُهدَّأ كل النماذج.
+     *   (ب) إبقاء حدّ أدنى من المرشّحين متاحًا دائمًا رغم التهدئة.
+     *
+     * اخترنا (أ) لأنها **الأقل خطرًا**: كلفتها القصوى نداءٌ واحد لكل طلب،
+     * والتهدئة تبقى نافذة على الباقي كما هي. أما (ب) فتُبقي عدة نماذج خارج
+     * الحماية دائمًا، فترتدّ إلى ما قبل التهدئة عند عطل مزوّد ممتد — أي أربعة
+     * نداءات فاشلة لكل طلب، وهو الطَّرق الذي وُضعت التهدئة لمنعه.
+     *
+     * و«الأقرب انتهاءً» اختيارٌ **حتمي**: نفس الحالة تُنتج نفس المرشّح، فلا
+     * عشوائية تُصعّب التشخيص، والمُختار أقرب النماذج إلى التعافي فعلًا.
+     */
+    let cooledProbe = false;
+    if (usable.length === 0 && chain.length > 0) {
+      /**
+       * لقطة واحدة للمُدد **قبل** المقارنة — لا قياس داخلها.
+       *
+       * `cooldownRemainingMs` تُشتقّ من الساعة، فاستدعاؤها داخل مُقارِن الفرز
+       * يجعل المفتاح يتحرّك أثناء الفرز نفسه: مُدد تفصلها ميلي ثانية واحدة
+       * تنقلب ترتيبًا بين مقارنتين، فيُخالَف عقد المُقارِن ويصير الناتج غير
+       * حتمي — وهو نقيض المطلوب هنا بالذات.
+       *
+       * و`<` الصارمة تُبقي الأول عند التساوي، فالمتساويان يُحسمان بالترتيب.
+       */
+      const measured = chain.map((m) => ({ model: m, remainingMs: cooldownRemainingMs(m) }));
+      const soonestEntry = measured.reduce((best, cur) =>
+        cur.remainingMs < best.remainingMs ? cur : best,
+      );
+      const soonest = soonestEntry.model;
+      usable = [soonest];
+      cooledProbe = true;
+      console.error(
+        `[openrouter] all cooled — probing soonest: remaining_ms=${soonestEntry.remainingMs}`,
+      );
+    }
+
     if (usable.length === 0) {
+      setOutcome("all_models_cooling");
       // الجميع مهدّأ — لا ننتظر ولا نكرر المحاولات. نُبلغ المستخدم بمدة صادقة.
       const soonestMs = Math.min(...chain.map((m) => cooldownRemainingMs(m)));
       const minutes = Math.max(1, Math.ceil(soonestMs / 60_000));
@@ -562,6 +716,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         }
 
         // رد نظيف → سلّمه
+        setOutcome("success");
         yield {
           type: "meta",
           attemptCount: stats.attempts,
@@ -617,6 +772,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
               }
           : mapOpenRouterError(result.httpStatus ?? null, result.errorRaw ?? "");
 
+      /**
+       * ★ خطأ حساب عالمي ⇒ توقّف فورًا.
+       *
+       * `httpStatus` هو حالة نداء OpenRouter نفسه، الموقّع بمفتاح الحساب.
+       * فـ401 (مفتاح مرفوض) و402 (رصيد غير كافٍ) حكمان على الحساب لا على
+       * نموذج: تبديل النموذج لا يغيّر منهما شيئًا، واستهلاك بقية السلسلة
+       * أربعة نداءات فاشلة وتأخير للمستخدم بلا أي احتمال نجاح.
+       *
+       * و403 **ليس** منها عمدًا — قد يكون حجبًا خاصًّا بنموذج (أعلاه).
+       */
+      if (lastError.kind === "auth" || lastError.kind === "insufficient_credit") {
+        setOutcome(lastError.kind === "auth" ? "account_auth" : "insufficient_credit");
+        console.error(
+          `[openrouter] account-level failure: kind=${lastError.kind} — chain stopped`,
+        );
+        break;
+      }
+
       const reason: CooldownReason | null = cooldownReasonFor(lastError.kind);
       let cooledMs = 0;
       if (reason) cooledMs = markCooldown(model, reason, result.retryAfterMs ?? null);
@@ -627,6 +800,10 @@ export class OpenRouterProvider implements AIProviderAdapter {
         `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} ` +
           `kind=${lastError.kind}${reason ? ` cooldown=${reason} cooldown_ms=${cooledMs}` : " cooldown=none"}`,
       );
+    }
+
+    if (stats.outcome === "chain_exhausted" && cooledProbe) {
+      setOutcome("cooled_probe_failed");
     }
 
     // انتهت السلسلة بلا نص صالح. إن كان السبب إكمالات فارغة فليست عطلًا تقنيًا:

@@ -41,6 +41,8 @@ export function codeFromProviderKind(kind: string): ChatErrorCode {
       return "rate_limit";
     case "no_free_model":
     case "overloaded":
+    // 403: حجب قد يكون خاصًّا بنموذج — نفس الرمز العام، وسلوك إعادة مختلف
+    case "forbidden":
     case "insufficient_credit":
     case "auth": // إعداد المنصة لا جلسة المستخدم
       return "provider_unavailable";

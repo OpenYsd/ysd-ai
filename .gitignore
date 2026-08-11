@@ -30,3 +30,6 @@ scripts/.tmp-*.mjs
 .9router/
 9router-data/
 .ninerouter/
+
+# أدوات معاينة محلية — لا تدخل المستودع
+.claude/
