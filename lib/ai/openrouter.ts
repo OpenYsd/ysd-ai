@@ -572,8 +572,19 @@ export class OpenRouterProvider implements AIProviderAdapter {
      *
      * الآن إشارة واحدة تُربط بكل محاولة، فتنقطع أينما كانت.
      */
+    /**
+     * ★ سقفٌ يفرضه المسار — والثابت `CHAIN_BUDGET_MS` لا يتغيّر.
+     *
+     * حين يكون المزوّد متدهورًا يمرّر المسار ميزانية أقصر ليختصر انتظار
+     * المستخدم قبل الانتقال إلى مزوّد آخر. وغياب `budgetMs` يعني الحدود
+     * الكاملة كما هي بايتًا ببايت — المسار الصحيح لا يتغيّر بشيء.
+     */
+    const effectiveChainBudgetMs = Math.min(
+      chainBudgetMs(),
+      req.budgetMs ?? Number.POSITIVE_INFINITY,
+    );
     const chainDeadline = new AbortController();
-    const chainTimer = setTimeout(() => chainDeadline.abort(), chainBudgetMs());
+    const chainTimer = setTimeout(() => chainDeadline.abort(), effectiveChainBudgetMs);
     /**
      * `unref` كي لا يُبقي المؤقّت حلقة الأحداث حيّة بعد ردٍّ سريع.
      *
@@ -587,7 +598,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
       if (!model) continue;
 
       // سقف انتظار المستخدم: لا نبدأ محاولة جديدة بعد نفاد الميزانية
-      if (i > 0 && Date.now() - chainStartedAt >= chainBudgetMs()) {
+      if (i > 0 && Date.now() - chainStartedAt >= effectiveChainBudgetMs) {
         console.error(
           `[openrouter] chain budget exhausted: elapsed_ms=${Date.now() - chainStartedAt} tried=${i}`,
         );

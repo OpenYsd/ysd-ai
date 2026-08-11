@@ -6,6 +6,12 @@ import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { getFallbackProvider, resolveProviderForModel } from "@/lib/ai/registry";
+import {
+  decideProviderRouting,
+  recordProviderSuccess,
+  recordProviderTerminalFailure,
+} from "@/lib/ai/provider-health";
+import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import {
   loadModelPolicy,
@@ -752,9 +758,35 @@ export async function POST(req: NextRequest) {
          * كان سيجعل الرقم الواحد يعني شيئين.
          */
         const providerPhaseStart = Date.now();
-        const sequence: AIProviderAdapter[] = [provider];
         const fallbackProvider = getFallbackProvider();
-        if (fallbackProvider && fallbackProvider.id !== provider.id) sequence.push(fallbackProvider);
+        const usableFallback =
+          fallbackProvider && fallbackProvider.id !== provider.id ? fallbackProvider : null;
+
+        /**
+         * ★ التوجيه الذكي (v0.9.1) — ترتيبٌ وميزانية، لا تغيير في أي حدّ.
+         *
+         * الحالة الصحية تُنتج نفس السلوك السابق حرفيًا. والتدهور وحده يُقصّر
+         * ميزانية الأساسي إلى سبرٍ قصير، فيصل المستخدم إلى أول رمز في نحو
+         * تسع ثوانٍ بدل أربع وأربعين — دون أن يُحرم OpenRouter من فرصته
+         * الكاملة متى تعافى.
+         */
+        const routing = decideProviderRouting({
+          primaryId: provider.id,
+          fallbackId: usableFallback?.id ?? null,
+          chain: provider.id === "openrouter" ? FREE_MODEL_CHAIN : [],
+        });
+        const byId = new Map<string, AIProviderAdapter>();
+        byId.set(provider.id, provider);
+        if (usableFallback) byId.set(usableFallback.id, usableFallback);
+        const sequence: AIProviderAdapter[] = routing.order
+          .map((id) => byId.get(id))
+          .filter((p): p is AIProviderAdapter => Boolean(p));
+        console.error(
+          `[chat] rid=${requestId} routing_decision=${routing.decision} ` +
+            `provider_order=${routing.order.join(">")} ` +
+            `cooled_ratio=${routing.cooledRatio.toFixed(2)} ` +
+            `primary_budget_ms=${routing.primaryBudgetMs ?? "full"}`,
+        );
 
         let pendingError: { error?: string; code: string } | null = null;
         let providerAttempts = 0;
@@ -807,6 +839,15 @@ export async function POST(req: NextRequest) {
             PROVIDER_FALLBACK_BUDGET_MS - phaseElapsed,
             TOTAL_REQUEST_BUDGET_MS - (Date.now() - tStart) - SAVE_RESERVE_MS,
           );
+          /**
+           * ميزانية المزوّد الأول: حدوده الكاملة في الحالة الصحية، وسقف
+           * السبر القصير عند التدهور — أضيقهما مع ما تبقّى من ميزانية المرحلة.
+           */
+          const activeBudget =
+            pi === 0 && routing.primaryBudgetMs !== undefined
+              ? Math.min(routing.primaryBudgetMs, providerBudget)
+              : providerBudget;
+
           if (pi > 0 && providerBudget < MIN_FALLBACK_ATTEMPT_MS) {
             console.error(
               `[chat] rid=${requestId} provider_fallback_skipped budget_ms=${providerBudget}`,
@@ -826,8 +867,8 @@ export async function POST(req: NextRequest) {
             maxTokens: resolved.maxOutputTokens,
             // السقف الصارم يُلغي المزوّد فعليًا (لا مجرد تجاهل الرد)
             signal: hardLimit.signal,
-            // سقف يفرضه المسار على المزوّد الاحتياطي — لا يقرّر وحده كم ينتظر
-            budgetMs: pi > 0 ? providerBudget : undefined,
+            // سقف يفرضه المسار — غيابه يعني حدود المزوّد الكاملة
+            budgetMs: pi > 0 || routing.primaryBudgetMs !== undefined ? activeBudget : undefined,
           })) {
             if (chunk.type === "text" && chunk.text) {
               if (providerFirstByteMs < 0) {
@@ -930,6 +971,21 @@ export async function POST(req: NextRequest) {
           }
 
           const gotText = assistantText.trim().length > 0;
+          /**
+           * ★ الصحة تُسجَّل على مستوى **الطلب** لا المحاولة.
+           *
+           * طلبٌ جرّب ثلاثة نماذج وفشلت كلها هو فشل مزوّد **واحد**: النماذج
+           * الثلاثة داخله. وعدّها ثلاثًا يجعل طلبًا واحدًا كافيًا للتدهور،
+           * أي حكمًا على مزوّد من عيّنة طلب واحد.
+           *
+           * والإلغاء لا يُسجَّل أصلًا: اختيار المستخدم ليس حكمًا على أحد.
+           */
+          if (gotText) {
+            recordProviderSuccess(active.id);
+          } else if (!clientAborted && !shortCircuit) {
+            recordProviderTerminalFailure(active.id, lastErrorCode);
+          }
+
           console.error(
             `[chat] rid=${requestId} provider=${active.id} ` +
               `models_attempted=${attemptCount} result=${gotText ? "success" : "failed"}`,

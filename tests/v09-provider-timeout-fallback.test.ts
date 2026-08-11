@@ -357,7 +357,20 @@ describe("④ ميزانية المهل", () => {
   });
 
   it("★ ميزانية السلسلة تُفحص قبل كل محاولة تالية", () => {
-    expect(src).toMatch(/if \(i > 0 && Date\.now\(\) - chainStartedAt >= chainBudgetMs\(\)\)/);
+    // الفحص قائم أيًّا كان اسم حامل الميزانية — المقصد أن يقع قبل كل محاولة تالية
+    expect(src).toMatch(/if \(i > 0 && Date\.now\(\) - chainStartedAt >= \w+\)/);
+  });
+
+  /**
+   * ★ والميزانية الفعّالة أضيق الاثنين: ثابت السلسلة، وسقفٌ يفرضه المسار.
+   *
+   * التوجيه الذكي (v0.9.1) يُمرّر سقفًا أقصر حين يكون المزوّد متدهورًا.
+   * والثابت `CHAIN_BUDGET_MS = 45_000` لا يتغيّر، وغياب السقف يعني الحدود
+   * الكاملة كما كانت — فالمسار الصحيح لا يتأثر بشيء.
+   */
+  it("★ سقف المسار لا يتجاوز ثابت السلسلة ولا يستبدله", () => {
+    expect(src).toContain("export const CHAIN_BUDGET_MS = 45_000;");
+    expect(src).toMatch(/Math\.min\(\s*chainBudgetMs\(\),\s*req\.budgetMs \?\? Number\.POSITIVE_INFINITY/);
   });
 });
 
