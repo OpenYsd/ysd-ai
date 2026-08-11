@@ -269,6 +269,19 @@ interface AttemptResult {
    * تُوجّهه إلى شبكته، و«استغرق وقتًا أطول» تصف ما جرى فعلًا — مزوّد تلكّأ.
    */
   timedOut?: boolean;
+  /**
+   * قياسات تشخيصية للمحاولة (v0.9.0) — **أرقام ورموز فقط**.
+   *
+   * الحادثة الأخيرة تعذّر تشخيصها لأن السجل لم يقل أين انقضت المهلة، ولا هل
+   * وصل شيء من المزوّد أصلًا. هذه الحقول تقولها بلا أي محتوى.
+   */
+  timeoutStage?: "before_response" | "first_content" | "stream_idle" | "none";
+  /** هل عادت استجابة HTTP (ترويسات) قبل انتهاء المحاولة؟ */
+  headersReceived?: boolean;
+  /** عدد إطارات SSE المقروءة — عددًا لا مضمونًا */
+  sseFrameCount?: number;
+  /** مجموع أطوال المحتوى النصّي الواصل — طولًا لا نصًّا */
+  contentByteCount?: number;
   /** سبب الإنهاء كما أرسله المزوّد — للتسجيل الآمن فقط */
   finishReason?: string | null;
   /** هل أرسل النموذج تفكيرًا داخليًا؟ قيمة منطقية فقط — لا يُعرض ولا يُحفظ */
@@ -807,9 +820,23 @@ export class OpenRouterProvider implements AIProviderAdapter {
 
       // سجل آمن: معرّف النموذج ونوع الخطأ ومدة التهدئة فقط —
       // لا مفاتيح ولا نص المستخدم ولا جسم رد الموفر.
+      /**
+       * سجلّ منظّم لكل محاولة — أرقامٌ ورموز فقط.
+       *
+       * الحادثة الأخيرة عجزتُ عن تشخيصها لأن السجل لم يقل **أين** انقضت
+       * المهلة: قبل أي استجابة، أم بعدها بلا محتوى مفيد، أم بعد سكون البثّ.
+       * والفرق يفصل «المزوّد رفض» عن «المزوّد قبِل ثم لم ينتج».
+       *
+       * ولا يعبر من هنا موجّه ولا نصّ ردّ ولا اسم ملف ولا محتوى مستخدم ولا
+       * مفتاح: معرّف نموذج، ورمز حالة، ونوع، وعدّادات.
+       */
       console.error(
         `[openrouter] attempt failed: model=${model} status=${result.httpStatus ?? "?"} ` +
-          `kind=${lastError.kind}${reason ? ` cooldown=${reason} cooldown_ms=${cooledMs}` : " cooldown=none"}`,
+          `kind=${lastError.kind}${reason ? ` cooldown=${reason} cooldown_ms=${cooledMs}` : " cooldown=none"} ` +
+          `attempt_index=${i} timeout_stage=${result.timeoutStage ?? "none"} ` +
+          `headers_received=${result.headersReceived === true} ` +
+          `sse_frame_count=${result.sseFrameCount ?? 0} ` +
+          `content_byte_count=${result.contentByteCount ?? 0}`,
       );
     }
 
@@ -1074,6 +1101,24 @@ export class OpenRouterProvider implements AIProviderAdapter {
      * 200/250، أي أن الفعّال كان 250 لا 200.
      */
     let sawContent = false;
+    /**
+     * مرحلة المهلة — تتحرّك مع تقدّم المحاولة.
+     *
+     * تبدأ `before_response` لأن المؤقّت يُسلَّح **قبل** `fetch`: انقضاؤه هنا
+     * يعني أننا لم نتلقَّ استجابة بعد. ثم `first_content` بعد وصول الترويسات
+     * وقبل أول محتوى مفيد، ثم `stream_idle` بعد أن يبدأ المحتوى.
+     */
+    let timeoutStage: "before_response" | "first_content" | "stream_idle" = "before_response";
+    let headersReceived = false;
+    let sseFrameCount = 0;
+    let contentByteCount = 0;
+    /** لقطة القياسات — تُرفق بكل مخرج من مخارج المحاولة */
+    const telemetry = () => ({
+      timeoutStage: timeout.signal.aborted ? timeoutStage : ("none" as const),
+      headersReceived,
+      sseFrameCount,
+      contentByteCount,
+    });
     let timeoutId = setTimeout(() => timeout.abort(), firstByteTimeoutMs());
     const armIdle = () => {
       if (!sawContent) return; // لم يصل محتوى بعد — مهلة أول بايت قائمة
@@ -1084,6 +1129,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
     const markFirstContent = () => {
       if (sawContent) return;
       sawContent = true;
+      timeoutStage = "stream_idle";
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => timeout.abort(), idleMs);
     };
@@ -1132,8 +1178,11 @@ export class OpenRouterProvider implements AIProviderAdapter {
       req.signal?.removeEventListener("abort", onClientAbort);
       if (req.signal?.aborted) return { status: "aborted" };
       // مهلتنا نحن (أول بايت/خمول) تُميَّز عن انقطاع الشبكة — كلاهما قابل للإعادة
-      return { status: "network_error", timedOut: timeout.signal.aborted };
+      return { status: "network_error", timedOut: timeout.signal.aborted, ...telemetry() };
     }
+    headersReceived = true;
+    // الترويسات وصلت: ما بعدها انتظارٌ لمحتوى مفيد لا انتظارٌ لاستجابة
+    if (!sawContent) timeoutStage = "first_content";
     // ملاحظة (v0.6.6 RC2): المهلة تبقى **مسلّحة** حتى نهاية قراءة البثّ.
     // كانت تُلغى هنا فور وصول الترويسات، فمزوّد يرسل الترويسات بسرعة ثم يتلكّأ
     // في الجسم كان يتجاوز أي سقف: قِيس حيًّا 85.7 ثانية رغم ميزانية 45 ثانية.
@@ -1153,6 +1202,7 @@ export class OpenRouterProvider implements AIProviderAdapter {
         httpStatus: res.status,
         errorRaw: raw,
         retryAfterMs: parseRetryAfterMs(res.headers.get("retry-after")),
+        ...telemetry(),
       };
     }
 
@@ -1241,7 +1291,9 @@ export class OpenRouterProvider implements AIProviderAdapter {
             reasoningPresent = true;
           }
 
+          sseFrameCount++;
           const text = choice?.delta?.content;
+          if (typeof text === "string") contentByteCount += text.length;
           if (!text) continue;
           // ★ هنا وحده «بدأ التوليد»: محتوى فعلي لا إطار وصفي
           markFirstContent();

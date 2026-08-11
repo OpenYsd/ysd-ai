@@ -354,9 +354,9 @@ describe("② مصفوفة السيناريوهات", () => {
      * الزمن ≈ مهلتين، والرمز من آخر فشل — وهو ما رُصد حيًّا بالضبط:
      * ≈39.4 ثانية مع `provider_unavailable`.
      */
-    expect(calls.length).toBe(4);
+    expect(calls.length).toBe(FREE_MODEL_CHAIN.length);
     expect(r.errorCode).toBe("provider_unavailable");
-    expect(r.providerAttemptCount).toBe(4);
+    expect(r.providerAttemptCount).toBe(FREE_MODEL_CHAIN.length);
     expect(r.routeAttemptCount).toBe(0); // ← ما رُصد حيًّا
     // الزمن يقارب مهلتين لا ثلاثًا: الثالثة تفشل فورًا
     expect(r.elapsedMs).toBeGreaterThanOrEqual(TEST_FIRST_BYTE_MS * 2 * 0.8);

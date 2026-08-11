@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { ERROR_MESSAGES, type ChatErrorCode } from "@/lib/ai/error-codes";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
@@ -919,6 +920,32 @@ export async function POST(req: NextRequest) {
           lastErrorCode = "timeout";
         }
 
+        /**
+         * ★ فشل طرفي بلا نص ⇒ أثرٌ مفهوم داخل المحادثة، لا فراغ.
+         *
+         * كانت الرسالة تُعرض لافتةً في حالة العميل فقط. وحالة العميل لا تصمد:
+         * أول رسالة في محادثة جديدة تنتقل من `/chat` إلى `/chat/<id>`، وهناك
+         * `key={id}` يُعيد تركيب المكوّن فتُمحى اللافتة لحظة انتهاء الطلب —
+         * وهذا ما رُصد في الفيديو: سؤالٌ ثم فراغ. وحتى لو بقيت، فإن F5 يمحوها.
+         *
+         * فيُحفظ الفشل رسالةَ مساعد **معلَّمة ناقصة** بآلية `completion`
+         * القائمة: يراها المستخدم فورًا، وتبقى بعد التحديث، ولا تُعامل إجابةً
+         * ناجحة. ولا يُخترع نظام رسائل جديد.
+         *
+         * الشروط: لا نصّ إطلاقًا، ورمز خطأ قائم، وليس إلغاءً من المستخدم —
+         * فالإلغاء اختيارُه لا عطل، ولا يستحق أثرًا.
+         */
+        let providerFailureNotice = false;
+        if (!assistantText.trim() && lastErrorCode && !clientAborted) {
+          providerFailureNotice = true;
+          const notice = ERROR_MESSAGES[lastErrorCode as ChatErrorCode] ?? ERROR_MESSAGES.unknown;
+          assistantText = notice;
+          completionStatus = "incomplete_provider";
+          completionReason = lastErrorCode;
+          // يصل العميل فورًا كي لا تُحذف الفقاعة الفارغة قبل أن يرى شيئًا
+          send({ type: "text", text: notice });
+        }
+
         // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
         let assistantMessageId: string | null = null;
         // لا تُحفظ رسالة مساعد فارغة أو مسافات فقط
@@ -1006,6 +1033,8 @@ export async function POST(req: NextRequest) {
         if (
           evidenceEnabled &&
           assistantMessageId &&
+          // إشعار فشل المزوّد ليس ردَّ نموذج — لا تُنسب إليه مراجع
+          !providerFailureNotice &&
           !evidenceStream.overflowed &&
           // ردّ مقطوع لا تُنسب إليه مراجع: الكتلة الآلية لم تصل أصلًا
           !timedOut &&

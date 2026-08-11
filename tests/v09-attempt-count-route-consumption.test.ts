@@ -399,14 +399,15 @@ describe("سيناريوهات A–F عبر بثّ المزوّد الحقيقي
     expect(o.chainOutcome).toBe("chain_exhausted");
   });
 
-  it("★ (C) أربعة نداءات ⇒ provider_unavailable · attemptCount=4 · fallback=3", async () => {
+  it("★ (C) كل السلسلة تفشل ⇒ provider_unavailable · attemptCount=3 · fallback=2", async () => {
     vi.stubGlobal("fetch", transport(() => err(503)));
     const o = await runThroughRoute();
     report("C", o);
 
-    expect(o.providerCallsActual).toBe(4);
-    expect(o.attemptCount).toBe(4);
-    expect(o.fallbackCount).toBe(3);
+    // السلسلة ثلاثة نماذج بعد إخراج الميت — والعدّاد يتبعها لا رقمًا ثابتًا
+    expect(o.providerCallsActual).toBe(FREE_MODEL_CHAIN.length);
+    expect(o.attemptCount).toBe(FREE_MODEL_CHAIN.length);
+    expect(o.fallbackCount).toBe(FREE_MODEL_CHAIN.length - 1);
     expect(o.errorCode).toBe("provider_unavailable");
     expect(o.chainOutcome).toBe("chain_exhausted");
   });
