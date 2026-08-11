@@ -2,6 +2,7 @@ import type { AIProviderAdapter, ModelInfo } from "./types";
 import { AnthropicProvider } from "./anthropic";
 import { NineRouterProvider } from "./nine-router";
 import { OpenRouterProvider } from "./openrouter";
+import { GroqProvider } from "./groq";
 
 /**
  * سجل الموفرين — نقطة الإضافة الوحيدة لأي موفر جديد.
@@ -18,6 +19,11 @@ const providers: AIProviderAdapter[] = [
    * يرشّحه، فوجوده هنا لا يغيّر سلوك الإنتاج القائم بشيء.
    */
   new NineRouterProvider(),
+  /**
+   * v0.9.0: Groq — **احتياط فقط**. مُهيّأ متى وُجد `GROQ_API_KEY`، ومخفيّ
+   * دائمًا عن قائمة المستخدم بـ`userSelectable = false`.
+   */
+  new GroqProvider(),
   // new OpenAIProvider(),
   // new GoogleProvider(),
 ];
@@ -26,8 +32,23 @@ export function getConfiguredProviders(): AIProviderAdapter[] {
   return providers.filter((p) => p.isConfigured());
 }
 
+/** المزوّدون الذين يجوز للمستخدم اختيار نماذجهم — الاحتياطيون مستثنون */
+function getSelectableProviders(): AIProviderAdapter[] {
+  return getConfiguredProviders().filter((p) => p.userSelectable !== false);
+}
+
+/**
+ * المزوّد الاحتياطي: يُستدعى من المسار بعد فشل سلسلة المزوّد الأساسي.
+ *
+ * يتخطّى `getSelectableProviders` عمدًا — فالإخفاء عن المستخدم لا يعني
+ * التعطيل. وغيابه (بلا مفتاح) يعني احتياطًا معطّلًا بلا أي فشل إقلاع.
+ */
+export function getFallbackProvider(): AIProviderAdapter | null {
+  return providers.find((p) => p.userSelectable === false && p.isConfigured()) ?? null;
+}
+
 export function listAvailableModels(): ModelInfo[] {
-  return getConfiguredProviders().flatMap((p) => p.listModels()).filter((m) => m.enabled);
+  return getSelectableProviders().flatMap((p) => p.listModels()).filter((m) => m.enabled);
 }
 
 /** خيارات النماذج للواجهة: النموذج + اسم موفره — بترتيب الموفرين */
@@ -47,7 +68,7 @@ export interface ModelOption {
 }
 
 export function listModelOptions(): ModelOption[] {
-  return getConfiguredProviders().flatMap((p) =>
+  return getSelectableProviders().flatMap((p) =>
     p
       .listModels()
       .filter((m) => m.enabled)
@@ -63,7 +84,8 @@ export function listModelOptions(): ModelOption[] {
 }
 
 export function resolveProviderForModel(modelId: string): AIProviderAdapter | null {
-  for (const p of getConfiguredProviders()) {
+  // المزوّد الاحتياطي غير قابل للتوجيه المباشر — لا يصله طلب باختيار المستخدم
+  for (const p of getSelectableProviders()) {
     if (p.listModels().some((m) => m.id === modelId && m.enabled)) return p;
   }
   return null;

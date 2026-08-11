@@ -82,6 +82,8 @@ vi.mock("@/lib/ai/budget", () => ({
 }));
 
 vi.mock("@/lib/ai/registry", () => ({
+  // مزوّد احتياطي غير مُهيّأ — المحاكاة تعكس عقد الوحدة كاملًا
+  getFallbackProvider: () => null,
   resolveProviderForModel: () => ({
     id: "test-provider",
     // eslint-disable-next-line require-yield

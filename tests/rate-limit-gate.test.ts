@@ -101,7 +101,8 @@ describe("★ ترتيب الطلب في المسار", () => {
   it("★ الرفض قبل حفظ الرسالة وقبل نداء المزوّد", () => {
     const rlIdx = ROUTE.indexOf("if (!rl.allowed)");
     const insertIdx = ROUTE.indexOf('.insert({ conversation_id: conversationId, role: "user"');
-    const providerIdx = ROUTE.indexOf("provider.streamChat({");
+    // نداء المزوّد أيًّا كان اسم متغيّره — المقصد أن يقع بعد بوابة الحدّ
+    const providerIdx = ROUTE.search(/\.streamChat\(\{/);
     expect(rlIdx).toBeGreaterThan(0);
     expect(insertIdx).toBeGreaterThan(rlIdx);
     expect(providerIdx).toBeGreaterThan(rlIdx);

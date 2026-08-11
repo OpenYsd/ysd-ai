@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
+import type { AIProviderAdapter } from "@/lib/ai/types";
 import { ERROR_MESSAGES, type ChatErrorCode } from "@/lib/ai/error-codes";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
-import { resolveProviderForModel } from "@/lib/ai/registry";
+import { getFallbackProvider, resolveProviderForModel } from "@/lib/ai/registry";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import {
   loadModelPolicy,
@@ -67,6 +68,37 @@ import {
  * 100ث، ونريد أن ننهي الرد بأنفسنا برسالة واضحة بدل قطع صامت من وسيط.
  */
 const TOTAL_REQUEST_BUDGET_MS = 110_000;
+
+/**
+ * سقف **مرحلة المزوّدين كلها** — OpenRouter ثم الاحتياط (v0.9.0).
+ *
+ * سلسلة OpenRouter وحدها 45 ثانية، والاحتياط 30 — أي 75 لو جُمعا بلا سقف،
+ * وهو انتظارٌ يجعل الفشل أسوأ من الفشل السريع. هذا الحدّ يقصّ المجموع عند
+ * 65، فيأخذ الاحتياط ما تبقّى لا مدّته كاملة.
+ *
+ * ولا يمسّ الحدود الأربعة القائمة: هو سقفٌ فوقها لا تعديلٌ لها.
+ */
+const PROVIDER_FALLBACK_BUDGET_MS = 65_000;
+
+/** وقتٌ محجوز للحفظ والإنهاء بعد آخر مزوّد — لا يُقتطع منه */
+const SAVE_RESERVE_MS = 10_000;
+
+/** دون هذا لا تُبدأ محاولة احتياط: نُوفّر النداء بدل أن نقطعه فورًا */
+const MIN_FALLBACK_ATTEMPT_MS = 5_000;
+
+/**
+ * رموز الأخطاء التي **تستحق** مزوّدًا آخر — قائمة سماح لا منع.
+ *
+ * كلها أعطالُ مزوّد يملك مزوّدٌ مستقل أن ينجح مكانه. وما عداها — طلب غير
+ * صالح، سياق أطول من الحدّ، رفض سلامة، سقوط حارس جودة — يفشل عند الجميع،
+ * فتجريبه ثانيةً إهدارٌ لثلاثين ثانية من انتظار المستخدم بلا احتمال نجاح.
+ */
+const PROVIDER_FALLBACK_CODES: ReadonlySet<string> = new Set([
+  "provider_unavailable", // يشمل auth وinsufficient_credit الخاصّين بـOpenRouter
+  "timeout",
+  "rate_limit",
+  "network_error",
+]);
 
 /**
  * سقف المصادر الموثّقة لكل رد (v0.9.0).
@@ -578,7 +610,7 @@ export async function POST(req: NextRequest) {
    * وحده، لا يُحفظ ولا يُسجَّل ولا يصل العميل.
    */
   let assistantText = "";
-  const evidenceStream = createEvidenceStream({ enabled: evidenceEnabled });
+  let evidenceStream = createEvidenceStream({ enabled: evidenceEnabled });
   /**
    * تشخيص الأدلة — أرقام ورموز فقط، يُكتب في metadata بعد اكتمال المعالجة.
    * `null` يعني أن المسار لم يعمل أصلًا (لا مصادر، أو ردّ ناقص، أو إجهاض).
@@ -708,112 +740,225 @@ export async function POST(req: NextRequest) {
           timedOut = true;
           throw new Error('deadline_exceeded_before_provider');
         }
-        for await (const chunk of provider.streamChat({
-          modelId: effectiveModelId,
-          messages: history,
-          systemPrompt,
-          grounding,
-          // لاتينية المصادر ليست تسريبًا لغويًا (v0.9.0)
-          sourceVocabulary,
-          // سقف الإخراج من usage_limits لا ثابتًا في المحوّل — يضبط كلفة
-          // الطلب الواحد مركزيًا لكل خطة
-          maxTokens: resolved.maxOutputTokens,
-          // السقف الصارم يُلغي المزوّد فعليًا (لا مجرد تجاهل الرد)
-          signal: hardLimit.signal,
-        })) {
-          if (chunk.type === "text" && chunk.text) {
-            if (providerFirstByteMs < 0) {
-              providerFirstByteMs = Date.now() - tProvider;
-              totalFirstTokenMs = Date.now() - tStart;
-            }
-            // أول نص وصل — النبضة لم تعد لازمة
-            stopKeepAlive();
-            /**
-             * المرشّح يحتجز السطر الجاري في Evidence Mode، فقد تعود دفعةٌ
-             * فارغة. الشرط يمنع إرسال إطار `text` بلا نصّ — والوضع العادي
-             * يُعيد الدفعة كما هي فلا يتغيّر شيء.
-             */
-            const visible = evidenceStream.push(chunk.text);
-            if (visible) {
-              assistantText += visible;
-              send({ type: "text", text: visible });
-            }
-          } else if (chunk.type === "status" && chunk.text) {
-            // حالة تحقّق قصيرة — تُعرض فورًا ولا تُحفظ ضمن نص الرد
-            if (statusMs < 0) statusMs = Date.now() - tProvider;
-            send({ type: "status", text: chunk.text });
-          } else if (chunk.type === "done" && chunk.completion) {
-            completionStatus = chunk.completion;
-            completionReason = chunk.completionReason ?? null;
-          } else if (chunk.type === "meta") {
-            /**
-             * ★ قراءة القياسات **لا تشترط** وجود `model`.
-             *
-             * كان الفرع كله مشروطًا بـ`chunk.model`، والحدث الختامي للسلسلة
-             * لا يحمل نموذجًا — لأنه لا يخصّ نموذجًا بعينه بل نهاية السلسلة.
-             * فكان يُرفض بأكمله ويبقى `attemptCount = 0` مهما جرى من احتياط،
-             * ومنه `fallback_count = 0` دائمًا. رُصد حيًّا ثلاث مرات، وأضاع
-             * تشخيص حادثتين قبل أن يُكتشف.
-             *
-             * الحقول الخاصة بالنموذج تبقى داخل حارسها، والقياسات تخرج منه:
-             * لكلٍّ شرطه الذي يخصّه وحده.
-             */
-            if (chunk.model) {
-              /**
-               * v0.8.0 — النموذج الفعلي يُثبَّت عند أول نص.
-               *
-               * fallback **قبل** أول text مشروع: السلسلة تجرّب نموذجًا ثم آخر
-               * ولا شيء وصل المستخدم بعد. أما بعد أول text فتغيير النموذج يعني
-               * ردًّا واحدًا منسوبًا إلى نموذجين — وهو ما يجعل actual_model
-               * المحفوظ كذبًا لا يمكن كشفه لاحقًا. نتجاهله ونسجّله.
-               */
-              if (providerFirstByteMs >= 0 && actualModelId && chunk.model !== actualModelId) {
-                console.error(
-                  `[chat] rid=${requestId} model_switch_after_text_ignored ` +
-                    `kept=${actualModelId} rejected=${chunk.model}`,
-                );
-              } else {
-                actualModelId = chunk.model;
-              }
-              // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
-              send({ type: "meta", model: chunk.model });
-            }
+        /**
+         * ★ حلقة **المزوّدين** — طبقة فوق سلسلة النماذج لا داخلها.
+         *
+         * سلسلة OpenRouter تبقى كما هي تمامًا: ترتيبها ومهلها وتهدئتها
+         * وبوابة سبرها و`attemptCount` و`fallback_count`. وهذه الحلقة تجرّب
+         * **مزوّدًا آخر بمفتاح آخر** بعد أن تفشل تلك بكاملها.
+         *
+         * والفصل في المعنى مقصود: `fallback_count` يبقى «كم نموذجًا جُرّب
+         * داخل مزوّد»، و`provider_fallback_count` «كم مزوّدًا جُرّب». خلطهما
+         * كان سيجعل الرقم الواحد يعني شيئين.
+         */
+        const providerPhaseStart = Date.now();
+        const sequence: AIProviderAdapter[] = [provider];
+        const fallbackProvider = getFallbackProvider();
+        if (fallbackProvider && fallbackProvider.id !== provider.id) sequence.push(fallbackProvider);
 
-            if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
-            if (typeof chunk.chainOutcome === "string") chainOutcome = chunk.chainOutcome;
-            if (chunk.mode) answerMode = chunk.mode;
-            if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
-            if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
-            // حقول داخلية فقط — تُسجَّل ولا تُرسل للعميل
-            if (chunk.groundingSource) groundingSource = chunk.groundingSource;
-            if (typeof chunk.protectedDetailBlocked === "boolean") {
-              protectedDetailBlocked = chunk.protectedDetailBlocked;
-            }
-            if (typeof chunk.shortCircuit === "boolean") shortCircuit = chunk.shortCircuit;
-            if (typeof chunk.providerCalls === "number") providerCalls = chunk.providerCalls;
-          } else if (chunk.type === "usage" && chunk.usage) {
-            /**
-             * v0.8.0 — الاستهلاك يُجمَّع ويُكتب **مرة واحدة** بعد البثّ.
-             *
-             * كان الإدراج يقع هنا لحظة وصول كل chunk. رُصد حيًّا على 9Router:
-             * بثّ واحد أرسل إطارَي usage بقيَم مختلفة، فنتج صفّان في
-             * usage_events لطلب واحد — محاسبة مضاعفة على المستخدم.
-             *
-             * أُصلح المحوّل ليجمعها، لكن الإصلاح هناك يحمي مزوّدًا واحدًا:
-             * أي مزوّد لاحق يرسل إطارين يعيد العطل نفسه. الحارس هنا بنيوي
-             * ويغطّي كل المزوّدين. usage في واجهة OpenAI تراكمي، فآخر قيمة
-             * هي الإجمالي الصحيح.
-             */
-            pendingUsage = {
-              inputTokens: chunk.usage.inputTokens,
-              outputTokens: chunk.usage.outputTokens,
-            };
-            usageFrameCount++;
-          } else if (chunk.type === "error") {
-            // الرمز يسمح للواجهة بعرض رسالة مناسبة لكل حالة بدل «تعذر الاتصال»
-            lastErrorCode = chunk.errorCode ?? "unknown";
-            send({ type: "error", error: chunk.error, code: lastErrorCode });
+        let pendingError: { error?: string; code: string } | null = null;
+        let providerAttempts = 0;
+        let selectedProvider = provider.id;
+
+        /**
+         * ★ تصفير حالة المحاولة — **دالة واحدة** لا أسطر متفرقة.
+         *
+         * أي متغيّر يُنسى هنا يُسرّب أثر محاولة فاشلة إلى الردّ الناجح: نصًّا
+         * نصفيًّا، أو استهلاكًا يُحاسَب عليه المستخدم، أو مرشّح استشهادات من
+         * مزوّد لم يُجب. جمعُها في مكان واحد يجعل النسيان مرئيًّا.
+         */
+        const resetAttemptState = () => {
+          assistantText = "";
+          evidenceStream = createEvidenceStream({ enabled: evidenceEnabled });
+          pendingUsage = null;
+          usageFrameCount = 0;
+          actualModelId = null;
+          providerFirstByteMs = -1;
+          totalFirstTokenMs = -1;
+          statusMs = -1;
+          lastErrorCode = null;
+          pendingError = null;
+          attemptCount = 0;
+          chainOutcome = "unknown";
+          providerCalls = -1;
+          regenerations = 0;
+          emptyCompletions = 0;
+          completionStatus = null;
+          completionReason = null;
+          protectedDetailBlocked = false;
+          shortCircuit = false;
+          answerMode = "general";
+          timedOut = false;
+        };
+
+        for (let pi = 0; pi < sequence.length; pi++) {
+          const active = sequence[pi]!;
+          providerAttempts = pi + 1;
+          selectedProvider = active.id;
+          if (pi > 0) resetAttemptState();
+
+          /**
+           * ميزانية المزوّد = الأضيق من ثلاثة: سقف مرحلة المزوّدين كلها،
+           * وما تبقّى من ميزانية الطلب بعد حجز وقت الحفظ، وحدّ المزوّد نفسه.
+           * فلا يضيف الاحتياط انتظارًا مفتوحًا بعد انتهاء الأول.
+           */
+          const phaseElapsed = Date.now() - providerPhaseStart;
+          const providerBudget = Math.min(
+            PROVIDER_FALLBACK_BUDGET_MS - phaseElapsed,
+            TOTAL_REQUEST_BUDGET_MS - (Date.now() - tStart) - SAVE_RESERVE_MS,
+          );
+          if (pi > 0 && providerBudget < MIN_FALLBACK_ATTEMPT_MS) {
+            console.error(
+              `[chat] rid=${requestId} provider_fallback_skipped budget_ms=${providerBudget}`,
+            );
+            break;
           }
+
+          for await (const chunk of active.streamChat({
+            modelId: effectiveModelId,
+            messages: history,
+            systemPrompt,
+            grounding,
+            // لاتينية المصادر ليست تسريبًا لغويًا (v0.9.0)
+            sourceVocabulary,
+            // سقف الإخراج من usage_limits لا ثابتًا في المحوّل — يضبط كلفة
+            // الطلب الواحد مركزيًا لكل خطة
+            maxTokens: resolved.maxOutputTokens,
+            // السقف الصارم يُلغي المزوّد فعليًا (لا مجرد تجاهل الرد)
+            signal: hardLimit.signal,
+            // سقف يفرضه المسار على المزوّد الاحتياطي — لا يقرّر وحده كم ينتظر
+            budgetMs: pi > 0 ? providerBudget : undefined,
+          })) {
+            if (chunk.type === "text" && chunk.text) {
+              if (providerFirstByteMs < 0) {
+                providerFirstByteMs = Date.now() - tProvider;
+                totalFirstTokenMs = Date.now() - tStart;
+              }
+              // أول نص وصل — النبضة لم تعد لازمة
+              stopKeepAlive();
+              /**
+               * المرشّح يحتجز السطر الجاري في Evidence Mode، فقد تعود دفعةٌ
+               * فارغة. الشرط يمنع إرسال إطار `text` بلا نصّ — والوضع العادي
+               * يُعيد الدفعة كما هي فلا يتغيّر شيء.
+               */
+              const visible = evidenceStream.push(chunk.text);
+              if (visible) {
+                assistantText += visible;
+                send({ type: "text", text: visible });
+              }
+            } else if (chunk.type === "status" && chunk.text) {
+              // حالة تحقّق قصيرة — تُعرض فورًا ولا تُحفظ ضمن نص الرد
+              if (statusMs < 0) statusMs = Date.now() - tProvider;
+              send({ type: "status", text: chunk.text });
+            } else if (chunk.type === "done" && chunk.completion) {
+              completionStatus = chunk.completion;
+              completionReason = chunk.completionReason ?? null;
+            } else if (chunk.type === "meta") {
+              /**
+               * ★ قراءة القياسات **لا تشترط** وجود `model`.
+               *
+               * كان الفرع كله مشروطًا بـ`chunk.model`، والحدث الختامي للسلسلة
+               * لا يحمل نموذجًا — لأنه لا يخصّ نموذجًا بعينه بل نهاية السلسلة.
+               * فكان يُرفض بأكمله ويبقى `attemptCount = 0` مهما جرى من احتياط،
+               * ومنه `fallback_count = 0` دائمًا. رُصد حيًّا ثلاث مرات، وأضاع
+               * تشخيص حادثتين قبل أن يُكتشف.
+               *
+               * الحقول الخاصة بالنموذج تبقى داخل حارسها، والقياسات تخرج منه:
+               * لكلٍّ شرطه الذي يخصّه وحده.
+               */
+              if (chunk.model) {
+                /**
+                 * v0.8.0 — النموذج الفعلي يُثبَّت عند أول نص.
+                 *
+                 * fallback **قبل** أول text مشروع: السلسلة تجرّب نموذجًا ثم آخر
+                 * ولا شيء وصل المستخدم بعد. أما بعد أول text فتغيير النموذج يعني
+                 * ردًّا واحدًا منسوبًا إلى نموذجين — وهو ما يجعل actual_model
+                 * المحفوظ كذبًا لا يمكن كشفه لاحقًا. نتجاهله ونسجّله.
+                 */
+                if (providerFirstByteMs >= 0 && actualModelId && chunk.model !== actualModelId) {
+                  console.error(
+                    `[chat] rid=${requestId} model_switch_after_text_ignored ` +
+                      `kept=${actualModelId} rejected=${chunk.model}`,
+                  );
+                } else {
+                  actualModelId = chunk.model;
+                }
+                // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
+                send({ type: "meta", model: chunk.model });
+              }
+
+              if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
+              if (typeof chunk.chainOutcome === "string") chainOutcome = chunk.chainOutcome;
+              if (chunk.mode) answerMode = chunk.mode;
+              if (typeof chunk.regenerations === "number") regenerations = chunk.regenerations;
+              if (typeof chunk.emptyCompletions === "number") emptyCompletions = chunk.emptyCompletions;
+              // حقول داخلية فقط — تُسجَّل ولا تُرسل للعميل
+              if (chunk.groundingSource) groundingSource = chunk.groundingSource;
+              if (typeof chunk.protectedDetailBlocked === "boolean") {
+                protectedDetailBlocked = chunk.protectedDetailBlocked;
+              }
+              if (typeof chunk.shortCircuit === "boolean") shortCircuit = chunk.shortCircuit;
+              if (typeof chunk.providerCalls === "number") providerCalls = chunk.providerCalls;
+            } else if (chunk.type === "usage" && chunk.usage) {
+              /**
+               * v0.8.0 — الاستهلاك يُجمَّع ويُكتب **مرة واحدة** بعد البثّ.
+               *
+               * كان الإدراج يقع هنا لحظة وصول كل chunk. رُصد حيًّا على 9Router:
+               * بثّ واحد أرسل إطارَي usage بقيَم مختلفة، فنتج صفّان في
+               * usage_events لطلب واحد — محاسبة مضاعفة على المستخدم.
+               *
+               * أُصلح المحوّل ليجمعها، لكن الإصلاح هناك يحمي مزوّدًا واحدًا:
+               * أي مزوّد لاحق يرسل إطارين يعيد العطل نفسه. الحارس هنا بنيوي
+               * ويغطّي كل المزوّدين. usage في واجهة OpenAI تراكمي، فآخر قيمة
+               * هي الإجمالي الصحيح.
+               */
+              pendingUsage = {
+                inputTokens: chunk.usage.inputTokens,
+                outputTokens: chunk.usage.outputTokens,
+              };
+              usageFrameCount++;
+            } else if (chunk.type === "error") {
+              /**
+               * ★ يُحتجز ولا يُرسل فورًا.
+               *
+               * قد يليه مزوّد احتياطي ينجح، وإرسال الخطأ قبل ذلك يترك المستخدم
+               * أمام لافتة فشل فوق ردٍّ ناجح. يُرسَل بعد أن يُحسم أن لا مزوّد بعده.
+               */
+              lastErrorCode = chunk.errorCode ?? "unknown";
+              pendingError = { error: chunk.error, code: lastErrorCode };
+            }
+          }
+
+          const gotText = assistantText.trim().length > 0;
+          console.error(
+            `[chat] rid=${requestId} provider=${active.id} ` +
+              `models_attempted=${attemptCount} result=${gotText ? "success" : "failed"}`,
+          );
+
+          if (gotText || clientAborted || shortCircuit || req.signal.aborted) break;
+          if (pi + 1 >= sequence.length) break;
+          /**
+           * ★ قائمة سماح صريحة — لا قائمة منع.
+           *
+           * ينتقل الاحتياط عند خطأ يخصّ **المزوّد**: تعذّره، أو مهلته، أو حدّ
+           * معدّله، أو شبكته. وأخطاء حساب OpenRouter داخلة هنا لأن مفتاح
+           * Groq مستقل عنها تمامًا (كلاهما يُصنَّف `provider_unavailable`).
+           *
+           * ولا ينتقل عند خطأ يخصّ **الطلب** — غير صالح، أو سياق أطول من
+           * الحدّ، أو مدخل غير مدعوم، أو رفض سلامة، أو سقوط حارس الجودة.
+           * كلها تُصنَّف `unknown` أو `quality_guard` فتقع خارج القائمة:
+           * إعادتها على مزوّد آخر تُعيد الفشل نفسه وتهدر ثلاثين ثانية من
+           * انتظار المستخدم. وأي رمز جديد يبقى خارج القائمة افتراضًا.
+           */
+          if (!PROVIDER_FALLBACK_CODES.has(lastErrorCode ?? "")) break;
+          console.error(
+            `[chat] rid=${requestId} provider_fallback from=${active.id} reason=${lastErrorCode}`,
+          );
+        }
+
+        // الخطأ المحتجز يُرسل الآن — بعد أن ثبت أن لا مزوّد بعده
+        if (pendingError) {
+          send({ type: "error", error: pendingError.error, code: pendingError.code });
         }
 
         /**
@@ -968,7 +1113,8 @@ export async function POST(req: NextRequest) {
            * يمكن لاحقًا معرفة أي مزوّد أنتج ردًّا بعينه، وهو ما احتجناه
            * أصلًا لتشخيص فروق السلوك بين المزوّدين.
            */
-          meta.provider = provider.id;
+          // المزوّد الذي أجاب فعلًا — لا الذي بدأ الطلب (احتياط v0.9.0)
+          meta.provider = selectedProvider;
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
           if (ragSnippets.length > 0) {
@@ -1236,6 +1382,8 @@ export async function POST(req: NextRequest) {
         console.log(
           `[chat] rid=${requestId} model=${actualModelId ?? effectiveModelId} fallback_count=${fallbackCount} ` +
             `chain_outcome=${chainOutcome} attempts=${attemptCount} ` +
+            `selected_provider=${selectedProvider} provider_attempt_count=${providerAttempts} ` +
+            `provider_fallback_count=${Math.max(0, providerAttempts - 1)} ` +
             `mode=${answerMode} regeneration_count=${regenerations} ` +
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +

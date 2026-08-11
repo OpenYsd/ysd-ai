@@ -390,7 +390,13 @@ describe("⑤ المحاسبة والمقعد لم يتغيّرا", () => {
 
   it("★ Evidence وsourceRegistry وsourceVocabulary تُمرَّر مرة واحدة للمزوّد", () => {
     expect((route.match(/sourceVocabulary,/g) ?? []).length).toBe(1);
-    expect((route.match(/provider\.streamChat\(/g) ?? []).length).toBe(1);
+    /**
+     * نداء بثّ **واحد** في المسار — أيًّا كان اسم متغيّر المزوّد.
+     *
+     * المقصد أن الطلب لا يُبنى مرتين ولا يُمرَّر Evidence مرتين. واحتياط
+     * المزوّدين (v0.9.0) يعيد استعمال نفس النداء داخل حلقة، لا نداءً ثانيًا.
+     */
+    expect((route.match(/\.streamChat\(\{/g) ?? []).length).toBe(1);
     expect(route).toMatch(/EVIDENCE_MODE_INSTRUCTIONS/);
   });
 });

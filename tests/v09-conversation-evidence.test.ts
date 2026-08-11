@@ -26,6 +26,8 @@ vi.mock("@/lib/auth/request-context", () => ({
 
 vi.mock("@/lib/ai/registry", () => ({
   listModelOptions: () => [{ id: "test/model", label: "نموذج" }],
+  // مزوّد احتياطي غير مُهيّأ — المحاكاة تعكس عقد الوحدة كاملًا
+  getFallbackProvider: () => null,
 }));
 
 vi.mock("@/lib/ai/model-policy", () => ({

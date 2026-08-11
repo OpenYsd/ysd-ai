@@ -36,6 +36,13 @@ export interface ChatRequest {
    * غيابها يعني السلوك القديم حرفيًا: بلا مصادر لا ترخيص.
    */
   sourceVocabulary?: ReadonlySet<string>;
+  /**
+   * سقف زمني يفرضه المسار على المزوّد (v0.9.0 — احتياط المزوّدين).
+   *
+   * المزوّد الاحتياطي يبدأ بعد أن استُهلك جزء من ميزانية الطلب، فلا يصحّ أن
+   * يقرّر وحده كم ينتظر. غيابه يعني حدوده الداخلية كما هي.
+   */
+  budgetMs?: number;
 }
 
 export interface UsageReport {
@@ -164,6 +171,14 @@ export interface AIProviderAdapter {
 
   /** قدرات المزوّد — الغياب يعني البثّ مدعوم وما عداه غير مدعوم */
   readonly supportsStreaming?: boolean;
+  /**
+   * هل يظهر للمستخدم في قائمة النماذج؟ (v0.9.0)
+   *
+   * غيابه = نعم (سلوك كل المزوّدين القائمين). و`false` تعني مزوّدًا
+   * **احتياطيًا**: مُهيّأ ويعمل، لكنه لا يُعرض ولا يُختار مباشرة. المفهومان
+   * منفصلان عمدًا — لو أُخفي بتعطيل نماذجه لَتعطّل الاحتياط نفسه.
+   */
+  readonly userSelectable?: boolean;
   readonly supportsTools?: boolean;
   readonly supportsVision?: boolean;
 
