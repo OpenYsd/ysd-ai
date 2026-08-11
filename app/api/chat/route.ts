@@ -744,23 +744,40 @@ export async function POST(req: NextRequest) {
           } else if (chunk.type === "done" && chunk.completion) {
             completionStatus = chunk.completion;
             completionReason = chunk.completionReason ?? null;
-          } else if (chunk.type === "meta" && chunk.model) {
+          } else if (chunk.type === "meta") {
             /**
-             * v0.8.0 — النموذج الفعلي يُثبَّت عند أول نص.
+             * ★ قراءة القياسات **لا تشترط** وجود `model`.
              *
-             * fallback **قبل** أول text مشروع: السلسلة تجرّب نموذجًا ثم آخر
-             * ولا شيء وصل المستخدم بعد. أما بعد أول text فتغيير النموذج يعني
-             * ردًّا واحدًا منسوبًا إلى نموذجين — وهو ما يجعل actual_model
-             * المحفوظ كذبًا لا يمكن كشفه لاحقًا. نتجاهله ونسجّله.
+             * كان الفرع كله مشروطًا بـ`chunk.model`، والحدث الختامي للسلسلة
+             * لا يحمل نموذجًا — لأنه لا يخصّ نموذجًا بعينه بل نهاية السلسلة.
+             * فكان يُرفض بأكمله ويبقى `attemptCount = 0` مهما جرى من احتياط،
+             * ومنه `fallback_count = 0` دائمًا. رُصد حيًّا ثلاث مرات، وأضاع
+             * تشخيص حادثتين قبل أن يُكتشف.
+             *
+             * الحقول الخاصة بالنموذج تبقى داخل حارسها، والقياسات تخرج منه:
+             * لكلٍّ شرطه الذي يخصّه وحده.
              */
-            if (providerFirstByteMs >= 0 && actualModelId && chunk.model !== actualModelId) {
-              console.error(
-                `[chat] rid=${requestId} model_switch_after_text_ignored ` +
-                  `kept=${actualModelId} rejected=${chunk.model}`,
-              );
-            } else {
-              actualModelId = chunk.model;
+            if (chunk.model) {
+              /**
+               * v0.8.0 — النموذج الفعلي يُثبَّت عند أول نص.
+               *
+               * fallback **قبل** أول text مشروع: السلسلة تجرّب نموذجًا ثم آخر
+               * ولا شيء وصل المستخدم بعد. أما بعد أول text فتغيير النموذج يعني
+               * ردًّا واحدًا منسوبًا إلى نموذجين — وهو ما يجعل actual_model
+               * المحفوظ كذبًا لا يمكن كشفه لاحقًا. نتجاهله ونسجّله.
+               */
+              if (providerFirstByteMs >= 0 && actualModelId && chunk.model !== actualModelId) {
+                console.error(
+                  `[chat] rid=${requestId} model_switch_after_text_ignored ` +
+                    `kept=${actualModelId} rejected=${chunk.model}`,
+                );
+              } else {
+                actualModelId = chunk.model;
+              }
+              // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
+              send({ type: "meta", model: chunk.model });
             }
+
             if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
             if (typeof chunk.chainOutcome === "string") chainOutcome = chunk.chainOutcome;
             if (chunk.mode) answerMode = chunk.mode;
@@ -773,8 +790,6 @@ export async function POST(req: NextRequest) {
             }
             if (typeof chunk.shortCircuit === "boolean") shortCircuit = chunk.shortCircuit;
             if (typeof chunk.providerCalls === "number") providerCalls = chunk.providerCalls;
-            // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
-            send({ type: "meta", model: chunk.model });
           } else if (chunk.type === "usage" && chunk.usage) {
             /**
              * v0.8.0 — الاستهلاك يُجمَّع ويُكتب **مرة واحدة** بعد البثّ.
