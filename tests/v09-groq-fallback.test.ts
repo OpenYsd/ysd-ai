@@ -406,3 +406,112 @@ describe("عقد المسار: احتياط المزوّدين", () => {
     expect(ROUTE).toContain("meta.provider = selectedProvider;");
   });
 });
+
+// ════════════════════════════════════════════════════════════
+//  انحدار: التفكير — مقيسٌ على بثّ Groq الحقيقي
+// ════════════════════════════════════════════════════════════
+
+/**
+ * أول تحقّق حيّ (2026-08-11) كشف أن نماذج `gpt-oss` نماذج تفكير: وصلت 24
+ * إطارًا بصفر بايت محتوى فصُنّف الردّ `empty_completion` وهو ليس كذلك.
+ * والقياس حسم السبب: الجواب احتاج 26 رمز إكمال والسقف كان 24.
+ *
+ * هذه الاختبارات تحرس المعاملات التي أصلحته، وتحرس ألّا يتسرّب التفكير.
+ */
+describe("انحدار: معاملات التفكير", () => {
+  const REASONING = "خطوة تفكير داخلية لا يجوز أن تصل المستخدم إطلاقًا";
+
+  /** إطارات تفكير أولًا ثم محتوى — كما يبثّ نموذج تفكير فعلًا */
+  function reasoningThenContent(): Response {
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          const enc = new TextEncoder();
+          for (let i = 0; i < 3; i++) {
+            c.enqueue(
+              enc.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { reasoning: REASONING } }] })}\n\n`,
+              ),
+            );
+          }
+          c.enqueue(
+            enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "YSD" } }] })}\n\n`),
+          );
+          c.enqueue(
+            enc.encode(
+              `data: ${JSON.stringify({ choices: [{ delta: { content: " GROQ OK" } }] })}\n\n`,
+            ),
+          );
+          c.enqueue(enc.encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  }
+
+  it("★ الطلب يُطفئ التفكير ويستعمل سقف الإكمال", async () => {
+    vi.stubGlobal("fetch", transport(() => sse(ARABIC)));
+    await runGroq({ maxTokens: 128 });
+
+    const body = calls[0]!.body;
+    expect(body.include_reasoning).toBe(false);
+    expect(body.reasoning_effort).toBe("low");
+    // ★ سقف **الإكمال** لا سقف الرموز الكلي — الأول لا يخلط التفكير بالجواب
+    expect(body.max_completion_tokens).toBe(128);
+    expect(body.max_tokens).toBeUndefined();
+  });
+
+  it("★ إطارات تفكير ثم محتوى ⇒ المحتوى يصل ولا empty_completion", async () => {
+    vi.stubGlobal("fetch", transport(() => reasoningThenContent()));
+    const r = await runGroq();
+
+    expect(calls).toHaveLength(1); // نجح من أول نموذج
+    expect(r.text).toBe("YSD GROQ OK");
+    expect(r.errorCode).toBeNull();
+    expect(r.chunks.at(-1)!.type).toBe("done");
+  });
+
+  it("★ التفكير لا يتسرّب: لا في البثّ ولا في السجل", async () => {
+    vi.stubGlobal("fetch", transport(() => reasoningThenContent()));
+    const r = await runGroq();
+
+    const everything = JSON.stringify(r.chunks) + "\n" + logs.join("\n");
+    expect(everything).not.toContain(REASONING);
+    expect(everything).not.toContain("reasoning:");
+    // ولا يدخل عقد البثّ حقلًا
+    for (const c of r.chunks) expect(Object.keys(c)).not.toContain("reasoning");
+  });
+
+  it("★ تفكير بلا محتوى ⇒ empty_completion لكنه **قابل للتمييز**", async () => {
+    vi.stubGlobal(
+      "fetch",
+      transport(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                const enc = new TextEncoder();
+                c.enqueue(
+                  enc.encode(
+                    `data: ${JSON.stringify({ choices: [{ delta: { reasoning: REASONING } }] })}\n\n`,
+                  ),
+                );
+                c.enqueue(enc.encode("data: [DONE]\n\n"));
+                c.close();
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "text/event-stream" } },
+          ),
+      ),
+    );
+    await runGroq();
+
+    const line = logs.find((l) => l.includes("[groq] attempt failed")) ?? "";
+    // ★ الفرق الذي أضاع أول تحقّق حيّ: «فكّر ولم يُجب» لا «لم يُرجع شيئًا»
+    expect(line).toContain("kind=empty_completion");
+    expect(line).toContain("reasoning_present=true");
+    expect(line).toContain("content_byte_count=0");
+    expect(line).not.toContain(REASONING);
+  });
+});

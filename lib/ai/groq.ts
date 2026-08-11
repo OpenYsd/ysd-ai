@@ -154,7 +154,7 @@ export class GroqProvider implements AIProviderAdapter {
         `[groq] attempt failed: model=${model} attempt_index=${i} ` +
           `status=${result.httpStatus ?? "?"} kind=${result.kind} ` +
           `headers_received=${result.headersReceived} sse_frame_count=${result.sseFrameCount} ` +
-          `content_byte_count=${result.contentByteCount}`,
+          `content_byte_count=${result.contentByteCount} reasoning_present=${result.reasoningPresent}`,
       );
 
       /**
@@ -188,6 +188,7 @@ export class GroqProvider implements AIProviderAdapter {
       headersReceived: boolean;
       sseFrameCount: number;
       contentByteCount: number;
+      reasoningPresent: boolean;
     }
   > {
     const control = new AbortController();
@@ -195,6 +196,8 @@ export class GroqProvider implements AIProviderAdapter {
     let headersReceived = false;
     let sseFrameCount = 0;
     let contentByteCount = 0;
+    /** هل بثّ النموذج تفكيرًا؟ منطقيّ للسجل — لا يُعرض ولا يُحفظ */
+    let reasoningPresent = false;
 
     // المهلة تُسلَّح قبل fetch: انقضاؤها هنا يعني أن لا استجابة وصلت أصلًا
     let timer = setTimeout(() => control.abort(), Math.min(firstByteMs(), remainingMs));
@@ -223,6 +226,7 @@ export class GroqProvider implements AIProviderAdapter {
       headersReceived,
       sseFrameCount,
       contentByteCount,
+      reasoningPresent,
     });
 
     let res: Response;
@@ -242,7 +246,23 @@ export class GroqProvider implements AIProviderAdapter {
           ],
           stream: true,
           stream_options: { include_usage: true },
-          max_tokens: req.maxTokens ?? 2048,
+          /**
+           * ★ التفكير مُطفأ، والسقف سقفُ **إكمال**.
+           *
+           * قِيس حيًّا (2026-08-11): نماذج `gpt-oss` على Groq نماذج تفكير.
+           * بلا هذه المعاملات استُهلك السقف في التفكير قبل أن يبدأ الجواب،
+           * فوصلت 24 إطارًا بصفر بايت محتوى وصُنّف الردّ `empty_completion`
+           * وهو ليس كذلك. والقياس حسم الأمر: الجواب احتاج 26 رمز إكمال
+           * بينما كان السقف 24 — أي أن القطع وقع قبل أول حرف.
+           *
+           * `max_completion_tokens` هي الحقل الصحيح لهذه النماذج: يحدّ
+           * الإكمال وحده، بينما `max_tokens` يخلط التفكير بالجواب.
+           * و`reasoning_effort: "low"` يُبقي زمن الاستجابة قصيرًا — والاحتياط
+           * يبدأ أصلًا بعد أن استُهلك جزء كبير من ميزانية الطلب.
+           */
+          include_reasoning: false,
+          reasoning_effort: "low",
+          max_completion_tokens: req.maxTokens ?? 2048,
           temperature: req.temperature ?? 0.3,
           top_p: 0.9,
         }),
@@ -296,7 +316,7 @@ export class GroqProvider implements AIProviderAdapter {
           if (payload === "[DONE]") continue;
 
           let parsed: {
-            choices?: { delta?: { content?: string } }[];
+            choices?: { delta?: { content?: string; reasoning?: string; reasoning_content?: string } }[];
             usage?: { prompt_tokens?: number; completion_tokens?: number };
             x_groq?: { usage?: { prompt_tokens?: number; completion_tokens?: number } };
           };
@@ -317,7 +337,17 @@ export class GroqProvider implements AIProviderAdapter {
             };
           }
 
-          const text = parsed.choices?.[0]?.delta?.content;
+          /**
+           * ★ التفكير يُعدّ ولا يُبثّ ولا يُخزَّن.
+           *
+           * قيمة **منطقية** فقط للسجل — ولا يدخل `reasoning` عقد البثّ في
+           * YSD إطلاقًا. فائدتها تشخيصية بحتة: تفصل «فكّر ولم يُجب» عن
+           * «لم يُرجع شيئًا»، وهو الالتباس الذي أضاع أول تحقّق حيّ.
+           */
+          const delta = parsed.choices?.[0]?.delta;
+          if (delta?.reasoning || delta?.reasoning_content) reasoningPresent = true;
+
+          const text = delta?.content;
           if (!text) continue;
           contentByteCount += text.length;
           markFirstContent();
@@ -333,7 +363,15 @@ export class GroqProvider implements AIProviderAdapter {
       if (emittedAny) {
         if (usage) yield { type: "usage", usage };
         yield { type: "done" };
-        return { status: "ok", kind: "ok", httpStatus: 200, headersReceived, sseFrameCount, contentByteCount };
+        return {
+          status: "ok",
+          kind: "ok",
+          httpStatus: 200,
+          headersReceived,
+          sseFrameCount,
+          contentByteCount,
+          reasoningPresent,
+        };
       }
       return fail(control.signal.aborted ? "timeout" : "network", 200);
     } finally {
@@ -354,6 +392,7 @@ export class GroqProvider implements AIProviderAdapter {
       headersReceived,
       sseFrameCount,
       contentByteCount,
+      reasoningPresent,
     };
   }
 }
