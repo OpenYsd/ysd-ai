@@ -532,17 +532,38 @@ describe("L–P — عدم الانحدار", () => {
   });
 
   it("★ التشخيص أرقام فقط — لا اقتباس ولا اسم ملف", () => {
-    const block = ROUTE.slice(
-      ROUTE.indexOf("recoveryReason,"),
-      ROUTE.indexOf("recoveryReason,") + 400,
-    );
+    /**
+     * الكتلة **كاملة** لا نافذة بعدد أحرف ثابت.
+     *
+     * النافذة الثابتة تنكسر كلّما أُضيف حقل تشخيصي، فتُخفي ما وُضعت لحراسته.
+     * الموازنة بالأقواس تصف المقصد: «كائن التشخيص المحفوظ» لا «أربعمئة حرف».
+     */
+    const start = ROUTE.indexOf("evidenceDiagnostics = {");
+    let i = ROUTE.indexOf("{", start);
+    let depth = 0;
+    let end = i;
+    for (; end < ROUTE.length; end++) {
+      if (ROUTE[end] === "{") depth++;
+      else if (ROUTE[end] === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    const block = ROUTE.slice(i, end + 1);
     expect(block).toContain("partialRecoveryRequestedSegments");
     expect(block).toContain("partialRecoveryRecoveredSegments");
     expect(block).toContain("partialRecoveryFailedSegments");
     expect(block).toContain(".length");
-    for (const bad of ["quote", "fileName", "content", "snippet"]) {
-      expect(block).not.toContain(bad);
-    }
+    /**
+     * الممنوع هو **المحتوى** لا الكلمة.
+     *
+     * `quoteCandidates.length` عدّادٌ مشروع؛ ومنعُه لأن اسمه يحوي «quote»
+     * حارسٌ يقيس الحروف لا المعنى. الممنوع: أي تعبير يُخرج نصًّا فعليًّا.
+     */
+    expect(block).not.toMatch(/\.quote(?!Candidates)/); // نصّ الاقتباس نفسه
+    expect(block).not.toMatch(/fileName|snippet\.content|\.rawText|assistantText|userText/);
+    // وكل قيمة إمّا عدّاد أو منطقيّ أو رمز مغلق
+    expect(block).toMatch(/quoteCandidates\.length/);
   });
 });
 

@@ -54,6 +54,7 @@ import {
   type RecoveryPromptBudget,
   type RecoveryReason,
   type RecoveryStatus,
+  type RecoveryTelemetry,
 } from "@/lib/evidence/evidence-recovery";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
@@ -1278,6 +1279,8 @@ export async function POST(req: NextRequest) {
             let partialFailed: number[] = [];
             let partialBudget: RecoveryPromptBudget | null = null;
             let partialLinksReturned = 0;
+            /** قياسات الاسترداد — تُملأ من المسار الذي جرى فعلًا */
+            let recoveryTel: RecoveryTelemetry | null = null;
 
             /**
              * ★ المزوّد الذي أجاب — لا معرّف نموذج.
@@ -1297,6 +1300,7 @@ export async function POST(req: NextRequest) {
                 signal: req.signal,
               });
               recoveryStatus = recovered.status;
+              recoveryTel = recovered.telemetry;
               // النصّ المعروض لا يتغيّر — يُستبدل الحلّ وحده
               if (recovered.evidence) resolved = recovered.evidence;
             } else if (
@@ -1400,6 +1404,17 @@ export async function POST(req: NextRequest) {
              */
             evidenceDiagnostics = {
               envelopeStatus: envelope.status,
+              /**
+               * ★ سبب مغلق بدل كلمة تجمع عشرة شروط.
+               *
+               * `malformed` وحدها كانت تُخفي أيّ فرع رفض الكتلة، فيتعذّر
+               * التشخيص في اللحظة التي نحتاجه فيها. والتقويم يُسجَّل منفصلًا
+               * كي يبقى السبب الأصلي ظاهرًا لا مستبدَلًا به.
+               */
+              envelopeReason: envelope.reason,
+              sentinelStatus: envelope.sentinelStatus,
+              sentinelRepairApplied: envelope.sentinelRepairApplied,
+              repairedButInvalid: envelope.repairedButInvalid,
               requestedMarkers: resolved.stats.requestedMarkers,
               candidateCount: envelope.quoteCandidates.length,
               verifiedSources: resolved.stats.verifiedSources,
@@ -1410,6 +1425,13 @@ export async function POST(req: NextRequest) {
               recoveryAttempted: recoveryStatus !== "not_needed",
               recoveryStatus,
               recoveryReason,
+              // تفكيك `failed`: ثلاث حالات كانت تُجمع في كلمة واحدة
+              recoveryFailureReason: recoveryTel?.failureReason ?? "none",
+              recoveryProviderCallAttempted: recoveryTel?.providerCallAttempted ?? false,
+              recoveryProviderCallSucceeded: recoveryTel?.providerCallSucceeded ?? false,
+              recoveryLinksReturned: recoveryTel?.linksReturned ?? 0,
+              recoveryLinksScoped: recoveryTel?.linksScoped ?? 0,
+              recoveryVerifiedSources: recoveryTel?.verifiedSources ?? 0,
               // أرقام مقاطع فقط — لا نصّ ولا اقتباس ولا اسم ملف
               partialRecoveryRequestedSegments: partialRequested.length,
               partialRecoveryRecoveredSegments: partialRecovered.length,

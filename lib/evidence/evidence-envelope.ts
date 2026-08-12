@@ -44,6 +44,27 @@ export const EVIDENCE_END_NEAR_MISS = EVIDENCE_END.slice(0, -1);
 /** حالة السنتينل — رمز مغلق للتشخيص، بلا أي محتوى */
 export type SentinelStatus = "canonical" | "repaired_missing_trailing_gt" | "absent";
 
+/**
+ * سبب رفض المظروف — رمز مغلق مشتقّ من فروع المحلّل نفسها.
+ *
+ * `malformed` وحدها كانت تجمع عشرة شروط في كلمة، فيتعذّر التشخيص في اللحظة
+ * التي نحتاجه فيها — نفس عطل `timeout_stage=none`. هذا يقول **أيّها** وقع.
+ *
+ * ولا يُبدَّل السلوك بحرف: كل فرع يعيد ما كان يعيده، ومعه رمزه.
+ */
+export type EnvelopeReason =
+  | "none"
+  | "orphan_end_sentinel"
+  | "duplicate_block"
+  | "start_not_at_line_start"
+  | "missing_end_sentinel"
+  | "text_before_start"
+  | "text_on_first_line"
+  | "text_after_end"
+  | "json_parse_failed"
+  | "schema_invalid"
+  | "too_large";
+
 function repairOne(input: string, near: string, canonical: string): { out: string; hit: boolean } {
   let out = "";
   let i = 0;
@@ -104,6 +125,15 @@ export interface ExtractedEvidenceEnvelope {
   sentinelStatus: SentinelStatus;
   /** هل طُبّق التقويم الضيّق؟ */
   sentinelRepairApplied: boolean;
+  /** سببٌ مغلق للرفض — `none` عند القبول */
+  reason: EnvelopeReason;
+  /**
+   * قُوّم السنتينل ومع ذلك فسدت الكتلة.
+   *
+   * مشتقٌّ لا سببٌ أساسي: إبقاء `reason` على السبب الحقيقي أهمّ من استبداله
+   * بـ«قُوّم ثم فسد» — فذاك يُخفي ما نحتاج معرفته.
+   */
+  repairedButInvalid: boolean;
 }
 
 /** مفاتيح تلوّث النموذج الأولي — تُرفض أينما ظهرت */
@@ -238,31 +268,42 @@ function readQuoteEntry(entry: unknown): EvidenceEnvelopeQuote | null {
 }
 
 /** يقرأ جسم الكتلة — يُعيد المرشّحين أو null لأي مخالفة */
-function readEnvelopeBody(json: string): EvidenceEnvelopeQuote[] | null {
+type EnvelopeBodyResult =
+  | { ok: true; quotes: EvidenceEnvelopeQuote[] }
+  | { ok: false; reason: "json_parse_failed" | "schema_invalid" };
+
+/**
+ * ★ الفشلان مفصولان: تحليل JSON شيء، ومطابقة العقد شيء آخر.
+ *
+ * جمعُهما في `null` واحد كان يُخفي أيّهما وقع — ونموذجٌ يُنتج JSON صالحًا
+ * بعقد خاطئ يحتاج علاجًا غير الذي يُنتج نصًّا غير قابل للتحليل أصلًا.
+ * والقرار النهائي لم يتغيّر: كلاهما يُرفض.
+ */
+function readEnvelopeBody(json: string): EnvelopeBodyResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json) as unknown;
   } catch {
-    return null; // JSON صارم — ولا محاولة إنقاذ
+    return { ok: false, reason: "json_parse_failed" }; // JSON صارم — ولا محاولة إنقاذ
   }
 
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false, reason: "schema_invalid" };
 
   const keys = Object.keys(parsed as Record<string, unknown>);
   // `quotes` وحدها — حقلٌ زائد يعني عقدًا غير الذي اتفقنا عليه
-  if (keys.length !== 1 || keys[0] !== "quotes") return null;
+  if (keys.length !== 1 || keys[0] !== "quotes") return { ok: false, reason: "schema_invalid" };
 
   const { quotes } = parsed as { quotes: unknown };
-  if (!Array.isArray(quotes)) return null;
-  if (quotes.length > MAX_ENVELOPE_CANDIDATES) return null;
+  if (!Array.isArray(quotes)) return { ok: false, reason: "schema_invalid" };
+  if (quotes.length > MAX_ENVELOPE_CANDIDATES) return { ok: false, reason: "schema_invalid" };
 
   const out: EvidenceEnvelopeQuote[] = [];
   for (const entry of quotes) {
     const read = readQuoteEntry(entry);
-    if (read === null) return null; // ★ لا استخراج جزئي
+    if (read === null) return { ok: false, reason: "schema_invalid" }; // ★ لا استخراج جزئي
     out.push(read);
   }
-  return out;
+  return { ok: true, quotes: out };
 }
 
 /**
@@ -293,6 +334,8 @@ export function extractEvidenceEnvelope(raw: string): ExtractedEvidenceEnvelope 
       status: "missing",
       sentinelStatus: "absent",
       sentinelRepairApplied: false,
+      reason: "none",
+      repairedButInvalid: false,
     };
   }
 
@@ -307,49 +350,57 @@ export function extractEvidenceEnvelope(raw: string): ExtractedEvidenceEnvelope 
    * منسيّ أن يُعيد النصّ الخام ومعه الكتلة.
    */
   const visibleText = text.slice(0, scan.index);
-  const bad = (status: EvidenceEnvelopeStatus): ExtractedEvidenceEnvelope => ({
+  const bad = (
+    status: EvidenceEnvelopeStatus,
+    reason: EnvelopeReason,
+  ): ExtractedEvidenceEnvelope => ({
     visibleText,
     quoteCandidates: [],
     status,
     sentinelStatus,
     sentinelRepairApplied,
+    reason,
+    // السبب الأصلي يبقى، وهذا يقول إن التقويم سبقه
+    repairedButInvalid: sentinelRepairApplied,
   });
 
-  if (scan.orphanEnd) return bad("malformed");
-  if (scan.count > 1) return bad("malformed");
-  if (!scan.atLineStart) return bad("malformed");
+  if (scan.orphanEnd) return bad("malformed", "orphan_end_sentinel");
+  if (scan.count > 1) return bad("malformed", "duplicate_block");
+  if (!scan.atLineStart) return bad("malformed", "start_not_at_line_start");
 
   const block = text.slice(scan.index);
-  if (utf8Length(block) > MAX_ENVELOPE_BYTES) return bad("too_large");
+  if (utf8Length(block) > MAX_ENVELOPE_BYTES) return bad("too_large", "too_large");
 
   const afterStart = scan.index + EVIDENCE_START.length;
   const endAt = text.indexOf(EVIDENCE_END, afterStart);
-  if (endAt === -1) return bad("malformed");
+  if (endAt === -1) return bad("malformed", "missing_end_sentinel");
 
   // السنتينلان على سطرين مستقلّين: ما بينهما وما حولهما لا يحمل نصًّا آخر
   const head = text.slice(afterStart, endAt);
   const lastNewline = head.lastIndexOf("\n");
-  if (lastNewline === -1) return bad("malformed");
+  if (lastNewline === -1) return bad("malformed", "missing_end_sentinel");
   // ما بين آخر سطر جديد وسنتينل النهاية: إزاحة بيضاء فقط
-  if (head.slice(lastNewline + 1).trim().length > 0) return bad("malformed");
+  if (head.slice(lastNewline + 1).trim().length > 0) return bad("malformed", "text_before_start");
   // وأول سطر بعد سنتينل البداية فارغ
   const firstNewline = head.indexOf("\n");
-  if (firstNewline === -1) return bad("malformed");
-  if (head.slice(0, firstNewline).trim().length > 0) return bad("malformed");
+  if (firstNewline === -1) return bad("malformed", "text_on_first_line");
+  if (head.slice(0, firstNewline).trim().length > 0) return bad("malformed", "text_on_first_line");
 
   // ★ لا شيء بعد سنتينل النهاية سوى بياض
   const tail = text.slice(endAt + EVIDENCE_END.length);
-  if (tail.trim().length > 0) return bad("malformed");
+  if (tail.trim().length > 0) return bad("malformed", "text_after_end");
 
   const body = head.slice(firstNewline + 1, lastNewline);
-  const quoteCandidates = readEnvelopeBody(body);
-  if (quoteCandidates === null) return bad("malformed");
+  const parsedBody = readEnvelopeBody(body);
+  if (!parsedBody.ok) return bad("malformed", parsedBody.reason);
 
   return {
     visibleText,
-    quoteCandidates,
+    quoteCandidates: parsedBody.quotes,
     status: "valid",
     sentinelStatus,
     sentinelRepairApplied,
+    reason: "none",
+    repairedButInvalid: false,
   };
 }

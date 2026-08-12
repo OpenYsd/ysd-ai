@@ -70,6 +70,33 @@ export interface RecoveryPromptBudget {
 
 export type RecoveryStatus = "not_needed" | "success" | "failed" | "timeout";
 
+/**
+ * سبب فشل الاسترداد — رمز مغلق.
+ *
+ * `failed` وحدها كانت تغطّي ثلاث حالات متباينة: نداءٌ لم ينجح، وردٌّ غير
+ * قابل للتحليل، وروابطُ لم ينجُ منها اقتباس. وعلاج كلٍّ منها مختلف تمامًا،
+ * فجمعُها في كلمة يجعل التشخيص مستحيلًا بالضبط حين نحتاجه.
+ *
+ * و`provider_error` تعني **أن نداء المحوّل لم ينجح** — لا أكثر. لا ندّعي
+ * أن الطلب بلغ المزوّد الخارجي أو لم يبلغه: المحوّل لا يقول ذلك.
+ */
+export type RecoveryFailureReason =
+  | "none"
+  | "provider_error"
+  | "unparseable"
+  | "no_links"
+  | "no_verified_quote";
+
+/** قياسات الاسترداد — أعداد ومنطقيّات فقط، بلا أي محتوى */
+export interface RecoveryTelemetry {
+  providerCallAttempted: boolean;
+  providerCallSucceeded: boolean;
+  linksReturned: number;
+  linksScoped: number;
+  verifiedSources: number;
+  failureReason: RecoveryFailureReason;
+}
+
 export interface RecoveryLink {
   segmentIndex: number;
   marker: number;
@@ -365,12 +392,23 @@ export async function attemptEvidenceRecovery(input: {
   provider: AIProviderAdapter;
   maxVerifiedSources: number;
   signal?: AbortSignal;
-}): Promise<{ status: RecoveryStatus; evidence: ResolvedEvidence | null }> {
+}): Promise<{ status: RecoveryStatus; evidence: ResolvedEvidence | null; telemetry: RecoveryTelemetry }> {
+  const tel: RecoveryTelemetry = {
+    providerCallAttempted: false,
+    providerCallSucceeded: false,
+    linksReturned: 0,
+    linksScoped: 0,
+    verifiedSources: 0,
+    failureReason: "none",
+  };
   const parsed = parseEvidenceMarkers(input.cleanText);
   if (parsed.segments.length === 0 || input.sourceRegistry.length === 0) {
-    return { status: "failed", evidence: null };
+    return { status: "failed", evidence: null, telemetry: { ...tel, failureReason: "provider_error" } };
   }
-  if (!input.provider.requestJsonCompletion) return { status: "failed", evidence: null };
+  if (!input.provider.requestJsonCompletion) {
+    return { status: "failed", evidence: null, telemetry: { ...tel, failureReason: "provider_error" } };
+  }
+  tel.providerCallAttempted = true;
 
   const { systemPrompt, userText } = buildRecoveryPrompt({
     segments: parsed.segments
@@ -390,11 +428,23 @@ export async function attemptEvidenceRecovery(input: {
   });
 
   if (!answer.ok) {
-    return { status: answer.reason === "timeout" ? "timeout" : "failed", evidence: null };
+    return {
+      status: answer.reason === "timeout" ? "timeout" : "failed",
+      evidence: null,
+      telemetry: { ...tel, failureReason: "provider_error" },
+    };
   }
+  tel.providerCallSucceeded = true;
 
   const links = parseRecoveryLinks(answer.text);
-  if (links === null) return { status: "failed", evidence: null };
+  if (links === null) {
+    return { status: "failed", evidence: null, telemetry: { ...tel, failureReason: "unparseable" } };
+  }
+  tel.linksReturned = links.length;
+  tel.linksScoped = links.length;
+  if (links.length === 0) {
+    return { status: "failed", evidence: null, telemetry: { ...tel, failureReason: "no_links" } };
+  }
 
   const evidence = resolveRecoveredEvidence({
     cleanText: input.cleanText,
@@ -403,10 +453,13 @@ export async function attemptEvidenceRecovery(input: {
     maxVerifiedSources: input.maxVerifiedSources,
   });
 
+  tel.verifiedSources = evidence.sources.length;
   // بلا مصدر متحقَّق واحد لا معنى لتسميتها نجاحًا
+  const ok = evidence.sources.length > 0;
   return {
-    status: evidence.sources.length > 0 ? "success" : "failed",
-    evidence: evidence.sources.length > 0 ? evidence : null,
+    status: ok ? "success" : "failed",
+    evidence: ok ? evidence : null,
+    telemetry: { ...tel, failureReason: ok ? "none" : "no_verified_quote" },
   };
 }
 
