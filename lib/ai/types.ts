@@ -198,6 +198,24 @@ export interface AIProviderAdapter {
   normalizeError?(status: number | null, err?: unknown): NormalizedProviderError;
 
   /**
+   * نداء JSON غير متدفّق — لاسترداد الاستشهادات (v0.9.1).
+   *
+   * ★ **بلا حقل `model` عمدًا.**
+   *
+   * كان الاسترداد يمرّر `actualModelId` إلى نقطة OpenRouter دائمًا. فحين أجاب
+   * Groq صار معرّف نموذجه يُرسَل إلى مزوّد آخر — تسريبٌ عبر حدود المزوّد،
+   * ومعه فشلٌ مضمون. وغياب الحقل هنا يجعل ذلك **مستحيلًا بالبناء**: كل مزوّد
+   * يختار نموذجه من سلسلته وحدها.
+   */
+  requestJsonCompletion?(input: {
+    systemPrompt: string;
+    userText: string;
+    maxTokens: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }>;
+
+  /**
    * بث الرد قطعةً قطعة.
    * يجب أن يُرجع دائمًا chunk أخير من نوع "done" أو "error"،
    * ويُرجع "usage" قبل النهاية إن توفّر من الموفر.

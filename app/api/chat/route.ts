@@ -50,6 +50,8 @@ import { resolveEvidence } from "@/lib/evidence/resolve-evidence";
 import { replaceMessageEvidence } from "@/lib/evidence/evidence-repository";
 import {
   attemptEvidenceRecovery,
+  attemptPartialEvidenceRecovery,
+  type RecoveryReason,
   type RecoveryStatus,
 } from "@/lib/evidence/evidence-recovery";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
@@ -1269,18 +1271,59 @@ export async function POST(req: NextRequest) {
               envelope.status !== "valid" &&
               sourceRegistry.length > 0;
             let recoveryStatus: RecoveryStatus = "not_needed";
+            let recoveryReason: RecoveryReason = "none";
+            let partialRequested: number[] = [];
+            let partialRecovered: number[] = [];
+            let partialFailed: number[] = [];
+
+            /**
+             * ★ المزوّد الذي أجاب — لا معرّف نموذج.
+             *
+             * الاسترداد كان موصولًا بـOpenRouter بالسلك، فحين أجاب Groq فشل
+             * حتمًا: مفتاح آخر، ومعرّف نموذج يعبر حدود المزوّد. رُصد حيًّا.
+             */
+            const recoveryProvider = sequence.find((p) => p.id === selectedProvider) ?? provider;
 
             if (needsRecovery) {
+              recoveryReason = "malformed_envelope";
               const recovered = await attemptEvidenceRecovery({
                 cleanText: assistantText,
                 sourceRegistry,
-                model: actualModelId ?? effectiveModelId,
+                provider: recoveryProvider,
                 maxVerifiedSources: MAX_VERIFIED_SOURCES,
                 signal: req.signal,
               });
               recoveryStatus = recovered.status;
               // النصّ المعروض لا يتغيّر — يُستبدل الحلّ وحده
               if (recovered.evidence) resolved = recovered.evidence;
+            } else if (
+              /**
+               * ★ تغطية ناقصة — مظروفٌ صالح ومقاطع بلا دعم.
+               *
+               * رُصد حيًّا: ثلاثة مرشّحين نجا منهم واحد، فبقي مقطعان «غير
+               * مدعومَين» رغم أن مقاطع الاسترجاع تحتوي ما يدعمهما. وكان
+               * المسار يكتفي بذلك لأن الاسترداد مشروطٌ بمظروف معطوب وحده.
+               *
+               * ولا يُخفَّف التحقق بحرف: ما يعود يمرّ بنفس المُتحقِّق، ومَن
+               * يسقط يبقى مقطعه غير مدعوم.
+               */
+              resolved.unsupportedSegments.length > 0 &&
+              sourceRegistry.length > 0
+            ) {
+              recoveryReason = "partial_coverage";
+              const partial = await attemptPartialEvidenceRecovery({
+                cleanText: assistantText,
+                resolved,
+                sourceRegistry,
+                provider: recoveryProvider,
+                maxVerifiedSources: MAX_VERIFIED_SOURCES,
+                signal: req.signal,
+              });
+              recoveryStatus = partial.status;
+              partialRequested = partial.requestedSegments;
+              partialRecovered = partial.recoveredSegments;
+              partialFailed = partial.failedSegments;
+              if (partial.evidence) resolved = partial.evidence;
             }
 
             const write = await Promise.race([
@@ -1361,6 +1404,11 @@ export async function POST(req: NextRequest) {
               droppedByPlanLimit: resolved.stats.droppedByPlanLimit,
               recoveryAttempted: recoveryStatus !== "not_needed",
               recoveryStatus,
+              recoveryReason,
+              // أرقام مقاطع فقط — لا نصّ ولا اقتباس ولا اسم ملف
+              partialRecoveryRequestedSegments: partialRequested.length,
+              partialRecoveryRecoveredSegments: partialRecovered.length,
+              partialRecoveryFailedSegments: partialFailed.length,
             };
 
             // عدّادات ورموز فقط: لا نصّ مزوّد ولا اقتباس ولا اسم ملف

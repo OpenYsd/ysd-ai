@@ -104,6 +104,64 @@ export class GroqProvider implements AIProviderAdapter {
   }
 
   /**
+   * نداء JSON بنموذج Groq — لاسترداد الاستشهادات حين يكون هو مَن أجاب.
+   *
+   * بلا حقل `model` من الخارج: يختار أول نماذج سلسلته. فمعرّف نموذج لا يعبر
+   * حدود المزوّد أبدًا — وهو ما كسر الاسترداد حيًّا حين أُرسل معرّف Groq إلى
+   * نقطة OpenRouter.
+   *
+   * وبنفس معاملات البثّ: التفكير مُطفأ وسقفٌ للإكمال — فنماذج `gpt-oss`
+   * تستهلك السقف في التفكير قبل أن تُنتج JSON، وقد قِيس ذلك حيًّا.
+   */
+  async requestJsonCompletion(input: {
+    systemPrompt: string;
+    userText: string;
+    maxTokens: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }> {
+    const key = process.env.GROQ_API_KEY;
+    if (!key) return { ok: false, reason: "error" };
+
+    const control = new AbortController();
+    const timer = setTimeout(() => control.abort(), input.timeoutMs);
+    const onAbort = () => control.abort();
+    input.signal?.addEventListener("abort", onAbort);
+
+    try {
+      const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: GROQ_MODEL_CHAIN[0],
+          messages: [
+            { role: "system", content: input.systemPrompt },
+            { role: "user", content: input.userText },
+          ],
+          stream: false,
+          include_reasoning: false,
+          reasoning_effort: "low",
+          max_completion_tokens: input.maxTokens,
+          temperature: 0,
+        }),
+        signal: control.signal,
+      });
+      if (!res.ok) return { ok: false, reason: "error" };
+      const json = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const text = json.choices?.[0]?.message?.content;
+      if (typeof text !== "string" || !text.trim()) return { ok: false, reason: "error" };
+      return { ok: true, text };
+    } catch {
+      return { ok: false, reason: control.signal.aborted ? "timeout" : "error" };
+    } finally {
+      clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
    * يبثّ من سلسلة Groq: النموذج الأقوى أولًا ثم الاحتياط.
    *
    * `req.budgetMs` سقفٌ يفرضه المسار (ما تبقّى من ميزانية مرحلة المزوّدين
