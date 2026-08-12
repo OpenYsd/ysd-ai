@@ -364,6 +364,22 @@ export class OpenRouterProvider implements AIProviderAdapter {
    * ونتيجة السلسلة. و`finally` تضمن إصداره حتى مع الخروج المبكر، فلا يمكن
    * لمسارٍ جديد أن «ينسى» العدّاد.
    */
+  /**
+   * نداء JSON بنموذج **هذا المزوّد** — لا معرّف يعبر من الخارج.
+   *
+   * يختار أول نماذج السلسلة المجانية: الاسترداد مهمّة قصيرة محدودة الرموز،
+   * ولا معنى لإعادة اختيار نموذج بعينه لها.
+   */
+  async requestJsonCompletion(input: {
+    systemPrompt: string;
+    userText: string;
+    maxTokens: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }> {
+    return requestJsonCompletion({ ...input, model: FREE_MODEL_CHAIN[0] ?? YSD_FREE_MODEL_ID });
+  }
+
   async *streamChat(req: ChatRequest): AsyncGenerator<StreamChunk> {
     const stats: ProviderStats = { providerCalls: 0, attempts: 0, outcome: "unknown" };
     let terminalSent = false;
