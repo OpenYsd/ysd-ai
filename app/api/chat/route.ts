@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import type { AIProviderAdapter } from "@/lib/ai/types";
 import { ERROR_MESSAGES, type ChatErrorCode } from "@/lib/ai/error-codes";
 import { headers } from "next/headers";
+import { sanitizedErrorCode } from "@/lib/log-redaction";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
@@ -1494,7 +1495,7 @@ export async function POST(req: NextRequest) {
           }
           console.error(`[chat] rid=${requestId} failure_kind=request_timeout`);
         } else {
-          console.error("[chat] stream failed:", err);
+          console.error(`[chat] rid=${requestId} failure_kind=stream_failed code=${sanitizedErrorCode(err)}`);
           send({ type: "error", error: "حدث خطأ أثناء توليد الرد.", code: "unknown" });
         }
       } finally {

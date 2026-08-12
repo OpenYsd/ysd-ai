@@ -3,6 +3,8 @@
  * كل سطر JSON بحقل correlation_id (correlation) لربط الطلبات والوظائف.
  */
 
+import { redactLogValue } from "@/lib/log-redaction";
+
 type LogLevel = "info" | "warn" | "error";
 
 /** حقول مسموحة فقط — منع تسريب محتوى حساس */
@@ -20,7 +22,7 @@ export interface LogFields {
 }
 
 function emit(level: LogLevel, fields: LogFields): void {
-  const line = JSON.stringify({ level, ts: new Date().toISOString(), ...fields });
+  const line = JSON.stringify(redactLogValue({ level, ts: new Date().toISOString(), ...fields }));
   if (level === "error") console.error(line);
   else if (level === "warn") console.warn(line);
   else console.log(line);
