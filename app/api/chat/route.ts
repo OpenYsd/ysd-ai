@@ -51,6 +51,7 @@ import { replaceMessageEvidence } from "@/lib/evidence/evidence-repository";
 import {
   attemptEvidenceRecovery,
   attemptPartialEvidenceRecovery,
+  type RecoveryPromptBudget,
   type RecoveryReason,
   type RecoveryStatus,
 } from "@/lib/evidence/evidence-recovery";
@@ -1275,6 +1276,8 @@ export async function POST(req: NextRequest) {
             let partialRequested: number[] = [];
             let partialRecovered: number[] = [];
             let partialFailed: number[] = [];
+            let partialBudget: RecoveryPromptBudget | null = null;
+            let partialLinksReturned = 0;
 
             /**
              * ★ المزوّد الذي أجاب — لا معرّف نموذج.
@@ -1323,6 +1326,8 @@ export async function POST(req: NextRequest) {
               partialRequested = partial.requestedSegments;
               partialRecovered = partial.recoveredSegments;
               partialFailed = partial.failedSegments;
+              partialBudget = partial.budget;
+              partialLinksReturned = partial.linksReturned;
               if (partial.evidence) resolved = partial.evidence;
             }
 
@@ -1409,6 +1414,13 @@ export async function POST(req: NextRequest) {
               partialRecoveryRequestedSegments: partialRequested.length,
               partialRecoveryRecoveredSegments: partialRecovered.length,
               partialRecoveryFailedSegments: partialFailed.length,
+              // بناء الحمولة — أعداد ومنطقيّات، بلا محتوى ولا أسماء ملفات
+              partialRecoverySourceCount: partialBudget?.sourceCount ?? 0,
+              partialRecoverySourcesIncluded: partialBudget?.sourcesIncluded ?? 0,
+              partialRecoverySourcesDropped: partialBudget?.sourcesDropped ?? 0,
+              partialRecoveryPromptTruncated: partialBudget?.promptTruncated ?? false,
+              partialRecoverySnippetTruncatedCount: partialBudget?.snippetTruncatedCount ?? 0,
+              partialRecoveryLinksReturned: partialLinksReturned,
             };
 
             // عدّادات ورموز فقط: لا نصّ مزوّد ولا اقتباس ولا اسم ملف

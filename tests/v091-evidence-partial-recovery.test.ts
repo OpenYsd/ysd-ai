@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 
 import {
   attemptPartialEvidenceRecovery,
+  buildRecoveryPrompt,
   mergePartialEvidence,
+  RECOVERY_MAX_ANSWER_CHARS,
+  RECOVERY_MAX_SNIPPET_CHARS,
+  RECOVERY_MAX_USER_CHARS,
 } from "@/lib/evidence/evidence-recovery";
 import { resolveEvidence } from "@/lib/evidence/resolve-evidence";
 import { GroqProvider } from "@/lib/ai/groq";
@@ -580,5 +584,155 @@ describe("★ الانحدار الحقيقي: 1/3 ⇒ 3/3", () => {
     expect(out.requestedSegments).toEqual([0, 2]);
     expect(out.recoveredSegments).toEqual([0, 2]);
     expect(out.failedSegments).toEqual([]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  ★ ميزانية حمولة الاسترداد — المهمّة محجوزة بالتصميم
+// ════════════════════════════════════════════════════════════
+
+/**
+ * عيبٌ مقيس: كان القصّ يقع على النصّ كاملًا **بعد** بنائه، والمصادر تُكتب
+ * أولًا. فعند 16 مصدرًا بلغ النصّ 20,040 حرفًا مقابل سقف 15,600 — فابتلع
+ * القصُّ الفقرات المستهدفة والتعليمة الختامية معًا. النموذج يستقبل مصادر
+ * مبتورة بلا مهمّة، فلا يربط شيئًا لأنه لم يرَ ما يربطه.
+ *
+ * وسقف الاسترجاع نفسه ستة عشر مقطعًا (p_match_count: 16) — أي أن الحدّ
+ * الطبيعي للنظام يقع فوق عتبة القطع مباشرةً.
+ */
+describe("★ ميزانية الحمولة", () => {
+  const TARGET_TEXT = "فقرة مستهدفة تحتاج ربطًا بمصدرها الحرفي في الملف.";
+  const bigSources = (n: number, chars = 1_400) =>
+    Array.from({ length: n }, (_, i) => ({ marker: i + 1, content: "م".repeat(chars) }));
+  const targeted = [{ segmentIndex: 2, text: TARGET_TEXT }];
+
+  /** الثوابت التي تُثبت أن المهمّة لا تُقصّ */
+  const assertTaskIntact = (userText: string) => {
+    expect(userText).toContain("[فقرة 2]");
+    expect(userText).toContain(TARGET_TEXT);
+    expect(userText.endsWith("أخرج JSON الروابط الآن.")).toBe(true);
+  };
+
+  it("★ (A) 12 مصدرًا ⇒ ضمن الحدّ بلا تقليص", () => {
+    const { userText, budget } = buildRecoveryPrompt({
+      segments: targeted,
+      sources: bigSources(12, 1_000),
+    });
+    expect(budget.sourceCount).toBe(12);
+    expect(budget.sourcesIncluded).toBe(12);
+    expect(budget.sourcesDropped).toBe(0);
+    expect(budget.promptTruncated).toBe(false);
+    expect(userText.length).toBeLessThanOrEqual(RECOVERY_MAX_USER_CHARS);
+    assertTaskIntact(userText);
+  });
+
+  it("★ (B) 16 مصدرًا × 1400 ⇒ الفقرة والتعليمة كاملتان", () => {
+    const sources = bigSources(16, 1_400);
+
+    const rawLength =
+      "المصادر:\n".length +
+      sources
+        .map(
+          (s) =>
+            `<source index="${s.marker}">\n${s.content.slice(0, RECOVERY_MAX_SNIPPET_CHARS)}\n</source>`,
+        )
+        .join("\n").length +
+      "\n\nالإجابة:\n".length +
+      `[فقرة 2]\n${TARGET_TEXT}`.length +
+      "\n\nأخرج JSON الروابط الآن.".length;
+    expect(rawLength).toBeGreaterThan(RECOVERY_MAX_USER_CHARS);
+    // eslint-disable-next-line no-console
+    console.log(
+      `[قياس] قبل=${rawLength} سقف=${RECOVERY_MAX_USER_CHARS} تجاوز=${rawLength - RECOVERY_MAX_USER_CHARS}`,
+    );
+
+    const { userText, budget } = buildRecoveryPrompt({ segments: targeted, sources });
+    // eslint-disable-next-line no-console
+    console.log(
+      `[قياس] بعد=${userText.length} مصادر=${budget.sourcesIncluded}/${budget.sourceCount} ` +
+        `محذوفة=${budget.sourcesDropped} مقلَّصة=${budget.promptTruncated} مقصوصة=${budget.snippetTruncatedCount}`,
+    );
+
+    assertTaskIntact(userText);
+    expect(userText.length).toBeLessThanOrEqual(RECOVERY_MAX_USER_CHARS);
+    expect(budget.promptTruncated).toBe(true);
+    expect(budget.sourcesDropped).toBeGreaterThan(0);
+    // ★ العدّاد لا يتجاوز المُدرَج: المحذوف لا يُحسب مقصوصًا
+    expect(budget.snippetTruncatedCount).toBeLessThanOrEqual(budget.sourcesIncluded);
+    expect(budget.sourcesIncluded + budget.sourcesDropped).toBe(budget.sourceCount);
+  });
+
+  it("★ (C) المحذوف هو الأخير، وترتيب الباقي كما هو", () => {
+    const sources = bigSources(16, 1_400);
+    const { userText, budget } = buildRecoveryPrompt({ segments: targeted, sources });
+
+    const kept = [...userText.matchAll(/<source index="(\d+)">/g)].map((m) => Number(m[1]));
+    expect(kept).toEqual(Array.from({ length: budget.sourcesIncluded }, (_, i) => i + 1));
+    for (let m = budget.sourcesIncluded + 1; m <= budget.sourceCount; m++) {
+      expect(userText).not.toContain(`<source index="${m}">`);
+    }
+  });
+
+  it("★ (D) عدد ضخم من المصادر ⇒ الحمولة تبقى تحت السقف", () => {
+    for (const n of [30, 60, 99]) {
+      const { userText, budget } = buildRecoveryPrompt({
+        segments: targeted,
+        sources: bigSources(n, 1_400),
+      });
+      expect(userText.length).toBeLessThanOrEqual(RECOVERY_MAX_USER_CHARS);
+      expect(budget.sourceCount).toBe(n);
+      assertTaskIntact(userText);
+    }
+  });
+
+  it("★ (E) فقرة مستهدفة طويلة تبقى كاملة", () => {
+    const longText = "ن".repeat(RECOVERY_MAX_ANSWER_CHARS - 200);
+    const { userText, budget } = buildRecoveryPrompt({
+      segments: [{ segmentIndex: 2, text: longText }],
+      sources: bigSources(16, 1_400),
+    });
+    expect(userText).toContain(longText);
+    expect(userText.endsWith("أخرج JSON الروابط الآن.")).toBe(true);
+    expect(userText.length).toBeLessThanOrEqual(RECOVERY_MAX_USER_CHARS);
+    expect(budget.promptTruncated).toBe(true);
+  });
+
+  it("★ (F) promptTruncated=true ⇒ التعليمة والعقد كاملان", () => {
+    const { systemPrompt, userText, budget } = buildRecoveryPrompt({
+      segments: targeted,
+      sources: bigSources(40, 1_400),
+    });
+    expect(budget.promptTruncated).toBe(true);
+    assertTaskIntact(userText);
+    expect(systemPrompt).toContain('{"links":[]}');
+    expect(systemPrompt).toContain("segmentIndex");
+  });
+
+  it("★ (G) عدّاد المقاطع المقصوصة صحيح وسقف المقطع لم يتغيّر", () => {
+    expect(RECOVERY_MAX_SNIPPET_CHARS).toBe(1_200);
+
+    const mixed = [
+      ...Array.from({ length: 6 }, (_, i) => ({ marker: i + 1, content: "م".repeat(1_500) })),
+      ...Array.from({ length: 4 }, (_, i) => ({ marker: i + 7, content: "م".repeat(300) })),
+    ];
+    const { userText, budget } = buildRecoveryPrompt({ segments: targeted, sources: mixed });
+    expect(budget.snippetTruncatedCount).toBe(6);
+    expect(budget.sourcesDropped).toBe(0);
+    for (const m of userText.matchAll(/<source index="\d+">\n([\s\S]*?)\n<\/source>/g)) {
+      expect(m[1]!.length).toBeLessThanOrEqual(RECOVERY_MAX_SNIPPET_CHARS);
+    }
+  });
+
+  it("★ لا قصّ على userText في موضع النداء", () => {
+    const REC = readFileSync("lib/evidence/evidence-recovery.ts", "utf8");
+    expect(REC).not.toMatch(/userText:\s*userText\.slice\(/);
+    expect(REC).toContain("RECOVERY_MAX_USER_CHARS");
+  });
+
+  it("★ بلا مصادر ⇒ الحمولة تبقى صالحة", () => {
+    const { userText, budget } = buildRecoveryPrompt({ segments: targeted, sources: [] });
+    expect(budget.sourceCount).toBe(0);
+    expect(budget.promptTruncated).toBe(false);
+    assertTaskIntact(userText);
   });
 });

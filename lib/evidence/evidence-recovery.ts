@@ -44,6 +44,30 @@ export const RECOVERY_MAX_SNIPPET_CHARS = 1_200;
 /** أقصى عدد روابط تُقرأ من الرد */
 export const RECOVERY_MAX_LINKS = 24;
 
+/**
+ * سقف نصّ المستخدم في نداء الاسترداد — **ميزانية تُوزَّع، لا قصّ من الآخر**.
+ *
+ * كان القصّ يقع على النصّ كاملًا بعد بنائه، والمصادر تُكتب أولًا. فحين تجاوز
+ * عددها ثلاثة عشر ابتلع القصُّ **الفقرات المستهدفة والتعليمة الختامية معًا**:
+ * يصل النموذج مصادرُ مبتورة بلا مهمّة، فلا يستطيع الربط لأنه لم يرَ ما يربطه.
+ * وسقف الاسترجاع نفسه ستة عشر مقطعًا — أي أن الحدّ الطبيعي للنظام يقع فوق
+ * عتبة القطع مباشرةً. قِيس: 16 مصدرًا ⇒ 20,040 حرفًا مقابل سقف 15,600.
+ *
+ * القيمة كما كانت (6_000 + 1_200×8) — المتغيّر هو **كيف** تُوزَّع لا كم هي.
+ */
+export const RECOVERY_MAX_USER_CHARS = RECOVERY_MAX_ANSWER_CHARS + RECOVERY_MAX_SNIPPET_CHARS * 8;
+
+/** قياسات بناء الحمولة — أعداد ومنطقيّات، بلا محتوى ولا أسماء */
+export interface RecoveryPromptBudget {
+  sourceCount: number;
+  sourcesIncluded: number;
+  sourcesDropped: number;
+  /** هل قُلّصت المصادر بسبب الميزانية؟ (لا يعني قطع مهمّة — ذلك مستحيل) */
+  promptTruncated: boolean;
+  /** كم مقطعًا تجاوز سقف المقطع الواحد فقُصّ */
+  snippetTruncatedCount: number;
+}
+
 export type RecoveryStatus = "not_needed" | "success" | "failed" | "timeout";
 
 export interface RecoveryLink {
@@ -63,15 +87,7 @@ const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 export function buildRecoveryPrompt(input: {
   segments: { segmentIndex: number; text: string }[];
   sources: { marker: number; content: string }[];
-}): { systemPrompt: string; userText: string } {
-  const segmentBlock = input.segments
-    .map((s) => `[فقرة ${s.segmentIndex}]\n${s.text}`)
-    .join("\n\n");
-
-  const sourceBlock = input.sources
-    .map((s) => `<source index="${s.marker}">\n${s.content.slice(0, RECOVERY_MAX_SNIPPET_CHARS)}\n</source>`)
-    .join("\n");
-
+}): { systemPrompt: string; userText: string; budget: RecoveryPromptBudget } {
   const systemPrompt = `أنت مدقّق استشهادات. مهمتك ربط فقرات إجابة بمصادرها الحرفية.
 
 قواعد صارمة:
@@ -85,15 +101,62 @@ export function buildRecoveryPrompt(input: {
 - إن لم يوجد أي ربط مؤكد، أخرج: {"links":[]}
 - لا تخترع اقتباسًا غير موجود في المصادر بأي حال.`;
 
-  const userText = `المصادر:
-${sourceBlock}
+  /**
+   * ★ الترتيب: المهمّة أولًا في الحجز، والمصادر تأخذ ما تبقّى.
+   *
+   * الفقرات المستهدفة والتعليمة الختامية تُحجز مساحتهما **قبل** أي مصدر،
+   * فلا يمكن لكثرة المصادر أن تبترهما. وهذا هو الفرق كله عن القصّ السابق:
+   * ذاك كان يقطع من الآخر — حيث المهمّة — وهذا يقطع من المصادر وحدها.
+   */
+  const segmentBlock = input.segments
+    .map((s) => `[فقرة ${s.segmentIndex}]\n${s.text}`)
+    .join("\n\n")
+    .slice(0, RECOVERY_MAX_ANSWER_CHARS);
 
-الإجابة:
-${segmentBlock}
+  const TAIL = "\n\nأخرج JSON الروابط الآن.";
+  const HEAD = "المصادر:\n";
+  const MID = "\n\nالإجابة:\n";
+  const scaffold = HEAD.length + MID.length + segmentBlock.length + TAIL.length;
 
-أخرج JSON الروابط الآن.`;
+  /** ما تبقّى للمصادر بعد حجز المهمّة — لا يقلّ عن صفر */
+  let remaining = Math.max(0, RECOVERY_MAX_USER_CHARS - scaffold);
 
-  return { systemPrompt, userText };
+  let snippetTruncatedCount = 0;
+  const blocks: string[] = [];
+
+  /**
+   * المصادر بترتيب الاسترجاع كما هي — لا إعادة ترتيب ولا إعادة تقييم.
+   * والمحذوف هو **آخرها** أي الأقل صلة، لأن الاسترجاع رتّبها بالصلة أصلًا.
+   */
+  for (const src of input.sources) {
+    const content = src.content.slice(0, RECOVERY_MAX_SNIPPET_CHARS);
+    const block = `<source index="${src.marker}">\n${content}\n</source>`;
+    const cost = block.length + 1; // فاصل السطر بين الكتل
+    if (cost > remaining) break; // لا يُقصّ مصدر جزئيًّا: يُحذف كاملًا أو يُدرَج كاملًا
+    /**
+     * العدّ **بعد** القبول لا قبله.
+     *
+     * مقطعٌ قُصّ ثم حُذف لضيق الميزانية ليس «مقطعًا مقصوصًا في الحمولة»،
+     * وعدّه كذلك يجعل الرقم أكبر من عدد المصادر المُدرَجة فيُقرأ خطأً.
+     */
+    if (content.length < src.content.length) snippetTruncatedCount++;
+    blocks.push(block);
+    remaining -= cost;
+  }
+
+  const userText = `${HEAD}${blocks.join("\n")}${MID}${segmentBlock}${TAIL}`;
+
+  return {
+    systemPrompt,
+    userText,
+    budget: {
+      sourceCount: input.sources.length,
+      sourcesIncluded: blocks.length,
+      sourcesDropped: input.sources.length - blocks.length,
+      promptTruncated: blocks.length < input.sources.length,
+      snippetTruncatedCount,
+    },
+  };
 }
 
 /**
@@ -319,7 +382,8 @@ export async function attemptEvidenceRecovery(input: {
   const answer = await input.provider.requestJsonCompletion({
     systemPrompt,
     // الحمولة محدودة: إجابة طويلة لا تُرسل كاملة
-    userText: userText.slice(0, RECOVERY_MAX_ANSWER_CHARS + RECOVERY_MAX_SNIPPET_CHARS * 8),
+    // لا قصّ هنا: الميزانية طُبّقت في البناء، والمهمّة محجوزة بالتصميم
+    userText,
     maxTokens: RECOVERY_MAX_TOKENS,
     timeoutMs: RECOVERY_TIMEOUT_MS,
     signal: input.signal,
@@ -360,6 +424,10 @@ export interface PartialRecoveryOutcome {
   requestedSegments: number[];
   recoveredSegments: number[];
   failedSegments: number[];
+  /** قياسات بناء الحمولة — أعداد ومنطقيّات فقط */
+  budget: RecoveryPromptBudget;
+  /** عدد الروابط التي أعادها النموذج بعد التحليل والحصر */
+  linksReturned: number;
 }
 
 /**
@@ -443,12 +511,21 @@ export async function attemptPartialEvidenceRecovery(input: {
   signal?: AbortSignal;
 }): Promise<PartialRecoveryOutcome> {
   const requestedSegments = [...input.resolved.unsupportedSegments].sort((a, b) => a - b);
+  const emptyBudget: RecoveryPromptBudget = {
+    sourceCount: input.sourceRegistry.length,
+    sourcesIncluded: 0,
+    sourcesDropped: 0,
+    promptTruncated: false,
+    snippetTruncatedCount: 0,
+  };
   const empty: PartialRecoveryOutcome = {
     status: "failed",
     evidence: null,
     requestedSegments,
     recoveredSegments: [],
     failedSegments: requestedSegments,
+    budget: emptyBudget,
+    linksReturned: 0,
   };
 
   if (requestedSegments.length === 0 || input.sourceRegistry.length === 0) {
@@ -472,25 +549,26 @@ export async function attemptPartialEvidenceRecovery(input: {
 
   if (segments.length === 0) return empty;
 
-  const { systemPrompt, userText } = buildRecoveryPrompt({
+  const { systemPrompt, userText, budget } = buildRecoveryPrompt({
     segments,
     sources: input.sourceRegistry.map((e) => ({ marker: e.marker, content: e.snippet.content })),
   });
 
   const answer = await input.provider.requestJsonCompletion({
     systemPrompt,
-    userText: userText.slice(0, RECOVERY_MAX_ANSWER_CHARS + RECOVERY_MAX_SNIPPET_CHARS * 8),
+    // لا قصّ هنا: الميزانية طُبّقت في البناء، والمهمّة محجوزة بالتصميم
+    userText,
     maxTokens: RECOVERY_MAX_TOKENS,
     timeoutMs: RECOVERY_TIMEOUT_MS,
     signal: input.signal,
   });
 
   if (!answer.ok) {
-    return { ...empty, status: answer.reason === "timeout" ? "timeout" : "failed" };
+    return { ...empty, budget, status: answer.reason === "timeout" ? "timeout" : "failed" };
   }
 
   const links = parseRecoveryLinks(answer.text);
-  if (links === null) return empty;
+  if (links === null) return { ...empty, budget };
 
   /**
    * روابط لفقرات **غير مستهدفة** تُرمى قبل التحقق.
@@ -499,7 +577,7 @@ export async function attemptPartialEvidenceRecovery(input: {
    * تغيير مرجع صالح — وهو ما يمنعه الدمج لاحقًا، لكن رميها هنا أوضح وأرخص.
    */
   const scoped = links.filter((l) => targeted.has(l.segmentIndex));
-  if (scoped.length === 0) return empty;
+  if (scoped.length === 0) return { ...empty, budget, linksReturned: links.length };
 
   const recoveredEvidence = resolveRecoveredEvidence({
     cleanText: input.cleanText,
@@ -519,5 +597,7 @@ export async function attemptPartialEvidenceRecovery(input: {
     requestedSegments,
     recoveredSegments,
     failedSegments,
+    budget,
+    linksReturned: scoped.length,
   };
 }
