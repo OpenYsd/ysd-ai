@@ -341,7 +341,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "nvidia/nemotron-3-super-120b-a12b:free",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("success");
@@ -359,7 +360,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("failed");
@@ -371,7 +373,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("failed");
@@ -386,7 +389,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("timeout");
@@ -398,7 +402,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("failed");
@@ -412,7 +417,8 @@ describe("④ attemptEvidenceRecovery", () => {
     await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(f).toHaveBeenCalledTimes(1);
@@ -424,7 +430,8 @@ describe("④ attemptEvidenceRecovery", () => {
     const out = await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: [],
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(out.status).toBe("failed");
@@ -443,7 +450,8 @@ describe("④ attemptEvidenceRecovery", () => {
     await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     expect(sent).not.toContain("تقرير.pdf");
@@ -468,7 +476,8 @@ describe("④ attemptEvidenceRecovery", () => {
     await attemptEvidenceRecovery({
       cleanText: CLEAN,
       sourceRegistry: registry,
-      model: "m",
+      // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
+      provider: new OpenRouterProvider(),
       maxVerifiedSources: 4,
     });
     const all = logs.join("\n");

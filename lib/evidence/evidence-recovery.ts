@@ -2,7 +2,7 @@ import "server-only";
 
 import { parseEvidenceMarkers } from "@/lib/evidence/marker-parser";
 import { verifyEvidenceQuote } from "@/lib/evidence/quote-verifier";
-import { requestJsonCompletion } from "@/lib/ai/openrouter";
+import type { AIProviderAdapter } from "@/lib/ai/types";
 import type {
   EvidenceSourceRegistryEntry,
   ResolvedEvidence,
@@ -292,7 +292,14 @@ export function resolveRecoveredEvidence(input: {
 export async function attemptEvidenceRecovery(input: {
   cleanText: string;
   sourceRegistry: EvidenceSourceRegistryEntry[];
-  model: string;
+  /**
+   * ★ المزوّد الذي **أجاب فعلًا** — لا معرّف نموذج.
+   *
+   * كان الاسترداد موصولًا بـOpenRouter بالسلك، فحين أجاب Groq أُرسل معرّف
+   * نموذجه إلى نقطة OpenRouter بمفتاحها. وفي أول طلب حيّ احتاج استردادًا
+   * كان حساب OpenRouter في عطل `auth` — ففشل الاسترداد قبل أن يبدأ.
+   */
+  provider: AIProviderAdapter;
   maxVerifiedSources: number;
   signal?: AbortSignal;
 }): Promise<{ status: RecoveryStatus; evidence: ResolvedEvidence | null }> {
@@ -300,6 +307,7 @@ export async function attemptEvidenceRecovery(input: {
   if (parsed.segments.length === 0 || input.sourceRegistry.length === 0) {
     return { status: "failed", evidence: null };
   }
+  if (!input.provider.requestJsonCompletion) return { status: "failed", evidence: null };
 
   const { systemPrompt, userText } = buildRecoveryPrompt({
     segments: parsed.segments
@@ -308,8 +316,7 @@ export async function attemptEvidenceRecovery(input: {
     sources: input.sourceRegistry.map((e) => ({ marker: e.marker, content: e.snippet.content })),
   });
 
-  const answer = await requestJsonCompletion({
-    model: input.model,
+  const answer = await input.provider.requestJsonCompletion({
     systemPrompt,
     // الحمولة محدودة: إجابة طويلة لا تُرسل كاملة
     userText: userText.slice(0, RECOVERY_MAX_ANSWER_CHARS + RECOVERY_MAX_SNIPPET_CHARS * 8),
@@ -336,5 +343,181 @@ export async function attemptEvidenceRecovery(input: {
   return {
     status: evidence.sources.length > 0 ? "success" : "failed",
     evidence: evidence.sources.length > 0 ? evidence : null,
+  };
+}
+
+// ════════════════════════════════════════════════════════════
+//  استرداد **جزئي** — تغطية ناقصة لا مظروف معطوب
+// ════════════════════════════════════════════════════════════
+
+/** سبب تشغيل الاسترداد — رمز مغلق للتشخيص */
+export type RecoveryReason = "none" | "malformed_envelope" | "partial_coverage";
+
+export interface PartialRecoveryOutcome {
+  status: RecoveryStatus;
+  evidence: ResolvedEvidence | null;
+  /** أرقام المقاطع المطلوبة — أرقام فقط */
+  requestedSegments: number[];
+  recoveredSegments: number[];
+  failedSegments: number[];
+}
+
+/**
+ * يدمج استردادًا جزئيًا في حلٍّ قائم — **بلا مساس بما تحقّق**.
+ *
+ * القاعدة: المقطع المدعوم يبقى كما هو حرفيًا، بمصادره وترتيبها. والمصدر
+ * المسترَدّ لا يُضاف إن كان رقمه موجودًا سلفًا — فلا صفّ مكرّر ولا استبدال
+ * لمرجع صالح رآه المستخدم.
+ */
+export function mergePartialEvidence(
+  base: ResolvedEvidence,
+  recovered: ResolvedEvidence,
+  maxVerifiedSources: number,
+): ResolvedEvidence {
+  const baseMarkers = new Set(base.sources.map((s) => s.marker));
+  const targeted = new Set(base.unsupportedSegments);
+
+  // مصادر جديدة فقط — الرقم الموجود سلفًا يفوز دائمًا
+  const additions = recovered.sources.filter((s) => !baseMarkers.has(s.marker));
+  const limit = Number.isFinite(maxVerifiedSources) ? Math.max(0, Math.floor(maxVerifiedSources)) : 0;
+  const room = Math.max(0, limit - base.sources.length);
+  const accepted = additions.slice(0, room);
+  const acceptedMarkers = new Set(accepted.map((s) => s.marker));
+  const sources = [...base.sources, ...accepted];
+
+  const recoveredByIndex = new Map(recovered.segments.map((s) => [s.segmentIndex, s]));
+
+  const segments = base.segments.map((seg) => {
+    // ★ المدعوم لا يُمسّ — ولا حتى يُعاد ترتيب مصادره
+    if (seg.supported || !targeted.has(seg.segmentIndex)) return seg;
+
+    const found = recoveredByIndex.get(seg.segmentIndex);
+    if (!found) return seg;
+    // تُقبل الأرقام التي نجت من التحقق ومن سقف الخطة معًا
+    const markers = found.sourceMarkers.filter(
+      (m) => acceptedMarkers.has(m) || baseMarkers.has(m),
+    );
+    if (markers.length === 0) return seg;
+    return {
+      segmentIndex: seg.segmentIndex,
+      sourceMarkers: [...markers].sort((a, b) => a - b),
+      supported: true,
+    };
+  });
+
+  const unsupportedSegments = segments.filter((s) => !s.supported).map((s) => s.segmentIndex);
+
+  return {
+    cleanText: base.cleanText,
+    sources,
+    segments,
+    unsupportedSegments,
+    stats: {
+      ...base.stats,
+      verifiedSources: sources.length,
+      // ما أُسقط في المحاولة الجزئية يُضاف إلى ما أُسقط أصلًا
+      droppedInvalidQuotes: base.stats.droppedInvalidQuotes + recovered.stats.droppedInvalidQuotes,
+      droppedUnknownMarkers:
+        base.stats.droppedUnknownMarkers + recovered.stats.droppedUnknownMarkers,
+      droppedByPlanLimit: base.stats.droppedByPlanLimit + Math.max(0, additions.length - accepted.length),
+    },
+  };
+}
+
+/**
+ * استرداد **المقاطع غير المدعومة وحدها** حين يكون المظروف صالحًا.
+ *
+ * الحادثة: مظروفٌ صالح بثلاثة مرشّحين، نجا منها واحد، فبقي مقطعان بلا دعم
+ * رغم أن مقاطع الاسترجاع تحتوي ما يدعمهما. كان المسار يكتفي بذلك ويعرضهما
+ * «غير مدعومَين» — ولا محاولة ثانية إلا حين يكون المظروف معطوبًا.
+ *
+ * ولا يُخفَّف التحقق بحرف: الاقتباس المسترَدّ يمرّ بنفس `resolveRecoveredEvidence`
+ * — تطابق حرفي ثم تطبيع متحفّظ — ومَن يسقط يبقى مقطعه غير مدعوم.
+ */
+export async function attemptPartialEvidenceRecovery(input: {
+  cleanText: string;
+  resolved: ResolvedEvidence;
+  sourceRegistry: EvidenceSourceRegistryEntry[];
+  provider: AIProviderAdapter;
+  maxVerifiedSources: number;
+  signal?: AbortSignal;
+}): Promise<PartialRecoveryOutcome> {
+  const requestedSegments = [...input.resolved.unsupportedSegments].sort((a, b) => a - b);
+  const empty: PartialRecoveryOutcome = {
+    status: "failed",
+    evidence: null,
+    requestedSegments,
+    recoveredSegments: [],
+    failedSegments: requestedSegments,
+  };
+
+  if (requestedSegments.length === 0 || input.sourceRegistry.length === 0) {
+    return { ...empty, status: "not_needed", failedSegments: [] };
+  }
+  if (!input.provider.requestJsonCompletion) return empty;
+
+  const parsed = parseEvidenceMarkers(input.cleanText);
+  const targeted = new Set(requestedSegments);
+  /**
+   * ★ الفقرات المستهدفة وحدها تدخل الموجّه.
+   *
+   * إرسال المدعومة يُغري النموذج بإعادة ربطها فيُنتج بديلًا لمرجع صالح —
+   * وتغييرُ مرجعٍ رآه المستخدم أسوأ من ترك فقرة بلا مرجع. وهو أيضًا أرخص:
+   * حمولة أصغر ورموز أقل.
+   */
+  const segments = parsed.segments
+    .filter((s) => targeted.has(s.segmentIndex))
+    .map((s) => ({ segmentIndex: s.segmentIndex, text: s.cleanText }))
+    .slice(0, 64);
+
+  if (segments.length === 0) return empty;
+
+  const { systemPrompt, userText } = buildRecoveryPrompt({
+    segments,
+    sources: input.sourceRegistry.map((e) => ({ marker: e.marker, content: e.snippet.content })),
+  });
+
+  const answer = await input.provider.requestJsonCompletion({
+    systemPrompt,
+    userText: userText.slice(0, RECOVERY_MAX_ANSWER_CHARS + RECOVERY_MAX_SNIPPET_CHARS * 8),
+    maxTokens: RECOVERY_MAX_TOKENS,
+    timeoutMs: RECOVERY_TIMEOUT_MS,
+    signal: input.signal,
+  });
+
+  if (!answer.ok) {
+    return { ...empty, status: answer.reason === "timeout" ? "timeout" : "failed" };
+  }
+
+  const links = parseRecoveryLinks(answer.text);
+  if (links === null) return empty;
+
+  /**
+   * روابط لفقرات **غير مستهدفة** تُرمى قبل التحقق.
+   *
+   * النموذج قد يربط فقرةً مدعومة سلفًا رغم أنها لم تُرسل إليه. قبولها يعني
+   * تغيير مرجع صالح — وهو ما يمنعه الدمج لاحقًا، لكن رميها هنا أوضح وأرخص.
+   */
+  const scoped = links.filter((l) => targeted.has(l.segmentIndex));
+  if (scoped.length === 0) return empty;
+
+  const recoveredEvidence = resolveRecoveredEvidence({
+    cleanText: input.cleanText,
+    links: scoped,
+    sourceRegistry: input.sourceRegistry,
+    maxVerifiedSources: input.maxVerifiedSources,
+  });
+
+  const merged = mergePartialEvidence(input.resolved, recoveredEvidence, input.maxVerifiedSources);
+  const stillUnsupported = new Set(merged.unsupportedSegments);
+  const recoveredSegments = requestedSegments.filter((i) => !stillUnsupported.has(i));
+  const failedSegments = requestedSegments.filter((i) => stillUnsupported.has(i));
+
+  return {
+    status: recoveredSegments.length > 0 ? "success" : "failed",
+    evidence: recoveredSegments.length > 0 ? merged : null,
+    requestedSegments,
+    recoveredSegments,
+    failedSegments,
   };
 }
