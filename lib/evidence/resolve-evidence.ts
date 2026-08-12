@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  countNumberedClaims,
   parseEvidenceMarkers,
   MAX_MARKER,
 } from "@/lib/evidence/marker-parser";
@@ -69,6 +70,22 @@ export interface ResolvedEvidenceSegment {
 
 export interface ResolvedEvidence {
   cleanText: string;
+  /**
+   * فهرس المقطع لكل سطر — **من التحليل نفسه** الذي اشتُقّت منه المقاطع.
+   *
+   * يُخرَج كي يبني منه المسار التخطيط المُخزَّن بلا إعادة حساب. فالمبثوث
+   * والمخزَّن والمُشتقّ منه `segmentIndex` شيء واحد، والتطابق بنيويّ لا
+   * مُتحقَّق منه.
+   */
+  lineSegments: (number | null)[];
+  /**
+   * عدد البنود المرقّمة المكتشفة في النصّ — **قياس فقط**.
+   *
+   * يُحسب هنا لأن `marker-parser` وحدة أدلة لا يستوردها المسار، ولأن نافذة
+   * القياسات في المسار ممنوع أن تلمس نصّ الإجابة. والفارق بينه وبين
+   * `segments.length` هو ما يكشف فجوة التغطية بلا تسريب حرف واحد.
+   */
+  numberedClaimCount: number;
   sources: ResolvedEvidenceSource[];
   segments: ResolvedEvidenceSegment[];
   unsupportedSegments: number[];
@@ -135,9 +152,12 @@ export function resolveEvidence(input: {
   quoteCandidates: EvidenceQuoteCandidate[];
   sourceRegistry: EvidenceSourceRegistryEntry[];
   maxVerifiedSources: number;
+  /** إصدار التقسيم — الافتراض 1 فلا يتغيّر أي مستدعٍ قائم */
+  segmentation?: 1 | 2;
 }): ResolvedEvidence {
   const parsed = parseEvidenceMarkers(
     typeof input.responseText === "string" ? input.responseText : "",
+    { segmentation: input.segmentation },
   );
 
   /** أرقام النص بترتيب أول ظهور — وهو ترتيب كسر التعادل عند حدّ الخطة */
@@ -307,6 +327,10 @@ export function resolveEvidence(input: {
      * مصادرها تُوسم في `segments` ولا يُشوَّه نصّها.
      */
     cleanText: parsed.cleanText,
+    lineSegments: parsed.lineSegments,
+    numberedClaimCount: countNumberedClaims(
+      typeof input.responseText === "string" ? input.responseText : "",
+    ),
     sources,
     segments,
     unsupportedSegments,

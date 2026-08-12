@@ -26,6 +26,14 @@ export const chatRequestSchema = z
       .string()
       .regex(CLIENT_REQUEST_ID_RE, "معرّف الطلب غير صالح")
       .optional(),
+    /**
+     * أعلى إصدار تقسيم تفهمه حزمة العميل (v0.9.2) — تفاوض قدرات.
+     *
+     * غيابه يعني عميلًا قديمًا أقصاه 1، فلا يستطيع توليد رسالة بإصدار لا
+     * يفهمها. المشكلة تُمنع بالبناء لا بالانضباط. واختياريّته تُبقي كل عميل
+     * منشور يمرّ بلا خطأ تحقّق.
+     */
+    evidenceSegmentationMaxVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   })
   .refine((d) => d.regenerate === true || typeof d.message === "string", {
     message: "message مطلوبة إلا عند إعادة التوليد",

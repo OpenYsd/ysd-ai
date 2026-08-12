@@ -14,6 +14,7 @@ import {
   remarkEvidenceSegments,
   segmentLinesFor,
 } from "@/components/chat/evidence-segments";
+import { decideLayout, type EvidenceLayout } from "@/lib/evidence/evidence-layout";
 
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const { t } = useI18n();
@@ -74,6 +75,15 @@ export interface MarkdownEvidence {
   onOpenCitation: (citation: ClientCitation) => void;
   /** لإعادة التركيز إلى الزرّ بعد إغلاق اللوحة */
   registerButton?: (segmentIndex: number, marker: number, el: HTMLButtonElement | null) => void;
+  /**
+   * إصدار التقسيم وتخطيطه كما حسبهما **الخادم** (v0.9.2).
+   *
+   * غيابهما معًا = رسالة تاريخية ⇒ يُسمح بمحلّل v1. ووجود الإصدار بلا تخطيط،
+   * أو اختلافهما، ⇒ تُخفى الاستشهادات بلا إعادة تفسير: رقمٌ مبنيّ على تقسيم
+   * آخر يضع الزرّ في فقرة خاطئة بلا أي إشارة، والإخفاء مرئيّ.
+   */
+  segmentationVersion?: number | null;
+  layout?: EvidenceLayout | null;
 }
 
 /**
@@ -98,8 +108,24 @@ export const Markdown = memo(function Markdown({
    * استشهادًا — وهي كل ما سبق v0.9 — تُعرض بالشجرة نفسها، فلا فرق في الشكل
    * ولا في الترطيب.
    */
+  /**
+   * ★ قرار التخطيط — مصدر واحد لكل الحالات الأربع.
+   *
+   * يُحسب قبل أي شيء: فحالة «إخفاء» تُبطل الوضع كله، فلا تُعرض أزرار ولا
+   * وسوم فقرات ولا يُستدعى المحلّل.
+   */
+  const decision = useMemo(
+    () =>
+      decideLayout({
+        version: evidence?.segmentationVersion ?? null,
+        layout: evidence?.layout ?? null,
+      }),
+    [evidence?.segmentationVersion, evidence?.layout],
+  );
+
   const active =
     evidence !== undefined &&
+    decision.mode !== "hidden" &&
     (evidence.citations.length > 0 || evidence.unsupportedSegments.length > 0);
 
   const bySegment = useMemo(() => {
@@ -113,10 +139,21 @@ export const Markdown = memo(function Markdown({
     return map;
   }, [active, evidence]);
 
-  const lineSegments = useMemo(
-    () => (active ? segmentLinesFor(text) : []),
-    [active, text],
-  );
+  /**
+   * ★ التخطيط المخزَّن يُستهلك كما هو — ولا يُعاد اشتقاقه.
+   *
+   * `segmentLinesFor` لا تُستدعى إلا للرسائل التاريخية (بلا إصدار وبلا
+   * تخطيط). كان الخادم والعميل يحسبان التقسيم كلٌّ على حدة، وأي افتراق
+   * بينهما يضع الأزرار في مواضع خاطئة صامتة. الآن الخادم يقرّر والعميل يقرأ.
+   */
+  const lineSegments = useMemo(() => {
+    if (!active) return [];
+    if (decision.mode === "layout" && decision.lines) {
+      return decision.lines.map((n) => (n < 0 ? null : n));
+    }
+    if (decision.mode === "legacy") return segmentLinesFor(text);
+    return [];
+  }, [active, decision, text]);
 
   const unsupported = useMemo(
     () => new Set(active && evidence ? evidence.unsupportedSegments : []),

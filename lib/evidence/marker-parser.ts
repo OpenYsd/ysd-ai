@@ -298,8 +298,71 @@ function pushUnique(target: number[], seen: Set<number>, values: number[]): void
  * لا يسجّل شيئًا: لا النصّ ولا العلامات ولا عددها. الوحدة نقيّة، والتسجيل —
  * إن لزم — مسؤولية المستدعي وبعدّادات مجرّدة لا محتوى.
  */
-export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
+/**
+ * ★ قاعدة التقسيم v2.0 — **محافظة عمدًا**.
+ *
+ * بندٌ مرقّم في **العمود صفر** وحده: رقم، ثم `.` أو `)` ملاصقة، ثم مسافة أو
+ * جدولة، ثم محتوى. لا تعداد (`-`/`*`/`+`)، ولا إزاحة 1–3 مسافات.
+ *
+ * الخطأ المسموح هو **عدم التقسيم**: يُبقي السلوك الحالي، بينما التقسيم
+ * الخاطئ يُنتج مقاطع وهمية تُشوّه مواضع أزرار الاستشهاد واستهداف الاسترداد
+ * معًا. ولهذا يمنع النمطُ نفسُه ما يجب منعه بلا استثناءات خاصة:
+ *
+ *   `2023 - Present` — لا `.` ولا `)` ملاصقة للرقم
+ *   `1.2.3`          — لا مسافة بعد الفاصل
+ *   `  2. نص`        — ليس في العمود صفر
+ *   صفّ جدول         — يبدأ بـ`|` أو بإزاحة، فلا يطابق أصلًا
+ *   رقم داخل جملة    — ليس في أول السطر
+ *
+ * وأسيجة الشيفرة مستثناة بحكم مكان الفحص: داخل السياج لا يُفحص شيء.
+ */
+const V2_NUMBERED_ITEM = /^\d{1,9}[.)][ 	]+\S/;
+
+/**
+ * يعدّ بنود القوائم المرقّمة المرئية — **تشخيصٌ لا تقسيم**.
+ *
+ * يُحسب دائمًا ولو كان التحليل بـv1، فتظهر الفجوة بين ما يراه المستخدم بنودًا
+ * مستقلّة وما يعدّه النظام فقرة واحدة. والاسم يصف ما يُقاس: بنود مرقّمة، لا
+ * «ادّعاءات» — فنحن لا نكتشف الادّعاء دلاليًّا.
+ */
+export function countNumberedClaims(text: string): number {
+  if (typeof text !== "string" || text.length === 0) return 0;
+  let n = 0;
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLen = 0;
+  for (const line of text.split(/\r?\n/)) {
+    const fence = fenceInfo(line);
+    if (inFence) {
+      if (fence && fence.char === fenceChar && fence.len >= fenceLen) {
+        inFence = false;
+        fenceChar = "";
+        fenceLen = 0;
+      }
+      continue;
+    }
+    if (fence) {
+      inFence = true;
+      fenceChar = fence.char;
+      fenceLen = fence.len;
+      continue;
+    }
+    if (V2_NUMBERED_ITEM.test(line)) n++;
+  }
+  return n;
+}
+
+export interface ParseEvidenceOptions {
+  /** إصدار التقسيم — الافتراض 1 فلا يتغيّر أي مستدعٍ قائم */
+  segmentation?: 1 | 2;
+}
+
+export function parseEvidenceMarkers(
+  text: string,
+  options?: ParseEvidenceOptions,
+): ParsedEvidenceOutput {
   if (typeof text !== "string" || text.length === 0) return { ...EMPTY };
+  const segmentation = options?.segmentation === 2 ? 2 : 1;
 
   /**
    * حدّ الطول: فوقه لا نمسح إطلاقًا ونُعيد النصّ كما هو بفقرة واحدة.
@@ -429,6 +492,16 @@ export function parseEvidenceMarkers(text: string): ParsedEvidenceOutput {
       wholeClean.push(line);
       bufLines.push(lineNo);
       continue;
+    }
+
+    /**
+     * ★ v2: بند مرقّم في العمود صفر يبدأ فقرة جديدة.
+     *
+     * يقع **بعد** فحص السياج وقبل معالجة السطر: فالسطر نفسه ينتمي إلى الفقرة
+     * الجديدة لا القديمة. وv1 لا يمرّ من هنا إطلاقًا — حدودها كما هي حرفيًّا.
+     */
+    if (segmentation === 2 && V2_NUMBERED_ITEM.test(line)) {
+      flush();
     }
 
     // سطر فارغ خارج السياج ⇒ نهاية فقرة (ويبقى في النص النظيف فاصلًا)

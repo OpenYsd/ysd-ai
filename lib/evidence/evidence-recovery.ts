@@ -1,6 +1,9 @@
 import "server-only";
 
-import { parseEvidenceMarkers } from "@/lib/evidence/marker-parser";
+import {
+  countNumberedClaims,
+  parseEvidenceMarkers,
+} from "@/lib/evidence/marker-parser";
 import { verifyEvidenceQuote } from "@/lib/evidence/quote-verifier";
 import type { AIProviderAdapter } from "@/lib/ai/types";
 import type {
@@ -359,6 +362,8 @@ export function resolveRecoveredEvidence(input: {
 
   return {
     cleanText: input.cleanText,
+    lineSegments: parsed.lineSegments,
+    numberedClaimCount: countNumberedClaims(input.cleanText),
     sources,
     segments,
     unsupportedSegments: segments.filter((s) => !s.supported).map((s) => s.segmentIndex),
@@ -530,6 +535,9 @@ export function mergePartialEvidence(
 
   return {
     cleanText: base.cleanText,
+    // النصّ لم يتغيّر بالدمج ⇒ التخطيط والعدّ يبقيان كما هما
+    lineSegments: base.lineSegments,
+    numberedClaimCount: base.numberedClaimCount,
     sources,
     segments,
     unsupportedSegments,

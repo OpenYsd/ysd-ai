@@ -265,7 +265,12 @@ describe("★ (L) اختبار المستهلك — التخزين", () => {
         unsupportedSegments: [0, 1],
         segments: [],
         sources: [],
+        numberedClaimCount: 3,
       },
+      chosenSegmentationVersion: 1,
+      layoutLineCount: 7,
+      layoutOmittedOversize: false,
+      evidenceLayout: { v: 1, lines: [0, 0, -1, 1, 1, -1, 2] },
       recoveryStatus: "failed",
       recoveryReason: "malformed_envelope",
       recoveryTel: {
@@ -294,6 +299,17 @@ describe("★ (L) اختبار المستهلك — التخزين", () => {
     expect(saved.recoveryProviderCallAttempted).toBe(true);
     expect(saved.recoveryProviderCallSucceeded).toBe(true);
     expect(saved.recoveryVerifiedSources).toBe(0);
+
+    // ★ (v0.9.2) قياسات التقسيم تُخزَّن هي الأخرى — لا في المُنتِج وحده
+    expect(saved.evidenceSegmentationVersion).toBe(1);
+    expect(saved.detectedNumberedClaimCount).toBe(3);
+    expect(saved.parsedSegmentCount).toBe(0);
+    // الفجوة = مرقّمة مكتشفة − مقاطع محلَّلة، وهي بالضبط ما رُصد حيًّا
+    expect(saved.numberedClaimCoverageGap).toBe(3);
+    expect(saved.layoutLineCount).toBe(7);
+    expect(saved.layoutOmittedOversize).toBe(false);
+    // إنذار لا تقرير: التخطيط يُبنى بالإصدار المختار نفسه فلا يفترقان
+    expect(saved.layoutVersionMismatch).toBe(false);
   });
 
   it("★ التشخيص المحفوظ أرقام ورموز — بلا أي محتوى", () => {

@@ -47,6 +47,11 @@ import { EVIDENCE_MODE_INSTRUCTIONS } from "@/lib/evidence/evidence-prompt";
 import { extractEvidenceEnvelope } from "@/lib/evidence/evidence-envelope";
 import { createEvidenceStream } from "@/lib/evidence/evidence-stream";
 import { resolveEvidence } from "@/lib/evidence/resolve-evidence";
+import {
+  buildEvidenceLayout,
+  negotiateSegmentationVersion,
+  type EvidenceLayout,
+} from "@/lib/evidence/evidence-layout";
 import { replaceMessageEvidence } from "@/lib/evidence/evidence-repository";
 import {
   attemptEvidenceRecovery,
@@ -572,6 +577,17 @@ export async function POST(req: NextRequest) {
   /** نفس ترقيم `<source index="n">` بحكم البناء لا بالتصادف */
   const sourceRegistry = evidenceEnabled ? buildSourceRegistry(ragSnippets) : [];
 
+  /**
+   * تفاوض قدرات التقسيم (v0.9.2).
+   *
+   * `chosen = min(الخادم, العميل)`. وغياب الحقل يعني عميلًا قديمًا أقصاه 1 —
+   * فلا يستطيع توليد رسالة بإصدار لا يفهمها. تُحسم مرة واحدة هنا، وتحكم
+   * التحليل والتخطيط و`segmentIndex` والبثّ والتخزين معًا: قيمة واحدة لا أربع.
+   */
+  const chosenSegmentationVersion = negotiateSegmentationVersion(
+    parsed.data.evidenceSegmentationMaxVersion,
+  );
+
   if (ragSnippets.length > 0) {
     // كتلة منفصلة مُسوَّرة — الموجه الأساسي لا يتغير ومحتوى الملفات ليس تعليمات
     systemPrompt = `${systemPrompt}\n\n${buildSourcesContext(ragSnippets)}`;
@@ -627,6 +643,12 @@ export async function POST(req: NextRequest) {
    * `null` يعني أن المسار لم يعمل أصلًا (لا مصادر، أو ردّ ناقص، أو إجهاض).
    */
   let evidenceDiagnostics: Record<string, unknown> | null = null;
+  /** التخطيط المحسوب مرة واحدة — يُبثّ ويُخزَّن من الكائن نفسه */
+  let evidenceLayout: EvidenceLayout | null = null;
+  let layoutLineCount = 0;
+  let layoutOmittedOversize = false;
+  /** لقطة البيانات الوصفية المحفوظة — يُدمج فيها التخطيط بعد حسابه */
+  let savedMeta: Record<string, unknown> = {};
   // النموذج الفعلي الذي أجاب (قد يختلف عن المنطقي مثل ysd/free)
   let actualModelId: string | null = null;
   /** آخر استهلاك مرصود — يُكتب صفًّا واحدًا بعد البثّ (v0.8.0) */
@@ -1176,6 +1198,7 @@ export async function POST(req: NextRequest) {
            */
           // المزوّد الذي أجاب فعلًا — لا الذي بدأ الطلب (احتياط v0.9.0)
           meta.provider = selectedProvider;
+          savedMeta = meta;
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
           if (ragSnippets.length > 0) {
@@ -1255,6 +1278,7 @@ export async function POST(req: NextRequest) {
               sourceRegistry,
               // ثابت خادمي — لا يُقرأ من الطلب ولا من الخطة
               maxVerifiedSources: MAX_VERIFIED_SOURCES,
+              segmentation: chosenSegmentationVersion,
             });
 
             /**
@@ -1367,6 +1391,46 @@ export async function POST(req: NextRequest) {
                   ? a.segmentIndex - b.segmentIndex
                   : a.marker - b.marker,
               );
+              /**
+               * ★ التخطيط يُحسب **مرة واحدة** من `lineSegments` الذي أنتجه
+               * التحليل نفسه — بعد الاسترداد كي يعكس الحلّ النهائي.
+               *
+               * ويُبثّ **قبل** أي إطار استشهاد: العميل يحتاج التخطيط ليضع
+               * الأزرار، فوصول `segmentIndex` قبله يعني رقمًا بلا مرجع.
+               */
+              evidenceLayout = buildEvidenceLayout(
+                resolved.lineSegments,
+                chosenSegmentationVersion,
+              );
+              layoutLineCount = resolved.lineSegments.length;
+              layoutOmittedOversize = evidenceLayout === null;
+
+              send({
+                type: "evidence_layout",
+                segmentationVersion: chosenSegmentationVersion,
+                layout: evidenceLayout,
+              });
+
+              /**
+               * ★ يُخزَّن **الكائن نفسه** الذي بُثّ للتوّ.
+               *
+               * لا إعادة حساب ولا اشتقاق ثانٍ: فتطابق البثّ وإعادة التحميل
+               * بنيويّ لا مُتحقَّق منه. ولو فشل هذا التحديث بقيت الرسالة بلا
+               * تخطيط — فتُخفى استشهاداتها وفق العقد، ولا تُعاد تفسيرًا.
+               *
+               * ويُكتب في `metadata` القائم (JSONB) — بلا ترحيل ولا عمود جديد.
+               */
+              await supabase
+                .from("messages")
+                .update({
+                  metadata: {
+                    ...savedMeta,
+                    evidenceSegmentationVersion: chosenSegmentationVersion,
+                    evidenceLayout,
+                  },
+                })
+                .eq("id", assistantMessageId);
+
               for (const link of links) {
                 const src = byMarker.get(link.marker);
                 if (!src) continue;
@@ -1404,6 +1468,24 @@ export async function POST(req: NextRequest) {
              */
             evidenceDiagnostics = {
               envelopeStatus: envelope.status,
+              // تقسيم الأدلة (v0.9.2) — أعداد ومنطقيّات فقط
+              evidenceSegmentationVersion: chosenSegmentationVersion,
+              detectedNumberedClaimCount: resolved.numberedClaimCount,
+              parsedSegmentCount: resolved.segments.length,
+              numberedClaimCoverageGap: Math.max(
+                0,
+                resolved.numberedClaimCount - resolved.segments.length,
+              ),
+              layoutLineCount,
+              layoutOmittedOversize,
+              /**
+               * يجب أن يبقى `false` أبدًا: التخطيط يُبنى بالإصدار المختار
+               * نفسه. فهو ليس تقريرًا بل إنذار — إن صار `true` يومًا فقد
+               * دخل حسابٌ ثانٍ إلى المسار، وهذا بالضبط ما جاء العقد ليمنعه.
+               */
+              layoutVersionMismatch:
+                evidenceLayout !== null &&
+                evidenceLayout.v !== chosenSegmentationVersion,
               /**
                * ★ سبب مغلق بدل كلمة تجمع عشرة شروط.
                *

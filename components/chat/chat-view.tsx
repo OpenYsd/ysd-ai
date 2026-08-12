@@ -38,6 +38,10 @@ import {
   type EvidenceSummary,
 } from "@/lib/evidence/client-citation";
 import { EvidenceSourcePanel } from "@/components/chat/evidence-source-panel";
+import {
+  CLIENT_MAX_VERSION,
+  type EvidenceLayout,
+} from "@/lib/evidence/evidence-layout";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { Markdown } from "./markdown";
@@ -127,6 +131,19 @@ interface Msg {
   /** ملخّص الأدلة من `messages.metadata.evidence` — `null` يعني بلا أدلة */
   evidence?: EvidenceSummary | null;
   /**
+   * إصدار التقسيم الذي وُلِّدت به الرسالة (v0.9.2) — `null`/غياب = رسالة قديمة.
+   *
+   * يأتي من البثّ ومن `metadata` بالشكل نفسه، فقرار العرض واحد في الحالين.
+   */
+  segmentationVersion?: number | null;
+  /**
+   * تخطيط الأسطر الذي حسمه الخادم — **المرجع الوحيد** لمواضع الأزرار.
+   *
+   * حضوره يعني: لا تُحلّل النصّ في المتصفّح. وغيابه في رسالة حديثة يعني
+   * إخفاء الاستشهادات لا إعادة تفسيرها: خطأ صامت في الموضع أسوأ من غيابه.
+   */
+  evidenceLayout?: EvidenceLayout | null;
+  /**
    * v0.8.1 — إشعار من الخادم يُفسّر ما حدث (تخفيض النموذج بالخطة مثلًا).
    * يبقى ملتصقًا بالرسالة لا كتنبيه عابر: المستخدم قد يقرأ الرد بعد دقائق.
    */
@@ -173,7 +190,9 @@ interface SSEEvent {
     // v0.9.0 — إضافية بحتة: العميل الذي يجهلها يتجاهلها ولا ينكسر
     | "citation"
     | "evidence"
-    | "evidence_unavailable";
+    | "evidence_unavailable"
+    // v0.9.2 — يسبق كل إطار citation: بلا تخطيط لا معنى لـsegmentIndex
+    | "evidence_layout";
   /** رمز تصنيف الخطأ (v0.6.6) */
   code?: string;
   text?: string;
@@ -186,6 +205,9 @@ interface SSEEvent {
   completion?: MsgCompletion;
   /** v0.8.1 — النموذج الفعلي بعد التخفيض (مع notice) */
   effectiveModel?: string;
+  /** v0.9.2 — حقول إطار `evidence_layout` */
+  segmentationVersion?: number;
+  layout?: EvidenceLayout | null;
   /** v0.9.0 — حقول إطار citation (نفس شكل `CitationEvent`) */
   segmentIndex?: number;
   marker?: number;
@@ -389,6 +411,18 @@ export function ChatView({
       setError(null);
       stickRef.current = true;
 
+      /**
+       * ★ إعلان قدرة التقسيم (v0.9.2) — هنا وحدها.
+       *
+       * `streamRequest` معبر كل المسارات: رسالة جديدة، تحرير، إعادة توليد.
+       * فإعلانها في هذا الموضع يمنع مسارًا ينسى الإعلان فيولّد رسالة بإصدار
+       * لا يفهمه. والخادم يأخذ `min(خادم, عميل)` فلا يفرض علينا ما نجهله.
+       */
+      const requestBody = {
+        ...body,
+        evidenceSegmentationMaxVersion: CLIENT_MAX_VERSION,
+      };
+
       const asstTempId = `tmp-a-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
@@ -402,7 +436,7 @@ export function ChatView({
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(requestBody),
           signal: ac.signal,
         });
 
@@ -475,6 +509,26 @@ export function ChatView({
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === asstTempId ? { ...m, sources: data.sources } : m,
+                ),
+              );
+            } else if (data.type === "evidence_layout") {
+              /**
+               * ★ التخطيط الخادميّ (v0.9.2) — يصل **قبل** أي إطار استشهاد.
+               *
+               * يُخزَّن كما وصل بلا اشتقاق: هو نفسه ما كُتب في `metadata`،
+               * فيتطابق البثّ وإعادة التحميل بنيويًّا لا بالمصادفة. و`null`
+               * قيمة معتبَرة تعني «لا تخطيط» فتُخفى الأزرار.
+               */
+              const layout = (data.layout ?? null) as EvidenceLayout | null;
+              const version =
+                typeof data.segmentationVersion === "number"
+                  ? data.segmentationVersion
+                  : null;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === asstTempId
+                    ? { ...m, segmentationVersion: version, evidenceLayout: layout }
+                    : m,
                 ),
               );
             } else if (data.type === "citation" && typeof data.marker === "number") {
@@ -1109,6 +1163,16 @@ export function ChatView({
                                     onOpenCitation: (c) => openCitationPanel(m.id, c),
                                     registerButton: (segmentIndex, marker, el) =>
                                       registerCitationButton(m.id, segmentIndex, marker, el),
+                                    /**
+                                     * ★ التخطيط الخادميّ — مصدر مواضع الأزرار.
+                                     *
+                                     * يُمرَّر كما وصل: من البثّ أو من
+                                     * `metadata`. والعارض يقرّر بـ`decideLayout`
+                                     * لا بالتخمين، فلا يُحلَّل النصّ هنا إلا
+                                     * لرسالة قديمة صراحةً.
+                                     */
+                                    segmentationVersion: m.segmentationVersion ?? null,
+                                    layout: m.evidenceLayout ?? null,
                                   }
                                 : undefined
                             }

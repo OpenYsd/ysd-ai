@@ -8,6 +8,7 @@ import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 import { loadConversationEvidence } from "@/lib/evidence/evidence-reader";
 import { evidenceSummaryFromMetadata } from "@/lib/evidence/client-citation";
+import { readEvidenceLayout } from "@/lib/evidence/evidence-layout";
 
 export default async function ConversationPage({
   params,
@@ -105,6 +106,8 @@ export default async function ConversationPage({
       const meta = (m.metadata ?? {}) as {
         sources?: unknown;
         completion?: { status?: string; reason?: string | null; notice?: boolean };
+        evidenceSegmentationVersion?: unknown;
+        evidenceLayout?: unknown;
       };
       // حالة الاكتمال (v0.7.0 RC8): تأتي من القاعدة وحدها — لا localStorage.
       // غيابها يعني رَدًّا مكتملًا، فالرسائل القديمة تُعرض كما كانت تمامًا.
@@ -121,6 +124,20 @@ export default async function ConversationPage({
         content: m.content,
         citations: isAssistant ? (evidence.byMessage.get(m.id) ?? []) : [],
         evidence: isAssistant ? evidenceSummaryFromMetadata(m.metadata) : null,
+        /**
+         * ★ التخطيط المخزَّن (v0.9.2) — نفس ما بُثّ لحظة التوليد.
+         *
+         * يُقرأ بـ`readEvidenceLayout` لا بتحويل نوع: `metadata` حقل JSONB
+         * حرّ، وصفٌّ قديم قد يحمل أي شيء. وغيابه في رسالة قديمة يعطي
+         * `segmentationVersion: null` — وهي إشارة «حلّل كما في السابق»،
+         * لا إشارة عطل.
+         */
+        segmentationVersion: isAssistant
+          ? typeof meta.evidenceSegmentationVersion === "number"
+            ? meta.evidenceSegmentationVersion
+            : null
+          : null,
+        evidenceLayout: isAssistant ? readEvidenceLayout(meta.evidenceLayout) : null,
         sources: Array.isArray(meta.sources)
           ? (meta.sources as import("@/components/chat/chat-view").MsgSource[])
           : undefined,
