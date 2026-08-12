@@ -27,6 +27,58 @@ import { readFenceMarker } from "@/lib/evidence/marker-parser";
 export const EVIDENCE_START = "<<<YSD_EVIDENCE_V1>>>";
 export const EVIDENCE_END = "<<<END_YSD_EVIDENCE_V1>>>";
 
+/**
+ * ★ الصيغة الناقصة المرصودة حيًّا: `>` واحدة أقلّ في نهاية السنتينل.
+ *
+ * أرسل Groq `<<<YSD_EVIDENCE_V1>>` و`<<<END_YSD_EVIDENCE_V1>>` — بثلاث `<`
+ * وعلامتَي `>` بدل ثلاث. الماسح لم يرَ سنتينلًا، فعاد `missing`، ومعناه
+ * «النصّ كله مرئي» — فظهرت الكتلة الداخلية للمستخدم وحُفظت في محتوى الرسالة.
+ *
+ * القبول **ضيّق عمدًا**: علامة `>` واحدة ناقصة لا غير. لا مسافة تحرير، ولا
+ * تعبير نمطي فضفاض، ولا أسماء قريبة. فكل توسيع هنا يفتح بابًا لنصّ مستخدم
+ * يُقرأ سنتينلًا، وذاك أسوأ من العطل الذي نُصلحه.
+ */
+export const EVIDENCE_START_NEAR_MISS = EVIDENCE_START.slice(0, -1);
+export const EVIDENCE_END_NEAR_MISS = EVIDENCE_END.slice(0, -1);
+
+/** حالة السنتينل — رمز مغلق للتشخيص، بلا أي محتوى */
+export type SentinelStatus = "canonical" | "repaired_missing_trailing_gt" | "absent";
+
+function repairOne(input: string, near: string, canonical: string): { out: string; hit: boolean } {
+  let out = "";
+  let i = 0;
+  let hit = false;
+  for (;;) {
+    const at = input.indexOf(near, i);
+    if (at === -1) {
+      out += input.slice(i);
+      break;
+    }
+    // متبوعة بـ`>` ⇒ قانونية سلفًا، تُترك كما هي
+    if (input[at + near.length] === ">") {
+      out += input.slice(i, at + near.length + 1);
+      i = at + near.length + 1;
+      continue;
+    }
+    out += input.slice(i, at) + canonical;
+    i = at + near.length;
+    hit = true;
+  }
+  return { out, hit };
+}
+
+/**
+ * يُقوّم الصيغة الناقصة إلى القانونية — ولا يلمس ما عداها.
+ *
+ * الإصلاح يقع **داخل** الكتلة أو عند بدايتها، فلا يُزحزح موضع القطع: النصّ
+ * المرئي يبقى ما قبل السنتينل بالضبط.
+ */
+export function canonicalizeSentinels(text: string): { text: string; repaired: boolean } {
+  const end = repairOne(text, EVIDENCE_END_NEAR_MISS, EVIDENCE_END);
+  const start = repairOne(end.out, EVIDENCE_START_NEAR_MISS, EVIDENCE_START);
+  return { text: start.out, repaired: end.hit || start.hit };
+}
+
 /** سقف الكتلة الآلية — 16KB بحساب بايتات UTF-8 لا محارف */
 export const MAX_ENVELOPE_BYTES = 16 * 1024;
 
@@ -48,6 +100,10 @@ export interface ExtractedEvidenceEnvelope {
   visibleText: string;
   quoteCandidates: EvidenceEnvelopeQuote[];
   status: EvidenceEnvelopeStatus;
+  /** حالة السنتينل — للتشخيص وحده */
+  sentinelStatus: SentinelStatus;
+  /** هل طُبّق التقويم الضيّق؟ */
+  sentinelRepairApplied: boolean;
 }
 
 /** مفاتيح تلوّث النموذج الأولي — تُرفض أينما ظهرت */
@@ -216,12 +272,33 @@ function readEnvelopeBody(json: string): EvidenceEnvelopeQuote[] | null {
  * بعدّاد `status` وحده عند المستدعي.
  */
 export function extractEvidenceEnvelope(raw: string): ExtractedEvidenceEnvelope {
-  const text = typeof raw === "string" ? raw : "";
+  const input = typeof raw === "string" ? raw : "";
+  /**
+   * ★ التقويم قبل المسح — وهو ما يجعل الحجر يعمل.
+   *
+   * الماسح لا يعرف إلا الصيغة القانونية. فصيغةٌ ناقصة `>` واحدة كانت تُقرأ
+   * «لا سنتينل»، و«لا سنتينل» تعني «النصّ كله مرئي» — فتخرج الكتلة الداخلية
+   * إلى المستخدم وتُحفظ. وبالتقويم يراها الماسح، فيقع القطع، ويعمل الحجر
+   * في كل المسارات — حتى لو حُكم عليها بعد ذلك بالفساد.
+   */
+  const canonical = canonicalizeSentinels(input);
+  const text = canonical.text;
+  const sentinelRepairApplied = canonical.repaired;
   const scan = scanEvidenceSentinel(text);
 
   if (scan.index === -1) {
-    return { visibleText: text, quoteCandidates: [], status: "missing" };
+    return {
+      visibleText: text,
+      quoteCandidates: [],
+      status: "missing",
+      sentinelStatus: "absent",
+      sentinelRepairApplied: false,
+    };
   }
+
+  const sentinelStatus: SentinelStatus = sentinelRepairApplied
+    ? "repaired_missing_trailing_gt"
+    : "canonical";
 
   /**
    * ★ القطع أولًا وقبل أي حكم على الصحّة.
@@ -234,6 +311,8 @@ export function extractEvidenceEnvelope(raw: string): ExtractedEvidenceEnvelope 
     visibleText,
     quoteCandidates: [],
     status,
+    sentinelStatus,
+    sentinelRepairApplied,
   });
 
   if (scan.orphanEnd) return bad("malformed");
@@ -266,5 +345,11 @@ export function extractEvidenceEnvelope(raw: string): ExtractedEvidenceEnvelope 
   const quoteCandidates = readEnvelopeBody(body);
   if (quoteCandidates === null) return bad("malformed");
 
-  return { visibleText, quoteCandidates, status: "valid" };
+  return {
+    visibleText,
+    quoteCandidates,
+    status: "valid",
+    sentinelStatus,
+    sentinelRepairApplied,
+  };
 }

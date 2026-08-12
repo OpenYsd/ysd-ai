@@ -4,6 +4,7 @@ import {
   readFenceMarker,
 } from "@/lib/evidence/marker-parser";
 import {
+  canonicalizeSentinels,
   EVIDENCE_END,
   EVIDENCE_START,
   extractEvidenceEnvelope,
@@ -261,7 +262,17 @@ export function createEvidenceStream(options: { enabled: boolean }): EvidenceStr
 
   /** يُرسل ما استقرّ: الأسطر المكتملة، ثم ما استقرّ من السطر الجاري */
   const advance = (): string => {
-    const scan = scanEvidenceSentinel(raw);
+    /**
+     * ★ المسح على النصّ **المُقوَّم** — وإلا لم يُرَ السنتينل الناقص.
+     *
+     * الماسح لا يعرف إلا الصيغة القانونية، فصيغةٌ ناقصة `>` واحدة كانت تُقرأ
+     * «لا سنتينل» ⇒ يستقرّ البثّ على النصّ كلّه ⇒ تخرج الكتلة الداخلية إلى
+     * المستخدم حرفًا حرفًا. رُصد حيًّا وحُفظ في محتوى الرسالة.
+     *
+     * والفهرس صالح لـ`raw` نفسه: التقويم لا يُدرج إلا **عند** بداية السنتينل
+     * أو بعدها، فلا يُزحزح موضعها. فالقطع يقع في المكان الصحيح من النصّ الخام.
+     */
+    const scan = scanEvidenceSentinel(canonicalizeSentinels(raw).text);
     const limit = scan.index === -1 ? raw.length : scan.index;
     // آخر سطر جديد **قبل** الحدّ: ما بعده سطرٌ جارٍ لم يكتمل
     const lineStart = raw.lastIndexOf("\n", limit - 1) + 1;
