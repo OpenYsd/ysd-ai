@@ -154,6 +154,7 @@ const provider = (reply: string | null): AIProviderAdapter =>
 
 const recover = (reply: string | null) =>
   attemptEvidenceRecovery({
+    segmentation: 1,
     cleanText: CLEAN,
     sourceRegistry: registry,
     provider: provider(reply),

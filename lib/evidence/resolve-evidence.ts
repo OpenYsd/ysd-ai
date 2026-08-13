@@ -71,6 +71,17 @@ export interface ResolvedEvidenceSegment {
 export interface ResolvedEvidence {
   cleanText: string;
   /**
+   * ★ الإصدار الذي **قُسّم به هذا الحلّ فعلًا** — لا الذي نتمنّاه.
+   *
+   * يُحمل مع المعطى لا بجواره. فكل من يبني على `ResolvedEvidence` — استردادًا
+   * أو دمجًا — يرث الإصدار منه بدل أن يُمرَّر إليه وسيطًا يُنسى.
+   *
+   * وقد نُسي فعلًا: مسار الاسترداد كان يستدعي المحلّل بلا إصدار فيهبط إلى
+   * v1، بينما الحلّ الذي يخدمه مبنيّ بـv2. فصارت فهارس المقاطع تعني شيئين
+   * مختلفين على جانبَي الدمج — واقتباس ادّعاءٍ يُلصق بادّعاءٍ آخر.
+   */
+  segmentationVersion: 1 | 2;
+  /**
    * فهرس المقطع لكل سطر — **من التحليل نفسه** الذي اشتُقّت منه المقاطع.
    *
    * يُخرَج كي يبني منه المسار التخطيط المُخزَّن بلا إعادة حساب. فالمبثوث
@@ -155,9 +166,16 @@ export function resolveEvidence(input: {
   /** إصدار التقسيم — الافتراض 1 فلا يتغيّر أي مستدعٍ قائم */
   segmentation?: 1 | 2;
 }): ResolvedEvidence {
+  /**
+   * ★ يُطبَّع مرة واحدة هنا، ويُستعمل في التحليل وفي المُخرَج معًا.
+   *
+   * فالمعلَن في `segmentationVersion` هو **عين** ما مرّ إلى المحلّل — لا
+   * قيمة موازية قد تنزلق عنه. والتطابق بنيويّ لا مُتحقَّق منه.
+   */
+  const segmentationVersion: 1 | 2 = input.segmentation === 2 ? 2 : 1;
   const parsed = parseEvidenceMarkers(
     typeof input.responseText === "string" ? input.responseText : "",
-    { segmentation: input.segmentation },
+    { segmentation: segmentationVersion },
   );
 
   /** أرقام النص بترتيب أول ظهور — وهو ترتيب كسر التعادل عند حدّ الخطة */
@@ -327,6 +345,7 @@ export function resolveEvidence(input: {
      * مصادرها تُوسم في `segments` ولا يُشوَّه نصّها.
      */
     cleanText: parsed.cleanText,
+    segmentationVersion,
     lineSegments: parsed.lineSegments,
     numberedClaimCount: countNumberedClaims(
       typeof input.responseText === "string" ? input.responseText : "",

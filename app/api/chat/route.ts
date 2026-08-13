@@ -1321,6 +1321,8 @@ export async function POST(req: NextRequest) {
                 sourceRegistry,
                 provider: recoveryProvider,
                 maxVerifiedSources: MAX_VERIFIED_SOURCES,
+                // المظروف معطوب فلا `resolved` يُورَث منه — يُمرَّر صراحةً
+                segmentation: chosenSegmentationVersion,
                 signal: req.signal,
               });
               recoveryStatus = recovered.status;

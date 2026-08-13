@@ -241,6 +241,7 @@ describe("③ التحقق الخادمي للروابط", () => {
 
   it("★ اقتباس حقيقي يُقبل وتُشتقّ قيمه من المقطع", () => {
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: [{ segmentIndex: 0, marker: 1, quote: REAL_QUOTE }],
       sourceRegistry: registry,
@@ -258,6 +259,7 @@ describe("③ التحقق الخادمي للروابط", () => {
 
   it("★ اقتباس غير موجود في المصدر يُرفض", () => {
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: [{ segmentIndex: 0, marker: 1, quote: "جملة لا وجود لها في المقطع إطلاقًا" }],
       sourceRegistry: registry,
@@ -269,6 +271,7 @@ describe("③ التحقق الخادمي للروابط", () => {
 
   it("★ رقم ليس في السجلّ يُرفض", () => {
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: [{ segmentIndex: 0, marker: 9, quote: REAL_QUOTE }],
       sourceRegistry: registry,
@@ -280,6 +283,7 @@ describe("③ التحقق الخادمي للروابط", () => {
 
   it("★ فقرة غير موجودة في الإجابة تُرفض", () => {
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: [{ segmentIndex: 99, marker: 1, quote: REAL_QUOTE }],
       sourceRegistry: registry,
@@ -295,6 +299,7 @@ describe("③ التحقق الخادمي للروابط", () => {
       snippet: { ...SNIPPETS[0]!, chunkId: `c${i}`, similarity: 1 - i * 0.1 },
     }));
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: many.map((m) => ({ segmentIndex: 0, marker: m.marker, quote: REAL_QUOTE })),
       sourceRegistry: many,
@@ -306,6 +311,7 @@ describe("③ التحقق الخادمي للروابط", () => {
 
   it("النصّ المعروض لا يتغيّر بالاسترداد", () => {
     const out = resolveRecoveredEvidence({
+      segmentation: 1,
       cleanText: CLEAN,
       links: [{ segmentIndex: 0, marker: 1, quote: REAL_QUOTE }],
       sourceRegistry: registry,
@@ -339,6 +345,7 @@ describe("④ attemptEvidenceRecovery", () => {
       ),
     );
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -358,6 +365,7 @@ describe("④ attemptEvidenceRecovery", () => {
       ),
     );
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -371,6 +379,7 @@ describe("④ attemptEvidenceRecovery", () => {
   it("★ JSON تالف ⇒ فشل آمن بلا رمي", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonReply("عذرًا، لم أفهم الطلب.")));
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -387,6 +396,7 @@ describe("④ attemptEvidenceRecovery", () => {
       vi.fn(() => Promise.reject(Object.assign(new Error("aborted"), { name: "AbortError" }))),
     );
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -400,6 +410,7 @@ describe("④ attemptEvidenceRecovery", () => {
   it("★ خطأ HTTP ⇒ فشل آمن", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 500 })));
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -415,6 +426,7 @@ describe("④ attemptEvidenceRecovery", () => {
     );
     vi.stubGlobal("fetch", f);
     await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -428,6 +440,7 @@ describe("④ attemptEvidenceRecovery", () => {
     const f = vi.fn();
     vi.stubGlobal("fetch", f);
     const out = await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: [],
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -448,6 +461,7 @@ describe("④ attemptEvidenceRecovery", () => {
       }),
     );
     await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو
@@ -474,6 +488,7 @@ describe("④ attemptEvidenceRecovery", () => {
       ),
     );
     await attemptEvidenceRecovery({
+      segmentation: 1,
       cleanText: CLEAN,
       sourceRegistry: registry,
       // المزوّد الحقيقي — والنقل مُحاكى، فيُختبر المسار كما هو

@@ -26,6 +26,7 @@ const SECRET = "SECRET_QUOTE_MUST_NOT_APPEAR";
 
 const evidence = (over: Partial<ResolvedEvidence> = {}): ResolvedEvidence => ({
   cleanText: "نصّ نظيف",
+  segmentationVersion: 1,
   lineSegments: [0],
   numberedClaimCount: 0,
   sources: [

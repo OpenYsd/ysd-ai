@@ -254,8 +254,17 @@ export function resolveRecoveredEvidence(input: {
   links: RecoveryLink[];
   sourceRegistry: EvidenceSourceRegistryEntry[];
   maxVerifiedSources: number;
+  /**
+   * ★ إصدار التقسيم — **مطلوب**، لا اختياري.
+   *
+   * جعله اختياريًّا يعيد العطل نفسه: مستدعٍ ينساه فيهبط صامتًا إلى v1
+   * وتصير فهارس المقاطع تعني شيئًا آخر. فالنوع هو الحارس هنا.
+   */
+  segmentation: 1 | 2;
 }): ResolvedEvidence {
-  const parsed = parseEvidenceMarkers(input.cleanText);
+  const parsed = parseEvidenceMarkers(input.cleanText, {
+    segmentation: input.segmentation,
+  });
   const segmentCount = parsed.segments.length;
 
   const registry = new Map(input.sourceRegistry.map((e) => [e.marker, e.snippet]));
@@ -362,6 +371,8 @@ export function resolveRecoveredEvidence(input: {
 
   return {
     cleanText: input.cleanText,
+    // يُعلن الإصدار الذي قُسّم به فعلًا — فيتحقّق منه الدمج قبل أن يثق به
+    segmentationVersion: input.segmentation,
     lineSegments: parsed.lineSegments,
     numberedClaimCount: countNumberedClaims(input.cleanText),
     sources,
@@ -396,6 +407,13 @@ export async function attemptEvidenceRecovery(input: {
    */
   provider: AIProviderAdapter;
   maxVerifiedSources: number;
+  /**
+   * ★ إصدار التقسيم المتفاوَض عليه — **مطلوب** ويأتي من المسار.
+   *
+   * المظروف معطوب فلا يوجد `ResolvedEvidence` موثوق يُورَث منه الإصدار،
+   * بخلاف الاسترداد الجزئي. فيُمرَّر صراحةً، ويحكم التحليل والحلّ معًا.
+   */
+  segmentation: 1 | 2;
   signal?: AbortSignal;
 }): Promise<{ status: RecoveryStatus; evidence: ResolvedEvidence | null; telemetry: RecoveryTelemetry }> {
   const tel: RecoveryTelemetry = {
@@ -406,7 +424,9 @@ export async function attemptEvidenceRecovery(input: {
     verifiedSources: 0,
     failureReason: "none",
   };
-  const parsed = parseEvidenceMarkers(input.cleanText);
+  const parsed = parseEvidenceMarkers(input.cleanText, {
+    segmentation: input.segmentation,
+  });
   if (parsed.segments.length === 0 || input.sourceRegistry.length === 0) {
     return { status: "failed", evidence: null, telemetry: { ...tel, failureReason: "provider_error" } };
   }
@@ -456,6 +476,7 @@ export async function attemptEvidenceRecovery(input: {
     links,
     sourceRegistry: input.sourceRegistry,
     maxVerifiedSources: input.maxVerifiedSources,
+    segmentation: input.segmentation,
   });
 
   tel.verifiedSources = evidence.sources.length;
@@ -500,6 +521,19 @@ export function mergePartialEvidence(
   recovered: ResolvedEvidence,
   maxVerifiedSources: number,
 ): ResolvedEvidence {
+  /**
+   * ★ الثابت: لا دمج إلا بين حلَّين قُسّما بالإصدار نفسه.
+   *
+   * الدمج يطابق `segmentIndex` بـ`segmentIndex`. فإن اختلف الإصدار اختلف
+   * معنى الرقم: «المقطع 0» عند v1 قد يضمّ ثلاثة ادّعاءات، وعند v2 يضمّ
+   * الأول وحده. فمصدرٌ وُجد للادّعاء الثالث يُلصق بالأول بلا أن يشتكي أحد.
+   *
+   * والرفض هنا لا في المستدعي: هذه نقطة الدمج، وأيّ مسار جديد يمرّ بها.
+   * ويُعاد الأساس **بمرجعه** لا بنسخة — فيقدر المستدعي على كشف الرفض
+   * بمطابقة مرجعية، بلا رمز خطأ جديد ولا تغيير في الشكل.
+   */
+  if (base.segmentationVersion !== recovered.segmentationVersion) return base;
+
   const baseMarkers = new Set(base.sources.map((s) => s.marker));
   const targeted = new Set(base.unsupportedSegments);
 
@@ -535,6 +569,8 @@ export function mergePartialEvidence(
 
   return {
     cleanText: base.cleanText,
+    // الإصداران متساويان بحكم الثابت أعلاه — فأيّهما هو هو
+    segmentationVersion: base.segmentationVersion,
     // النصّ لم يتغيّر بالدمج ⇒ التخطيط والعدّ يبقيان كما هما
     lineSegments: base.lineSegments,
     numberedClaimCount: base.numberedClaimCount,
@@ -594,7 +630,15 @@ export async function attemptPartialEvidenceRecovery(input: {
   }
   if (!input.provider.requestJsonCompletion) return empty;
 
-  const parsed = parseEvidenceMarkers(input.cleanText);
+  /**
+   * ★ الإصدار **يُورَث من `resolved`** — ولا يُقبل كوسيط منفصل.
+   *
+   * فوسيطٌ منفصل يُنسى: هذا بعينه ما حدث. و`requestedSegments` مشتقّة من
+   * `resolved.unsupportedSegments`، فقراءتها بإصدار آخر تجعل الفهرس نفسه
+   * يشير إلى فقرة أخرى. المصدر واحد لأن المعنى واحد.
+   */
+  const segmentation = input.resolved.segmentationVersion;
+  const parsed = parseEvidenceMarkers(input.cleanText, { segmentation });
   const targeted = new Set(requestedSegments);
   /**
    * ★ الفقرات المستهدفة وحدها تدخل الموجّه.
@@ -645,9 +689,18 @@ export async function attemptPartialEvidenceRecovery(input: {
     links: scoped,
     sourceRegistry: input.sourceRegistry,
     maxVerifiedSources: input.maxVerifiedSources,
+    segmentation,
   });
 
   const merged = mergePartialEvidence(input.resolved, recoveredEvidence, input.maxVerifiedSources);
+  /**
+   * ★ الدمج يرفض عند اختلاف الإصدارين فيُعيد الأساس كما هو.
+   *
+   * فيُكتشف ذلك بالمطابقة المرجعية: `merged === input.resolved` يعني أن
+   * الثابت لم يصمد. والفشل الآمن هنا هو ترك المقاطع بلا دعم — لا إلصاق
+   * مصدرٍ بفقرة قد لا تكون فقرته.
+   */
+  if (merged === input.resolved) return { ...empty, budget, linksReturned: scoped.length };
   const stillUnsupported = new Set(merged.unsupportedSegments);
   const recoveredSegments = requestedSegments.filter((i) => !stillUnsupported.has(i));
   const failedSegments = requestedSegments.filter((i) => stillUnsupported.has(i));
