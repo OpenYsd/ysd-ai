@@ -94,7 +94,7 @@ describe("آلة الحالة", () => {
     expect(degradedRemainingMs(OR, T0 + 2_000)).toBe(0);
   });
 
-  it("★ الشفاء الذاتي بعد ٩٠ ثانية بلا أي طلب", () => {
+  it("★ الشفاء الذاتي بانقضاء المدة بلا أي طلب", () => {
     recordProviderTerminalFailure(OR, "timeout", T0);
     recordProviderTerminalFailure(OR, "timeout", T0 + 1_000);
     const at = T0 + 1_000;
@@ -133,7 +133,7 @@ describe("★ degradedUntil غير منزلق", () => {
       expect(isProviderDegraded(OR, at)).toBe(true);
     }
 
-    // ★ وبعد التسعين ثانية الأصلية يعود سليمًا رغم كل تلك الإخفاقات
+    // ★ وبعد المدة الأصلية يعود سليمًا رغم كل تلك الإخفاقات
     expect(isProviderDegraded(OR, expectedUntil + 1)).toBe(false);
   });
 
@@ -380,7 +380,7 @@ describe("عدم الانحدار", () => {
 
   it("★ القيم المعتمدة كما أُقرّت", () => {
     expect(SMART_PROBE_BUDGET_MS).toBe(6_000);
-    expect(DEGRADED_WINDOW_MS).toBe(90_000);
+    expect(DEGRADED_WINDOW_MS).toBe(300_000);
     expect(FAILURE_WINDOW_MS).toBe(600_000);
     expect(CONSECUTIVE_FAILURE_THRESHOLD).toBe(2);
     expect(DEGRADED_MODEL_RATIO).toBeCloseTo(2 / 3, 10);
@@ -422,10 +422,17 @@ describe("عدم الانحدار", () => {
  * رخصة التجربة الكاملة تكسر ذلك مرةً واحدة لكل دورة، بلا أن تمسّ التهدئة.
  */
 describe("★ رخصة التجربة الكاملة بعد الشفاء", () => {
-  /** يبني السيناريو: Gemma 15د · Nemotron دقيقتان · تدهور المزوّد */
+  /**
+   * يبني السيناريو: نموذجان مهدّآن **أطول من نافذة التدهور** · تدهور المزوّد.
+   *
+   * المدّتان تتجاوزان `DEGRADED_WINDOW_MS` عمدًا — وهو شرط السيناريو نفسه:
+   * تهدئةٌ تنقضي قبل النافذة تُسقط `cooledRatio` فتختبر حالةً أخرى. (كانت
+   * الثانية دقيقتين حين كانت النافذة تسعين ثانية؛ ولمّا صارت النافذة عشر
+   * دقائق لزم رفعها كي يبقى المعنى هو هو.)
+   */
   function setupScenario(): number {
     markCooldown(FREE_MODEL_CHAIN[0]!, "rate_limit", 15 * 60_000, T0);
-    markCooldown(FREE_MODEL_CHAIN[1]!, "provider_error", null, T0);
+    markCooldown(FREE_MODEL_CHAIN[1]!, "rate_limit", 15 * 60_000, T0);
     recordProviderTerminalFailure(OR, "timeout", T0);
     recordProviderTerminalFailure(OR, "timeout", T0 + 1);
     return T0 + 1 + DEGRADED_WINDOW_MS; // لحظة الانقضاء
@@ -631,7 +638,7 @@ describe("★ نافذة التجميع الموسّعة (A–F)", () => {
     recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
     const enteredAt = T0 + HUMAN_GAP_MS;
 
-    // ★ النافذة الموسّعة لا تُطيل التدهور: تلك DEGRADED_WINDOW_MS ولم تُمسّ
+    // ★ نافذة التجميع لا تحدّد مدة التدهور: تلك DEGRADED_WINDOW_MS وحدها
     expect(degradedRemainingMs(OR, enteredAt)).toBe(DEGRADED_WINDOW_MS);
     expect(isProviderDegraded(OR, enteredAt + DEGRADED_WINDOW_MS + 1)).toBe(false);
 
@@ -650,5 +657,180 @@ describe("★ نافذة التجميع الموسّعة (A–F)", () => {
     expect(isProviderDegraded(OR, T0 + HUMAN_GAP_MS + 1)).toBe(false);
     expect(consecutiveFailures(OR)).toBe(0);
     expect(route( T0 + HUMAN_GAP_MS + 1).decision).toBe("healthy");
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  ★ رقعة زمن المزوّد ٢ — مدة التدهور خمس دقائق (A–G)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * الرقعة الأولى وسّعت نافذة **التجميع** فصار الفشلان يتراكمان فعلًا. لكن مدة
+ * **التدهور** بقيت تسعين ثانية — أقصر من الفاصل البشريّ بين الطلبين. فرُصد
+ * حيًّا: فشلان بلغا العتبة وضبطا `degradedUntil`، ثم بدأ الطلب التالي
+ * بـ`healthy` و`full` لأن المدة انقضت قبل وصوله فمُنحت رخصة التجربة الكاملة.
+ *
+ * ── ولماذا خمس دقائق لا عشر ──
+ *
+ * **الفارق بين النافذتين هو المُختبَر هنا، لا طول إحداهما.**
+ *
+ * لو تساوتا (١٠ و١٠) لَوقع انقضاء التدهور بعد انقضاء التجميع أيضًا: تفشل
+ * التجربة الكاملة، فيُصفَّر العدّاد لأن آخر فشل صار خارج النافذة، فيصير ١
+ * لا ٢، فلا يعود التدهور — ويمرّ **طلب ثانٍ** بالميزانية الكاملة. طلبان
+ * بطيئان لكل دورة بدل واحد.
+ *
+ * وبالفارق (٥ < ١٠) تقع التجربة **داخل** نافذة التجميع، فيجد فشلُها العدّاد
+ * عند العتبة فيعود التدهور فورًا. تجربةٌ واحدة كاملة لكل دورة — لا أكثر.
+ */
+describe("★ مدة التدهور خمس دقائق (A–G)", () => {
+  const MIN = 60_000;
+
+  /** يُدخل OpenRouter في التدهور ويُعيد لحظة الدخول */
+  const degrade = (at = T0): number => {
+    recordProviderTerminalFailure(OR, "timeout", at);
+    recordProviderTerminalFailure(OR, "timeout", at + 1_000);
+    return at + 1_000;
+  };
+
+  it("★ (A) بعد فشلين ⇒ تدهور خمس دقائق بالضبط", () => {
+    const enteredAt = degrade();
+    expect(consecutiveFailures(OR)).toBe(2);
+    expect(DEGRADED_WINDOW_MS).toBe(300_000);
+    expect(degradedRemainingMs(OR, enteredAt)).toBe(300_000);
+    expect(isProviderDegraded(OR, enteredAt + 5 * MIN - 1)).toBe(true);
+    expect(isProviderDegraded(OR, enteredAt + 5 * MIN + 1)).toBe(false);
+  });
+
+  it("★ (B) من الدقيقة ١ إلى ٤:٥٩ ⇒ degraded_probe بميزانية 6000", () => {
+    const enteredAt = degrade();
+    const marks = [1 * MIN, 2 * MIN, 3 * MIN, 4 * MIN, 4 * MIN + 59_000];
+    for (const d of marks) {
+      const r = route(enteredAt + d);
+      expect(r.decision).toBe("degraded_probe");
+      expect(r.primaryBudgetMs).toBe(6_000);
+      expect(r.order).toEqual([OR, GROQ]);
+    }
+    // ★ والدقيقة الأولى وحدها كانت تفلت قبل الرقعة (٩٠ ثانية)
+    expect(1 * MIN).toBeLessThan(90_000);
+    expect(2 * MIN).toBeGreaterThan(90_000);
+  });
+
+  it("★ (C) بعد الخمس دقائق ⇒ رخصة تجربة كاملة واحدة", () => {
+    const enteredAt = degrade();
+    const after = enteredAt + DEGRADED_WINDOW_MS + 1;
+    expect(hasPendingRecoveryTrial(OR, after)).toBe(true);
+
+    const r = route(after);
+    expect(r.decision).toBe("healthy");
+    expect(r.primaryBudgetMs).toBeUndefined();
+    // واحدة لا أكثر
+    expect(hasPendingRecoveryTrial(OR, after + 1)).toBe(false);
+  });
+
+  /**
+   * ★ (D) هذا هو جوهر التعديل.
+   *
+   * فشل التجربة الكاملة عند ~٥ دقائق يجد آخر فشلٍ عمرُه ٥ دقائق — أي داخل
+   * نافذة التجميع (١٠). فلا تصفير: العدّاد ما يزال ٢، فيعود التدهور فورًا.
+   */
+  it("★ (D) فشل التجربة ⇒ تدهور فوريّ بلا طلب كامل ثانٍ", () => {
+    const enteredAt = degrade();
+    const after = enteredAt + DEGRADED_WINDOW_MS + 1;
+    expect(route(after).decision).toBe("healthy"); // الرخصة تُستهلك هنا
+
+    // التجربة فشلت — والفشل داخل نافذة التجميع
+    const failedAt = after + 20_000;
+    expect(failedAt - enteredAt).toBeLessThan(FAILURE_WINDOW_MS);
+    recordProviderTerminalFailure(OR, "timeout", failedAt);
+
+    // ★ لا تصفير: العدّاد يتقدّم من ٢ إلى ٣، والتدهور يعود فورًا
+    expect(consecutiveFailures(OR)).toBe(3);
+    expect(isProviderDegraded(OR, failedAt)).toBe(true);
+    expect(degradedRemainingMs(OR, failedAt)).toBe(DEGRADED_WINDOW_MS);
+
+    // ★ والطلب التالي سبرٌ لا ميزانية كاملة — ولا رخصة معلّقة
+    expect(hasPendingRecoveryTrial(OR, failedAt + 1_000)).toBe(false);
+    const next = route(failedAt + 1_000);
+    expect(next.decision).toBe("degraded_probe");
+    expect(next.primaryBudgetMs).toBe(SMART_PROBE_BUDGET_MS);
+  });
+
+  it("★ (D′) الترتيب مقصود: مدة التدهور أقصر من نافذة التجميع", () => {
+    expect(DEGRADED_WINDOW_MS).toBeLessThan(FAILURE_WINDOW_MS);
+    expect(FAILURE_WINDOW_MS).toBe(600_000);
+    /**
+     * الفارق هو ما يجعل التجربة الكاملة تقع داخل نافذة التجميع. ولو تساوتا
+     * لَمرّ طلبان كاملان في كل دورة — وهو ما كشفته اختبارات الصيغة السابقة.
+     */
+    expect(FAILURE_WINDOW_MS - DEGRADED_WINDOW_MS).toBeGreaterThan(0);
+  });
+
+  it("★ (E) نجاح التجربة الكاملة ⇒ شفاء فوريّ", () => {
+    const enteredAt = degrade();
+    const after = enteredAt + DEGRADED_WINDOW_MS + 1;
+    expect(route(after).decision).toBe("healthy");
+
+    recordProviderSuccess(OR, after + 20_000);
+    const at = after + 20_000;
+    expect(consecutiveFailures(OR)).toBe(0);
+    expect(degradedRemainingMs(OR, at)).toBe(0);
+    expect(isProviderDegraded(OR, at)).toBe(false);
+    expect(hasPendingRecoveryTrial(OR, at)).toBe(false);
+    expect(route(at).decision).toBe("healthy");
+  });
+
+  it("★ (E′) نجاح OpenRouter أثناء التدهور ⇒ شفاء فوريّ كذلك", () => {
+    const enteredAt = degrade();
+    const mid = enteredAt + 2 * MIN;
+    expect(route(mid).decision).toBe("degraded_probe");
+
+    recordProviderSuccess(OR, mid);
+    expect(consecutiveFailures(OR)).toBe(0);
+    expect(degradedRemainingMs(OR, mid)).toBe(0);
+    expect(route(mid).primaryBudgetMs).toBeUndefined();
+  });
+
+  it("★ (F) صمتٌ أطول من عشر دقائق ⇒ الحالة قديمة، والبدء healthy", () => {
+    const enteredAt = degrade();
+    // الرخصة تُستهلك في أول طلب بعد الانقضاء
+    const after = enteredAt + DEGRADED_WINDOW_MS + 1;
+    expect(route(after).decision).toBe("healthy");
+
+    // ثم صمت طويل، وفشل واحد بعده: خارج نافذة التجميع ⇒ عدٌّ جديد
+    const late = enteredAt + FAILURE_WINDOW_MS + 60_000;
+    recordProviderTerminalFailure(OR, "timeout", late);
+    expect(consecutiveFailures(OR)).toBe(1);
+    expect(isProviderDegraded(OR, late)).toBe(false);
+    expect(route(late).decision).toBe("healthy");
+  });
+
+  it("★ (G) حادثة Production بعينها ⇒ صار degraded_probe", () => {
+    /**
+     * إعادة بناء التسلسل المرصود: فشلا Request 3 و4 بفاصل ~٢:٣٠، ثم
+     * Request 5 بعد ~٣ دقائق — وهو الذي أنتج `healthy + full` قبل الرقعة.
+     */
+    const t3 = T0;
+    const t4 = t3 + 150_000;
+    recordProviderTerminalFailure(OR, "timeout", t3);
+    recordProviderTerminalFailure(OR, "timeout", t4);
+    expect(consecutiveFailures(OR)).toBe(2);
+
+    const t5 = t4 + 180_000;
+    const r = route(t5);
+    expect(r.decision).toBe("degraded_probe");
+    expect(r.primaryBudgetMs).toBe(6_000);
+    expect(r.order).toEqual([OR, GROQ]);
+
+    // ★ الفاصل تجاوز التسعين ثانية القديمة — وهذا سبب العطل المرصود
+    expect(t5 - t4).toBeGreaterThan(90_000);
+    // ★ وبقي داخل الخمس دقائق الجديدة
+    expect(t5 - t4).toBeLessThan(DEGRADED_WINDOW_MS);
+  });
+
+  it("★ الثوابت المجاورة لم تُمسّ", () => {
+    expect(FAILURE_WINDOW_MS).toBe(600_000);
+    expect(CONSECUTIVE_FAILURE_THRESHOLD).toBe(2);
+    expect(SMART_PROBE_BUDGET_MS).toBe(6_000);
+    expect(GROQ_RECENT_FAILURE_WINDOW_MS).toBe(60_000);
   });
 });
