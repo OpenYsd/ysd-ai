@@ -204,6 +204,32 @@ export async function POST(req: NextRequest) {
   }
   const userId = ctx.userId;
 
+  /**
+   * ★ إعدادات المنصّة — تُطلَق هنا وتُنتظَر عند موضع استعمالها.
+   *
+   * ── لماذا ──
+   *
+   * قِيس حيًّا: `app_before_provider_ms ≈ 2891` منها ~2183 خارج الاسترجاع،
+   * وكل رحلة إلى Supabase ~310 مل بسبب بُعد المنطقة. فسبع رحلات متتابعة هي
+   * ثمن الانتظار لا ثمن العمل.
+   *
+   * وهذه الرحلة **مستقلّة تمامًا**: تقرأ `platform_settings` بمفاتيح ثابتة،
+   * بلا `userId` ولا `conversationId` ولا شيء ممّا يُحسب بعدها. فانتظارها في
+   * موضعها كان تسلسلًا بلا سبب.
+   *
+   * ── ولماذا لا يتغيّر شيء ──
+   *
+   * النداء واحد كما كان، وموضع `await` كما كان، والقيمة والاستثناء كما كانا.
+   * المتغيّر الوحيد **متى يبدأ**: يجري تحت رحلات المحادثة والفتحة والميزانية
+   * بدل أن ينتظر دوره بعدها.
+   *
+   * و`catch` أدناه **لا يبتلع شيئًا**: يُعلِم الرافعةَ أن الرفض مُعالَج فلا
+   * يسقط العملية كرفضٍ عائم لو خرج الطلب مبكرًا. و`await` عند نقطة الاستعمال
+   * يعيد رمي الخطأ نفسه في موضعه القديم بالضبط.
+   */
+  const aiSettingsPromise = getAiSettings(supabase);
+  void aiSettingsPromise.catch(() => undefined);
+
   // 2) حدّ المعدّل: **أُخِّر عمدًا** إلى ما بعد حجز idempotency (الخطوة 5ب).
   //    كان هنا، فكان الطلب المكرر (نقر مزدوج/إعادة اتصال) يستهلك من الحدّ
   //    مرتين رغم أنه رسالة واحدة. الآن: المكرر يُرد 409 بلا استهلاك.
@@ -353,7 +379,8 @@ export async function POST(req: NextRequest) {
    * — المسح الصامت يفقد اختيار المستخدم بلا أثر. يصير غير متاح، ويُطلب بديل.
    */
   const tSettings = Date.now();
-  const aiSettings = await getAiSettings(supabase);
+  // نفس الوعد المُطلَق أعلاه — لا نداء ثانٍ. والقياس يصير «كم تبقّى من انتظارها»
+  const aiSettings = await aiSettingsPromise;
   stage.settingsMs = Date.now() - tSettings;
   if (!isModelAllowed(effectiveModelId, aiSettings.allowedModels)) {
     await slot.release();
