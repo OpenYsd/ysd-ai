@@ -46,9 +46,14 @@ function fakeSupabase(delays: { sub: number; models: number; limits: number }) {
           ? { data: { tier: "free" }, error: null }
           : { data: { max_output_tokens: 2048 }, error: null };
       },
+      // usage_limits تُجلب كاملة (بلا فلتر) فتصل عبر then كمصفوفة صفوف
+      _rows() {
+        return [{ tier: "free", max_output_tokens: 2048 }];
+      },
       // `ai_models` تُنتظَر بلا maybeSingle
       then(resolve: (v: unknown) => void) {
-        return wait(ms).then(() => resolve({ data: [], error: null }));
+        const data = table === "usage_limits" ? chain._rows() : [];
+        return wait(ms).then(() => resolve({ data, error: null }));
       },
     };
     calls.push(table);
@@ -69,9 +74,12 @@ describe("★ (A–B) قياس مرحلتَي سياسة النماذج", () => 
     await loadModelPolicy(client, "u-1", t);
     const total = Date.now() - t0;
 
-    // الأولى متوازية (≈40) والثانية تابعة (≈40) ⇒ الكلّي ≈80 لا 120
+    /**
+     * بعد رقعة التوازي: الرحلات الثلاث معًا (≈40) والحدود انتقاءٌ محليّ.
+     * فالكلّي ≈40 لا 80 — والقياس يشمل المرحلتين كما هما لا كما كانتا.
+     */
     expect(t.primaryMs).toBeGreaterThanOrEqual(30);
-    expect(t.limitsMs).toBeGreaterThanOrEqual(30);
+    expect(t.limitsMs).toBeLessThan(20); // لم تعد رحلة
     expect(total).toBeGreaterThanOrEqual(t.primaryMs + t.limitsMs - 20);
   });
 
@@ -109,13 +117,13 @@ describe("★ (G) ناتج loadModelPolicy لم يتغيّر", () => {
   });
 
   it("★ الاستعلامات وترتيبها كما هي", () => {
-    // الرحلة الأولى ما تزال Promise.all على الجدولين
-    expect(POLICY).toContain("const [subRes, modelsRes] = await Promise.all([");
+    // مجموعة واحدة على الجداول الثلاثة — بعد رقعة التوازي
+    expect(POLICY).toContain("const [subRes, modelsRes, limitsRes] = await Promise.all([");
     expect(POLICY).toContain('supabase.from("subscriptions").select("tier")');
     expect(POLICY).toContain('supabase.from("ai_models").select("id, min_tier, enabled")');
-    // والثانية ما تزال تابعة لـuserTier
-    expect(POLICY).toContain('.from("usage_limits")');
-    expect(POLICY).toContain('.eq("tier", userTier)');
+    // والحدود تُجلب كاملة ضمن المجموعة نفسها، والانتقاء محليّ
+    expect(POLICY).toContain('supabase.from("usage_limits").select("tier, max_output_tokens")');
+    expect(POLICY).toContain(".find((r) => r.tier === userTier)");
     // والسِنك اختياريّ — لا يكسر مستدعيًا قائمًا
     expect(POLICY).toContain("timings?: ModelPolicyTimings");
   });

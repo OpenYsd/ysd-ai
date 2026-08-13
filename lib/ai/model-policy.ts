@@ -163,30 +163,48 @@ export async function loadModelPolicy(
   userId: string,
   timings?: ModelPolicyTimings,
 ): Promise<{ userTier: PlanTier; models: ModelPolicyRow[]; maxOutputTokens: number }> {
+  /**
+   * ★ الرحلات الثلاث معًا — والاختيار محليّ بعدها.
+   *
+   * ── ما كان ──
+   *
+   * كانت `usage_limits` رحلةً **تابعة**: تنتظر `userTier` من الأولى ثم
+   * تسأل `.eq("tier", userTier)`. قِيس حيًّا أن ذلك يكلّف **128 مل** على
+   * المسار الحرج (`model_policy_ms=273` منها `primary=145`).
+   *
+   * ── ولماذا التكافؤ تامّ ──
+   *
+   * `tier` **مفتاح أساسيّ** في `usage_limits` — فالجدول صفٌّ واحد لكل طبقة،
+   * وعددها ثابت صغير. فجلبُه كاملًا ثم انتقاء الصفّ محليًّا يُعطي عين ما
+   * كان يُعطيه الفلتر: لا صفّ مكرّر ممكن، ولا ترتيب يؤثّر.
+   *
+   * وكل الطبقات مدعومة كما كانت — الانتقاء بـ`userTier` أيًّا كانت قيمته،
+   * لا بافتراض `free`.
+   */
   const tPrimary = Date.now();
-  const [subRes, modelsRes] = await Promise.all([
+  const [subRes, modelsRes, limitsRes] = await Promise.all([
     supabase.from("subscriptions").select("tier").eq("user_id", userId).maybeSingle(),
     supabase.from("ai_models").select("id, min_tier, enabled"),
+    supabase.from("usage_limits").select("tier, max_output_tokens"),
   ]);
   if (timings) timings.primaryMs = Date.now() - tPrimary;
 
   const userTier = (subRes.data?.tier ?? "free") as PlanTier;
 
   /**
-   * ★ الرحلة الثانية تابعة: تحتاج `userTier` من الأولى.
+   * ★ لم تعد رحلةً — صار انتقاءً في الذاكرة.
    *
-   * فصلُ قياسها يُظهر تكلفة التبعية وحدها — وهي ما يمكن إزالته لاحقًا بجلب
-   * حدود كل الطبقات مع المجموعة الأولى. القياس أولًا، ثم القرار.
+   * ويبقى الحقل مقيسًا لا مصفَّرًا بالثابت: قيمةٌ قريبة من الصفر تقول
+   * «لا رحلة ثانية هنا» بصدق، بينما صفرٌ مكتوب يدويًّا يقول الشيء نفسه
+   * بلا دليل. والقياس هو ما نثق به لا التعليق.
    */
   const tLimits = Date.now();
-  const limitsRes = await supabase
-    .from("usage_limits")
-    .select("max_output_tokens")
-    .eq("tier", userTier)
-    .maybeSingle();
+  const limitsRow = (
+    (limitsRes.data ?? []) as { tier: string | null; max_output_tokens: unknown }[]
+  ).find((r) => r.tier === userTier);
   if (timings) timings.limitsMs = Date.now() - tLimits;
 
-  const raw = limitsRes.data?.max_output_tokens;
+  const raw = limitsRow?.max_output_tokens;
   const maxOutputTokens =
     typeof raw === "number" && raw > 0 ? raw : FALLBACK_MAX_OUTPUT_TOKENS;
 
