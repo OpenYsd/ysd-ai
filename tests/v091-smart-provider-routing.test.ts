@@ -63,7 +63,7 @@ describe("آلة الحالة", () => {
     expect(route(T0).decision).toBe("healthy");
   });
 
-  it("★ فشلان طرفيان خلال ٦٠ ثانية ⇒ DEGRADED", () => {
+  it("★ فشلان طرفيان داخل النافذة ⇒ DEGRADED", () => {
     recordProviderTerminalFailure(OR, "timeout", T0);
     recordProviderTerminalFailure(OR, "provider_unavailable", T0 + 30_000);
     expect(consecutiveFailures(OR)).toBe(CONSECUTIVE_FAILURE_THRESHOLD);
@@ -181,7 +181,7 @@ describe("التسجيل على مستوى الطلب", () => {
     expect(isProviderDegraded(OR, T0)).toBe(false);
   });
 
-  it("★ طلبان طرفيان خلال ٦٠ ثانية ⇒ DEGRADED", () => {
+  it("★ طلبان طرفيان داخل النافذة ⇒ DEGRADED", () => {
     recordProviderTerminalFailure(OR, "provider_unavailable", T0);
     expect(isProviderDegraded(OR, T0)).toBe(false);
     recordProviderTerminalFailure(OR, "provider_unavailable", T0 + 20_000);
@@ -381,7 +381,7 @@ describe("عدم الانحدار", () => {
   it("★ القيم المعتمدة كما أُقرّت", () => {
     expect(SMART_PROBE_BUDGET_MS).toBe(6_000);
     expect(DEGRADED_WINDOW_MS).toBe(90_000);
-    expect(FAILURE_WINDOW_MS).toBe(60_000);
+    expect(FAILURE_WINDOW_MS).toBe(600_000);
     expect(CONSECUTIVE_FAILURE_THRESHOLD).toBe(2);
     expect(DEGRADED_MODEL_RATIO).toBeCloseTo(2 / 3, 10);
   });
@@ -543,5 +543,112 @@ describe("★ رخصة التجربة الكاملة بعد الشفاء", () =>
     recordProviderTerminalFailure(GROQ, "timeout", T0 + 1);
     expect(isProviderDegraded(GROQ, T0 + GROQ_RECENT_FAILURE_WINDOW_MS)).toBe(true);
     expect(isProviderDegraded(GROQ, T0 + GROQ_RECENT_FAILURE_WINDOW_MS + 2)).toBe(false);
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+//  ★ رقعة زمن المزوّد ١ — نافذة التجميع عشر دقائق (A–F)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * الحادثة: `routing_decision=healthy` في كل طلب رغم فشل OpenRouter المتكرر،
+ * فتُدفع مهلتا «أول بايت» (20+20 = 40 ثانية) قبل الوصول إلى Groq الذي يردّ
+ * في ~0.2–1.2 ثانية.
+ *
+ * السبب: النافذة كانت 60 ثانية **والطلب الفاشل نفسه ~45 ثانية**. فتفكيرُ
+ * المستخدم ستّ عشرة ثانية بعد قراءة الرد يكفي لتصفير العدّاد قبل العتبة.
+ *
+ * فالمُختبَر هنا ليس منطقًا جديدًا — لا سطر منطق تغيّر — بل أن توسيع النافذة
+ * وحده يجعل التدهور يُبلَغ في الإيقاع البشريّ، وأن كل ما عداه لم يتحرّك.
+ */
+describe("★ نافذة التجميع الموسّعة (A–F)", () => {
+  /** الإيقاع المرصود حيًّا: طلب ~45 ثانية ثم قراءة وكتابة */
+  const HUMAN_GAP_MS = 120_000;
+
+  it("★ (A) فشلان بفاصل بشريّ عاديّ (دقيقتان) ⇒ DEGRADED", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    expect(consecutiveFailures(OR)).toBe(CONSECUTIVE_FAILURE_THRESHOLD);
+    expect(isProviderDegraded(OR, T0 + HUMAN_GAP_MS)).toBe(true);
+    // ★ وتحت النافذة القديمة (60s) كان هذا بالضبط يُصفَّر فيبقى healthy
+    expect(HUMAN_GAP_MS).toBeGreaterThan(60_000);
+    expect(HUMAN_GAP_MS).toBeLessThan(FAILURE_WINDOW_MS);
+  });
+
+  it("★ (A′) حتى تسع دقائق ونصف تبقى داخل النافذة", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "rate_limit", T0 + FAILURE_WINDOW_MS - 1);
+    expect(isProviderDegraded(OR, T0 + FAILURE_WINDOW_MS - 1)).toBe(true);
+  });
+
+  it("★ (B) فشلان بفاصل أكبر من عشر دقائق ⇒ لا يتراكمان", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + FAILURE_WINDOW_MS + 1);
+    expect(consecutiveFailures(OR)).toBe(1); // عدٌّ جديد
+    expect(isProviderDegraded(OR, T0 + FAILURE_WINDOW_MS + 1)).toBe(false);
+  });
+
+  it("★ (C) العتبة ما تزال ٢ — فشل واحد لا يُدهور مهما طالت النافذة", () => {
+    expect(CONSECUTIVE_FAILURE_THRESHOLD).toBe(2);
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    expect(isProviderDegraded(OR, T0)).toBe(false);
+    expect(isProviderDegraded(OR, T0 + FAILURE_WINDOW_MS - 1)).toBe(false);
+  });
+
+  it("★ (D) بعد التدهور ⇒ سبر ٦ ثوانٍ ثم الاحتياط", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    const r = route( T0 + HUMAN_GAP_MS);
+    expect(r.decision).toBe("degraded_probe");
+    expect(r.order).toEqual([OR, GROQ]);
+    expect(r.primaryBudgetMs).toBe(SMART_PROBE_BUDGET_MS);
+    expect(SMART_PROBE_BUDGET_MS).toBe(6_000);
+  });
+
+  it("★ (E) سلوك الاحتياط لم يتغيّر — الترتيب والنافذة القصيرة", () => {
+    // Groq يبقى ثانيًا في التدهور، ولا يُقدَّم على OpenRouter
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    expect(route( T0 + HUMAN_GAP_MS).order).toEqual([OR, GROQ]);
+
+    // ونافذة الاحتياط تبقى أقصر — لم تُمسّ بهذه الرقعة
+    expect(GROQ_RECENT_FAILURE_WINDOW_MS).toBe(60_000);
+    expect(GROQ_RECENT_FAILURE_WINDOW_MS).toBeLessThan(FAILURE_WINDOW_MS);
+
+    // وGroq المتدهور يُعيد OpenRouter إلى حدوده الكاملة كما كان
+    _resetProviderHealth();
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    recordProviderTerminalFailure(GROQ, "timeout", T0 + HUMAN_GAP_MS);
+    recordProviderTerminalFailure(GROQ, "timeout", T0 + HUMAN_GAP_MS + 1);
+    const r = route( T0 + HUMAN_GAP_MS + 1);
+    expect(r.decision).toBe("healthy");
+    expect(r.primaryBudgetMs).toBeUndefined();
+  });
+
+  it("★ (F) رخصة التجربة الكاملة كما هي — ومدة التدهور ٩٠ ثانية", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    const enteredAt = T0 + HUMAN_GAP_MS;
+
+    // ★ النافذة الموسّعة لا تُطيل التدهور: تلك DEGRADED_WINDOW_MS ولم تُمسّ
+    expect(degradedRemainingMs(OR, enteredAt)).toBe(DEGRADED_WINDOW_MS);
+    expect(isProviderDegraded(OR, enteredAt + DEGRADED_WINDOW_MS + 1)).toBe(false);
+
+    // وبعد الشفاء: تجربة كاملة واحدة، ثم تُستهلك
+    const after = enteredAt + DEGRADED_WINDOW_MS + 1;
+    expect(hasPendingRecoveryTrial(OR, after)).toBe(true);
+    expect(route( after).primaryBudgetMs).toBeUndefined();
+    expect(hasPendingRecoveryTrial(OR, after + 1)).toBe(false);
+  });
+
+  it("★ النجاح يشفي فورًا — التوسيع لا يؤخّر التعافي بحرف", () => {
+    recordProviderTerminalFailure(OR, "timeout", T0);
+    recordProviderTerminalFailure(OR, "timeout", T0 + HUMAN_GAP_MS);
+    expect(isProviderDegraded(OR, T0 + HUMAN_GAP_MS)).toBe(true);
+    recordProviderSuccess(OR, T0 + HUMAN_GAP_MS + 1);
+    expect(isProviderDegraded(OR, T0 + HUMAN_GAP_MS + 1)).toBe(false);
+    expect(consecutiveFailures(OR)).toBe(0);
+    expect(route( T0 + HUMAN_GAP_MS + 1).decision).toBe("healthy");
   });
 });
