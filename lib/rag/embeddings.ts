@@ -12,8 +12,13 @@
 export interface EmbeddingProvider {
   readonly id: string;
   readonly dims: number;
-  /** Embedding لسؤال المستخدم */
-  embedQuery(text: string): Promise<number[]>;
+  /**
+   * Embedding لسؤال المستخدم.
+   *
+   * `timings` سِنك اختياريّ يُملأ في مكانه — لا يغيّر النتيجة ولا المسار،
+   * والمستدعي الذي يتجاهله يسلك ما كان يسلكه حرفًا بحرف.
+   */
+  embedQuery(text: string, timings?: EmbeddingCallTimings): Promise<number[]>;
   /** Embeddings لمقاطع — معالجة متسلسلة على دفعات لحماية الذاكرة */
   embedPassages(texts: string[], onProgress?: (done: number) => void): Promise<number[][]>;
 }
@@ -32,6 +37,36 @@ type Extractor = (
 
 let extractorPromise: Promise<Extractor> | null = null;
 let instanceCount = 0;
+/**
+ * ★ هل اكتملت التهيئة؟ — يُقرأ **بلا `await`**.
+ *
+ * `extractorPromise !== null` لا يميّز «جاهز» من «قيد التحميل»: كلاهما وعدٌ
+ * غير فارغ. وانتظارُه لمعرفة حالته يدفع الزمن الذي نريد قياسه. فالعَلَم
+ * يفصل الحالتين بلا أن يمسّ التحميل بحرف.
+ */
+let extractorReady = false;
+
+/** قياس نداءٍ واحد — أعداد ومنطقيّات فقط، بلا نصّ ولا متجهات */
+export interface EmbeddingCallTimings {
+  /** الزمن الذي دفعه **هذا النداء** لتهيئة المُستخرِج (0 إذا كان جاهزًا) */
+  modelLoadMs: number;
+  /** هل انتظر تهيئةً بدأها نداءٌ آخر؟ (تمييز الانتظار عن الدفع) */
+  modelLoadWaited: boolean;
+  /** زمن التضمين نفسه — بعد جاهزية المُستخرِج */
+  embedMs: number;
+}
+
+/** قياسٌ محايد يُملأ في مكانه — الاستدعاء بلا سِنك يبقى كما كان */
+export const emptyEmbeddingTimings = (): EmbeddingCallTimings => ({
+  modelLoadMs: 0,
+  modelLoadWaited: false,
+  embedMs: 0,
+});
+
+/** حالة التهيئة بلا تحميل — للتشخيص والاختبار */
+export function isExtractorReady(): boolean {
+  return extractorReady;
+}
 
 /** حالة النموذج للفحص الصحي — لا يُحمّل النموذج، يقرأ الحالة فقط */
 export type EmbeddingModelState = "not_loaded" | "loading" | "ready" | "failed";
@@ -63,11 +98,13 @@ async function getExtractor(): Promise<Extractor> {
         dtype: "q8",
       });
       modelState = "ready";
+      extractorReady = true;
       return pipe as unknown as Extractor;
     })().catch((err) => {
       // فشل التحميل يجب ألا يسمّم المحاولات اللاحقة
       extractorPromise = null;
       instanceCount = Math.max(0, instanceCount - 1);
+      extractorReady = false;
       modelState = "failed";
       throw err;
     });
@@ -96,8 +133,8 @@ class LocalTransformersProvider implements EmbeddingProvider {
   readonly id = "local-multilingual-e5-small";
   readonly dims = DIMS;
 
-  async embedQuery(text: string): Promise<number[]> {
-    const rows = await this.run([`query: ${text.slice(0, MAX_INPUT_CHARS)}`]);
+  async embedQuery(text: string, timings?: EmbeddingCallTimings): Promise<number[]> {
+    const rows = await this.run([`query: ${text.slice(0, MAX_INPUT_CHARS)}`], timings);
     const row = rows[0];
     if (!row || row.length !== DIMS) throw new Error("embedding failed: bad output");
     return row;
@@ -122,13 +159,31 @@ class LocalTransformersProvider implements EmbeddingProvider {
     return all;
   }
 
-  private run(texts: string[]): Promise<number[][]> {
+  private run(texts: string[], timings?: EmbeddingCallTimings): Promise<number[][]> {
     return enqueue(() =>
       withTimeout(
         (async () => {
+          /**
+           * ★ يُقرأ العَلَم **قبل** الانتظار.
+           *
+           * فبعده يكون جاهزًا دائمًا ولا يُعرف مَن دفع الثمن. والتمييز هنا:
+           * `waited` يعني أن تهيئةً كانت جارية بدأها نداءٌ آخر، و`!waited`
+           * مع زمنٍ موجب يعني أن هذا النداء هو الذي بدأها. وفي الحالين
+           * الزمن المقيس هو ما دفعه هذا النداء فعلًا لا ما استغرقته التهيئة.
+           */
+          const readyBefore = extractorReady;
+          const started = extractorPromise !== null;
+          const tLoad = Date.now();
           const extractor = await getExtractor();
+          if (timings && !readyBefore) {
+            timings.modelLoadMs = Date.now() - tLoad;
+            timings.modelLoadWaited = started;
+          }
+          const tEmbed = Date.now();
           const output = await extractor(texts, { pooling: "mean", normalize: true });
-          return output.tolist();
+          const rows = output.tolist();
+          if (timings) timings.embedMs = Date.now() - tEmbed;
+          return rows;
         })(),
         BATCH_TIMEOUT_MS,
         "embedding batch",

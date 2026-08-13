@@ -5,7 +5,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getEmbeddingProvider } from "./embeddings";
+import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -89,32 +89,98 @@ export interface RetrievalOutcome {
 }
 
 /** الاسترجاع الرئيسي — الدالة RPC تتحقق من auth.uid() فلا تسرب بين المستخدمين */
+/**
+ * قياس مراحل الاسترجاع — **أعداد ومنطقيّات فقط**.
+ *
+ * `rag_ms` القائم رقمٌ واحد يخفي أربع مراحل، فحين قفز إلى 6533 مل لم يقل
+ * أيّها. والتقسيم هنا يفصلها بلا أن يمسّ أيّ عتبة ولا ترتيب مصدر ولا ناتج.
+ *
+ * ولا يحمل شيئًا من النصّ ولا المتجهات ولا أسماء الملفات: أرقام فقط.
+ */
+export interface RetrievalTimings {
+  /** الزمن الذي دفعه هذا الطلب لتهيئة نموذج التضمين (0 إن كان جاهزًا) */
+  modelLoadMs: number;
+  modelLoadWaited: boolean;
+  /** التضمين نفسه بعد جاهزية النموذج */
+  embeddingMs: number;
+  /** نداء `match_file_chunks` */
+  searchMs: number;
+  /** الفرز والتنويع بعد وصول الصفوف — في الذاكرة */
+  postprocessMs: number;
+  /** المجموع — يطابق `rag_ms` القائم تقريبًا */
+  totalMs: number;
+  /** هل تُخطّي الاسترجاع أصلًا؟ يفصل «لم يُشغَّل» عن «كان سريعًا» */
+  skipped: boolean;
+}
+
+/** قياسٌ محايد — الاستدعاء بلا سِنك يبقى كما كان حرفًا بحرف */
+export const emptyRetrievalTimings = (): RetrievalTimings => ({
+  modelLoadMs: 0,
+  modelLoadWaited: false,
+  embeddingMs: 0,
+  searchMs: 0,
+  postprocessMs: 0,
+  totalMs: 0,
+  skipped: true,
+});
+
 export async function retrieveSnippets(
   supabase: SupabaseClient,
   query: string,
   fileIds: string[],
+  /** سِنك اختياريّ يُملأ في مكانه — لا يغيّر النتيجة ولا المسار */
+  timings?: RetrievalTimings,
 ): Promise<RetrievalOutcome> {
+  const tTotal = Date.now();
   if (fileIds.length === 0) return { snippets: [], searched: false, topSimilarity: 0 };
+  if (timings) timings.skipped = false;
 
   const provider = getEmbeddingProvider();
-  const queryEmbedding = await provider.embedQuery(query);
+  /**
+   * يُبنى موضعيًّا لا باستيراد دالة.
+   *
+   * فاستيرادٌ جديد من `embeddings` يكسر كل mock قائم لا يُمرّر الوحدة
+   * الحقيقية — وقد كسر واحدًا فعلًا. والقياس لا يستحق أن يفرض على
+   * المستهلكين إعادة تشكيل محاكاتهم.
+   */
+  const embedTimings: EmbeddingCallTimings = {
+    modelLoadMs: 0,
+    modelLoadWaited: false,
+    embedMs: 0,
+  };
+  const queryEmbedding = await provider.embedQuery(query, embedTimings);
+  if (timings) {
+    timings.modelLoadMs = embedTimings.modelLoadMs;
+    timings.modelLoadWaited = embedTimings.modelLoadWaited;
+    timings.embeddingMs = embedTimings.embedMs;
+  }
 
+  const tSearch = Date.now();
   const { data, error } = await supabase.rpc("match_file_chunks", {
     p_query_embedding: JSON.stringify(queryEmbedding),
     p_file_ids: fileIds,
     p_match_count: 16,
     p_min_similarity: MIN_SIMILARITY,
   });
+  if (timings) {
+    timings.searchMs = Date.now() - tSearch;
+    timings.totalMs = Date.now() - tTotal;
+  }
   if (error) {
     console.error(`[rag] match rpc failed: code=${error.code}`);
     return { snippets: [], searched: true, topSimilarity: 0 };
   }
 
+  const tPost = Date.now();
   const rows = (data ?? []) as MatchRow[];
   const topSimilarity = rows[0]?.similarity ?? 0;
 
   // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
   if (topSimilarity < RETRIEVAL_CONFIDENCE) {
+    if (timings) {
+      timings.postprocessMs = Date.now() - tPost;
+      timings.totalMs = Date.now() - tTotal;
+    }
     return { snippets: [], searched: true, topSimilarity };
   }
 
@@ -139,6 +205,10 @@ export async function retrieveSnippets(
       chunkId: row.chunk_id,
       chunkIndex: row.chunk_index,
     });
+  }
+  if (timings) {
+    timings.postprocessMs = Date.now() - tPost;
+    timings.totalMs = Date.now() - tTotal;
   }
   return { snippets: picked, searched: true, topSimilarity };
 }

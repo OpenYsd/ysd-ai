@@ -62,6 +62,10 @@ import {
   type RecoveryTelemetry,
 } from "@/lib/evidence/evidence-recovery";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
+import {
+  emptyRetrievalTimings,
+  type RetrievalTimings,
+} from "@/lib/rag/retrieval";
 import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
 import { persistEvent, recordAbruptSessionEnd, recordChatMetric } from "@/lib/admin/health-metrics";
 import {
@@ -162,6 +166,26 @@ const DEFAULT_TITLE = "محادثة جديدة";
 
 export async function POST(req: NextRequest) {
   const tStart = Date.now();
+  /**
+   * ★ قياس مراحل ما قبل المزوّد — **أعداد ومنطقيّات فقط**.
+   *
+   * `app_before_provider_ms` رقمٌ واحد يخفي عشر مراحل، فحين بلغ 9262 مل لم
+   * يقل أين ذهب. وهذه تفصله بلا أن تمسّ ترتيبًا ولا توازيًا ولا استعلامًا:
+   * كل حقل قياسُ زمنٍ حول نداءٍ قائم، والصفر يعني «لم تُنفَّذ هذه المرحلة».
+   */
+  const stage = {
+    conversationAccessMs: 0,
+    projectLookupMs: 0,
+    slotMs: 0,
+    budgetMs: 0,
+    settingsMs: 0,
+    idempotencyClaimMs: 0,
+    userMessageInsertMs: 0,
+    contextGatherMs: 0,
+    sourceAssemblyMs: 0,
+  };
+  /** قياس مراحل الاسترجاع — يُملأ في مكانه ولا يغيّر ناتجه */
+  const ragTimings: RetrievalTimings = emptyRetrievalTimings();
   // request_id من الوسيط (أو مولّد احتياطيًا) — للربط في السجلات، بلا أي بيانات شخصية
   const requestId = req.headers.get("x-ysd-request-id") ?? crypto.randomUUID();
   const supabase = await createClient();
@@ -210,12 +234,14 @@ export async function POST(req: NextRequest) {
     supabase.rpc("check_usage_allowed", { p_user_id: userId }),
   ]);
   const conversationLookupMs = Date.now() - tConvLookup;
+  stage.conversationAccessMs = conversationLookupMs;
   if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
   if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
 
   // تعليمات المشروع الخاصة تُضاف إلى موجه النظام
   let systemPrompt = SYSTEM_PROMPT;
   if (conv.project_id) {
+    const tProject = Date.now();
     const { data: proj } = await supabase
       .from("projects")
       .select("custom_instructions")
@@ -223,6 +249,7 @@ export async function POST(req: NextRequest) {
       .eq("user_id", userId)
       .is("deleted_at", null)
       .maybeSingle();
+    stage.projectLookupMs = Date.now() - tProject;
     if (proj?.custom_instructions) {
       systemPrompt = `${SYSTEM_PROMPT}\n\nتعليمات خاصة من صاحب المشروع:\n${proj.custom_instructions}`;
     }
@@ -272,7 +299,9 @@ export async function POST(req: NextRequest) {
    * مقعد التوليد — مصدره القاعدة لا ذاكرة العملية (ترحيل 0029).
    * `requestId` جزء من الحجز، فلا يحرّر طلبٌ مقعدَ طلبٍ آخر.
    */
+  const tSlot = Date.now();
   const slot = await acquireSlot(userId, requestId, policy.userTier);
+  stage.slotMs = Date.now() - tSlot;
   if (!slot) {
     return json(
       {
@@ -291,12 +320,14 @@ export async function POST(req: NextRequest) {
    * عشرون طلبًا متزامنًا على عدّاد واحد.
    */
   const estimatedInput = estimateInputTokens([message ?? "", systemPrompt]);
+  const tBudget = Date.now();
   const budget = await reserveChatBudget({
     userId,
     requestId,
     estimatedInputTokens: estimatedInput,
     maxOutputTokens: resolved.maxOutputTokens,
   });
+  stage.budgetMs = Date.now() - tBudget;
   if (!budget.allowed) {
     await slot.release();
     const reason = (budget.reason === "ok" || budget.reason === "already_reserved"
@@ -321,7 +352,9 @@ export async function POST(req: NextRequest) {
    * يُصاغ يدويًا. وحين يخرج نموذج من القائمة **لا نمسح model_id** من المحادثة
    * — المسح الصامت يفقد اختيار المستخدم بلا أثر. يصير غير متاح، ويُطلب بديل.
    */
+  const tSettings = Date.now();
   const aiSettings = await getAiSettings(supabase);
+  stage.settingsMs = Date.now() - tSettings;
   if (!isModelAllowed(effectiveModelId, aiSettings.allowedModels)) {
     await slot.release();
     await releaseChatBudget(requestId);
@@ -381,12 +414,14 @@ export async function POST(req: NextRequest) {
      *
      * الآن: المكرر يُرد 409 قبل أن يلمس أي صف.
      */
+    const tClaim = Date.now();
     const claim = await claimRequestDurable(
       supabase as never,
       userId,
       clientRequestId,
       conversationId,
     );
+    stage.idempotencyClaimMs += Date.now() - tClaim;
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true path=regenerate`);
       await slot.release();
@@ -456,12 +491,14 @@ export async function POST(req: NextRequest) {
   } else {
     // رسالة جديدة — بحارس ازدواج: الطلب نفسه (client_request_id) لا يُحفظ مرتين
     // مهما تكرر إرساله من نقر مزدوج أو إعادة اتصال.
+    const tClaim = Date.now();
     const claim = await claimRequestDurable(
       supabase as never,
       userId,
       clientRequestId,
       conversationId,
     );
+    stage.idempotencyClaimMs += Date.now() - tClaim;
     if (!claim.ok) {
       console.log(`[chat] rid=${requestId} duplicate_request=true`);
       await slot.release();
@@ -532,6 +569,7 @@ export async function POST(req: NextRequest) {
   };
   if (newTitle) convUpdate.title = newTitle;
 
+  const tCtx = Date.now();
   const { history, contextFileIds, dbMs } = await gatherChatContext(supabase, {
     conversationId,
     userId,
@@ -539,6 +577,7 @@ export async function POST(req: NextRequest) {
     convUpdate,
     requestId,
   });
+  stage.contextGatherMs = Date.now() - tCtx;
 
   // RAG: استرجاع مقاطع الملفات (بعد توفّر السياق ومعرّفات الملفات معًا)
   let ragSnippets: RetrievedSnippet[] = [];
@@ -549,7 +588,12 @@ export async function POST(req: NextRequest) {
     message ?? [...history].reverse().find((m) => m.role === "user")?.content ?? "";
   if (queryText && contextFileIds.length > 0) {
     try {
-      const outcome = await retrieveSnippets(supabase, queryText, contextFileIds);
+      const outcome = await retrieveSnippets(
+        supabase,
+        queryText,
+        contextFileIds,
+        ragTimings,
+      );
       ragSnippets = outcome.snippets;
       // بُحث في ملفات جاهزة لكن بلا تطابق واثق → نلمّح للنموذج بالتصريح
       ragSearchedNoMatch = outcome.searched && outcome.snippets.length === 0;
@@ -573,9 +617,11 @@ export async function POST(req: NextRequest) {
    * حين تكون في ملف المستخدم نفسه: «pgvector» في تقريره ليست تسريبًا، ونقلُها
    * إليه هو الجواب. والترخيص محصور بمقاطع **هذا الطلب** فلا يتوسّع.
    */
+  const tAssembly = Date.now();
   const sourceVocabulary = evidenceEnabled ? buildSourceVocabulary(ragSnippets) : undefined;
   /** نفس ترقيم `<source index="n">` بحكم البناء لا بالتصادف */
   const sourceRegistry = evidenceEnabled ? buildSourceRegistry(ragSnippets) : [];
+  stage.sourceAssemblyMs = Date.now() - tAssembly;
 
   /**
    * تفاوض قدرات التقسيم (v0.9.2).
@@ -1683,7 +1729,47 @@ export async function POST(req: NextRequest) {
 
   // زمن التطبيق قبل نداء المزوّد (auth+conv+usage+insert+db+RAG) — قياس آمن.
   const appBeforeProviderMs = Date.now() - tStart;
-  console.log(`[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs}`);
+  /**
+   * ★ تفكيك ما قبل المزوّد — **أعداد ومنطقيّات فقط**.
+   *
+   * `app_before_provider_ms` رقمٌ واحد كان يخفي عشر مراحل. والباقي
+   * (`pre_provider_other_ms`) يُحسب طرحًا لا قياسًا: فهو يشمل ما لم يُقس
+   * صراحةً — إنشاء العميل، والتحقق، وبناء الموجّه، والتحويلات في الذاكرة.
+   *
+   * ويُحدّ من أسفل بالصفر: المراحل مقيسة بساعة الجدار وقد تتداخل بمليّات،
+   * فباقٍ سالب يعني خطأ قياس لا زمنًا سالبًا. والصفر يقول ذلك بلا كذب.
+   */
+  const knownPreProviderMs =
+    authMs +
+    stage.conversationAccessMs +
+    stage.projectLookupMs +
+    stage.slotMs +
+    stage.budgetMs +
+    stage.settingsMs +
+    stage.idempotencyClaimMs +
+    userMessageInsertMs +
+    stage.contextGatherMs +
+    ragMs +
+    stage.sourceAssemblyMs;
+  const preProviderOtherMs = Math.max(0, appBeforeProviderMs - knownPreProviderMs);
+  console.log(
+    `[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs} ` +
+      `auth_ms=${authMs} conversation_access_ms=${stage.conversationAccessMs} ` +
+      `project_lookup_ms=${stage.projectLookupMs} slot_ms=${stage.slotMs} ` +
+      `budget_ms=${stage.budgetMs} settings_ms=${stage.settingsMs} ` +
+      `idempotency_claim_ms=${stage.idempotencyClaimMs} ` +
+      `user_message_insert_ms=${userMessageInsertMs} ` +
+      `context_gather_ms=${stage.contextGatherMs} ` +
+      `source_assembly_ms=${stage.sourceAssemblyMs} ` +
+      `pre_provider_other_ms=${preProviderOtherMs} ` +
+      // مراحل الاسترجاع — `rag_ms` القائم يبقى كما هو للتوافق
+      `rag_total_ms=${ragTimings.totalMs} rag_skipped=${ragTimings.skipped} ` +
+      `rag_model_load_ms=${ragTimings.modelLoadMs} ` +
+      `rag_model_load_waited=${ragTimings.modelLoadWaited} ` +
+      `rag_embedding_ms=${ragTimings.embeddingMs} ` +
+      `rag_search_ms=${ragTimings.searchMs} ` +
+      `rag_postprocess_ms=${ragTimings.postprocessMs}`,
+  );
 
   // Server-Timing مدموجة: قياسات الوسيط (auth/profile/settings) + database +
   // app_before_provider. ملاحظة فيزيائية: provider_first_byte و total_first_token
