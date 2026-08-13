@@ -59,6 +59,8 @@ vi.mock("@/lib/ai/ai-settings", () => ({
 
 vi.mock("@/lib/ai/model-policy", () => ({
   TIER_DOWNGRADE_MESSAGE: "downgraded",
+  // سِنك القياس — أرقام فقط، والمسار يمرّره فيلزم وجوده في المحاكاة
+  emptyModelPolicyTimings: () => ({ primaryMs: 0, limitsMs: 0 }),
   loadModelPolicy: async () => ({ userTier: "free", models: [], maxOutputTokens: 1024 }),
   resolveModelForUser: () => ({
     modelId: "test/model",

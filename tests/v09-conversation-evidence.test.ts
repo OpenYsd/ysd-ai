@@ -31,6 +31,8 @@ vi.mock("@/lib/ai/registry", () => ({
 }));
 
 vi.mock("@/lib/ai/model-policy", () => ({
+  // سِنك القياس — أرقام فقط، والمسار يمرّره فيلزم وجوده في المحاكاة
+  emptyModelPolicyTimings: () => ({ primaryMs: 0, limitsMs: 0 }),
   loadModelPolicy: async () => ({ userTier: "free", models: [], maxOutputTokens: 1024 }),
   tierAllows: () => true,
 }));

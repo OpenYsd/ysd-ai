@@ -140,22 +140,51 @@ export function lockedModelIds(models: ModelPolicyRow[], userTier: string | null
  * قراءة واحدة متوازية لكل طلب. ولو تعثّرت أي منها نسقط إلى الأشدّ تحفّظًا:
  * خطة `free` وسقفٌ أدنى — فالعطل لا يفتح بابًا.
  */
+/**
+ * قياس مرحلتَي القراءة — **أرقام فقط**، تُملأ في مكانها.
+ *
+ * الحقل اختياريّ عمدًا: المستدعي الذي لا يمرّره لا يتغيّر سلوكه بحرف، ولا
+ * يتغيّر عقد الدالة ولا ناتجها ولا ترتيب استعلاماتها.
+ */
+export interface ModelPolicyTimings {
+  /** الرحلة الأولى: الاشتراك وصفوف النماذج معًا (متوازيتان) */
+  primaryMs: number;
+  /** الرحلة الثانية: حدود الطبقة — **تابعة** لنتيجة الأولى */
+  limitsMs: number;
+}
+
+export const emptyModelPolicyTimings = (): ModelPolicyTimings => ({
+  primaryMs: 0,
+  limitsMs: 0,
+});
+
 export async function loadModelPolicy(
   supabase: SupabaseClient,
   userId: string,
+  timings?: ModelPolicyTimings,
 ): Promise<{ userTier: PlanTier; models: ModelPolicyRow[]; maxOutputTokens: number }> {
+  const tPrimary = Date.now();
   const [subRes, modelsRes] = await Promise.all([
     supabase.from("subscriptions").select("tier").eq("user_id", userId).maybeSingle(),
     supabase.from("ai_models").select("id, min_tier, enabled"),
   ]);
+  if (timings) timings.primaryMs = Date.now() - tPrimary;
 
   const userTier = (subRes.data?.tier ?? "free") as PlanTier;
 
+  /**
+   * ★ الرحلة الثانية تابعة: تحتاج `userTier` من الأولى.
+   *
+   * فصلُ قياسها يُظهر تكلفة التبعية وحدها — وهي ما يمكن إزالته لاحقًا بجلب
+   * حدود كل الطبقات مع المجموعة الأولى. القياس أولًا، ثم القرار.
+   */
+  const tLimits = Date.now();
   const limitsRes = await supabase
     .from("usage_limits")
     .select("max_output_tokens")
     .eq("tier", userTier)
     .maybeSingle();
+  if (timings) timings.limitsMs = Date.now() - tLimits;
 
   const raw = limitsRes.data?.max_output_tokens;
   const maxOutputTokens =

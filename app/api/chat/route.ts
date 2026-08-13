@@ -15,6 +15,7 @@ import {
 import { FREE_MODEL_CHAIN } from "@/lib/ai/free-models";
 import { getAiSettings, isModelAllowed } from "@/lib/ai/ai-settings";
 import {
+  emptyModelPolicyTimings,
   loadModelPolicy,
   resolveModelForUser,
   TIER_DOWNGRADE_MESSAGE,
@@ -183,7 +184,12 @@ export async function POST(req: NextRequest) {
     userMessageInsertMs: 0,
     contextGatherMs: 0,
     sourceAssemblyMs: 0,
+    requestParseMs: 0,
+    rateLimitMs: 0,
+    modelPolicyMs: 0,
   };
+  /** تفكيك رحلتَي سياسة النماذج — أرقام فقط */
+  const policyTimings = emptyModelPolicyTimings();
   /** قياس مراحل الاسترجاع — يُملأ في مكانه ولا يغيّر ناتجه */
   const ragTimings: RetrievalTimings = emptyRetrievalTimings();
   // request_id من الوسيط (أو مولّد احتياطيًا) — للربط في السجلات، بلا أي بيانات شخصية
@@ -241,7 +247,9 @@ export async function POST(req: NextRequest) {
     return json({ error: "استخدام الذكاء الاصطناعي معلّق لحسابك. تواصل مع إدارة المنصة." }, 403);
 
   // 3) التحقق من المدخلات
+  const tParse = Date.now();
   const parsed = chatRequestSchema.safeParse(await req.json().catch(() => null));
+  stage.requestParseMs = Date.now() - tParse;
   if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
   const { conversationId, modelId, message, editMessageId, regenerate, clientRequestId } =
     parsed.data;
@@ -292,7 +300,9 @@ export async function POST(req: NextRequest) {
    * ويُحجز مقعد التزامن **بعد** البوابة وقبل أي عمل: حجزه قبلها كان يترك
    * مقعدًا محجوزًا على طلبٍ سيُرفض بعد سطر.
    */
-  const policy = await loadModelPolicy(supabase, userId);
+  const tPolicy = Date.now();
+  const policy = await loadModelPolicy(supabase, userId, policyTimings);
+  stage.modelPolicyMs = Date.now() - tPolicy;
   const resolved = resolveModelForUser({
     requestedModelId: modelId,
     userTier: policy.userTier,
@@ -542,7 +552,9 @@ export async function POST(req: NextRequest) {
 
     // 5ب) حدّ المعدّل — بعد الحجز مباشرة وقبل أي حفظ أو نداء مزوّد.
     // الترتيب مقصود: المكرر رُدّ 409 أعلاه بلا استهلاك، والجديد وحده يستهلك.
+    const tRl = Date.now();
     const rl = await consumeRateLimit(userId, BUCKET_CHAT, CHAT_RATE_LIMIT, CHAT_RATE_WINDOW_SEC);
+    stage.rateLimitMs = Date.now() - tRl;
     if (!rl.allowed) {
       // الطلب مرفوض: لا رسالة تُحفظ، ولا نداء للمزوّد. ونحرّر الحجز كي لا
       // يبقى in_progress معلّقًا ولا يمنع المستخدم من إعادة المحاولة لاحقًا.
@@ -1777,7 +1789,10 @@ export async function POST(req: NextRequest) {
     userMessageInsertMs +
     stage.contextGatherMs +
     ragMs +
-    stage.sourceAssemblyMs;
+    stage.sourceAssemblyMs +
+    stage.requestParseMs +
+    stage.rateLimitMs +
+    stage.modelPolicyMs;
   const preProviderOtherMs = Math.max(0, appBeforeProviderMs - knownPreProviderMs);
   console.log(
     `[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs} ` +
@@ -1788,6 +1803,11 @@ export async function POST(req: NextRequest) {
       `user_message_insert_ms=${userMessageInsertMs} ` +
       `context_gather_ms=${stage.contextGatherMs} ` +
       `source_assembly_ms=${stage.sourceAssemblyMs} ` +
+      `request_parse_ms=${stage.requestParseMs} ` +
+      `rate_limit_ms=${stage.rateLimitMs} ` +
+      `model_policy_ms=${stage.modelPolicyMs} ` +
+      `model_policy_primary_ms=${policyTimings.primaryMs} ` +
+      `model_policy_limits_ms=${policyTimings.limitsMs} ` +
       `pre_provider_other_ms=${preProviderOtherMs} ` +
       // مراحل الاسترجاع — `rag_ms` القائم يبقى كما هو للتوافق
       `rag_total_ms=${ragTimings.totalMs} rag_skipped=${ragTimings.skipped} ` +
