@@ -187,6 +187,8 @@ export async function POST(req: NextRequest) {
     requestParseMs: 0,
     rateLimitMs: 0,
     modelPolicyMs: 0,
+    /** ما دفعه المسار الحرج عند الانتظار — **هذا** الداخل في المجموع */
+    modelPolicyWaitMs: 0,
   };
   /** تفكيك رحلتَي سياسة النماذج — أرقام فقط */
   const policyTimings = emptyModelPolicyTimings();
@@ -235,6 +237,43 @@ export async function POST(req: NextRequest) {
    */
   const aiSettingsPromise = getAiSettings(supabase);
   void aiSettingsPromise.catch(() => undefined);
+
+  /**
+   * ★ سياسة النماذج — تُطلَق هنا وتُنتظَر عند موضع استعمالها.
+   *
+   * ── لماذا ──
+   *
+   * قِيس حيًّا `model_policy_ms = 338` بعد أن صارت مجموعةً متوازية واحدة
+   * داخليًّا (`limits_ms = 0`). فلم يبقَ ما يُقصَّر داخلها — بقي **متى تبدأ**.
+   *
+   * وهي لا تحتاج إلا `userId` المتاح للتوّ. فانتظارها في موضعها كان يجعلها
+   * تجري **بعد** تحليل الطلب ورحلة المحادثة، وكلاهما لا يعتمد عليها.
+   *
+   * ── حدّ التداخل ──
+   *
+   * أوّل من يحتاج نتيجتها هو `acquireSlot` (يقرأ `policy.userTier`). فالمدى
+   * المتاح للتداخل هو ما بينهما: التحليل ورحلة المحادثة وبحث المشروع —
+   * ~337 مل بالقياس الحيّ. ولا يُزاد على ذلك بلا تغيير ترتيب حقيقيّ.
+   *
+   * والنمط نفسه المستعمل مع الإعدادات: نداء واحد، وانتظار واحد في موضعه،
+   * و`catch` على فرع منفصل يمنع الرفض العائم بلا أن يبتلع شيئًا.
+   */
+  const tPolicyStart = Date.now();
+  const modelPolicyPromise = loadModelPolicy(supabase, userId, policyTimings);
+  /**
+   * ★ المدة الكاملة تُلتقط عند **استقرار الوعد** لا عند الوصول إليه.
+   *
+   * لو قيست عند نقطة الانتظار لكانت تقول متى وصل المسار الحرج، لا متى
+   * انتهت العملية — فتتضخّم كلّما تأخّر الوصول. والالتقاط هنا يجعل
+   * `model_policy_ms` مدةً حقيقية حتى وهي تجري بالتوازي.
+   *
+   * و`then(f, f)` يعالج الرفض أيضًا — فلا رفضٌ عائم — ولا يمسّ القيمة
+   * المُنتظَرة: `await` يعيد رمي الخطأ الأصليّ بعينه في موضعه.
+   */
+  const markPolicyDone = () => {
+    stage.modelPolicyMs = Date.now() - tPolicyStart;
+  };
+  void modelPolicyPromise.then(markPolicyDone, markPolicyDone);
 
   // 2) حدّ المعدّل: **أُخِّر عمدًا** إلى ما بعد حجز idempotency (الخطوة 5ب).
   //    كان هنا، فكان الطلب المكرر (نقر مزدوج/إعادة اتصال) يستهلك من الحدّ
@@ -300,9 +339,19 @@ export async function POST(req: NextRequest) {
    * ويُحجز مقعد التزامن **بعد** البوابة وقبل أي عمل: حجزه قبلها كان يترك
    * مقعدًا محجوزًا على طلبٍ سيُرفض بعد سطر.
    */
-  const tPolicy = Date.now();
-  const policy = await loadModelPolicy(supabase, userId, policyTimings);
-  stage.modelPolicyMs = Date.now() - tPolicy;
+  /**
+   * ★ رقمان لا رقم — ولكلٍّ معناه.
+   *
+   * `model_policy_ms`  = المدة الكاملة للعملية (تُلتقط عند استقرارها).
+   * `model_policy_wait_ms` = ما دفعه **المسار الحرج** هنا وحده.
+   *
+   * والفصل ضروريّ للحساب: المدة الكاملة تتداخل زمنيًّا مع تحليل الطلب
+   * ورحلة المحادثة، فإدخالها في مجموع المراحل يحسبها مرتين. الداخل في
+   * المجموع هو الانتظار وحده — وهو المقدار الذي لولاه لَقصُر الطلب.
+   */
+  const tPolicyWait = Date.now();
+  const policy = await modelPolicyPromise;
+  stage.modelPolicyWaitMs = Date.now() - tPolicyWait;
   const resolved = resolveModelForUser({
     requestedModelId: modelId,
     userTier: policy.userTier,
@@ -1792,7 +1841,11 @@ export async function POST(req: NextRequest) {
     stage.sourceAssemblyMs +
     stage.requestParseMs +
     stage.rateLimitMs +
-    stage.modelPolicyMs;
+    /**
+     * ★ الانتظار لا المدة: المدة تتداخل مع مراحل سابقة، فإدخالها
+     * هنا يحسب الزمن نفسه مرتين ويُنتج باقيًا مصفَّرًا كاذبًا.
+     */
+    stage.modelPolicyWaitMs;
   const preProviderOtherMs = Math.max(0, appBeforeProviderMs - knownPreProviderMs);
   console.log(
     `[chat] rid=${requestId} app_before_provider_ms=${appBeforeProviderMs} ` +
@@ -1806,6 +1859,7 @@ export async function POST(req: NextRequest) {
       `request_parse_ms=${stage.requestParseMs} ` +
       `rate_limit_ms=${stage.rateLimitMs} ` +
       `model_policy_ms=${stage.modelPolicyMs} ` +
+      `model_policy_wait_ms=${stage.modelPolicyWaitMs} ` +
       `model_policy_primary_ms=${policyTimings.primaryMs} ` +
       `model_policy_limits_ms=${policyTimings.limitsMs} ` +
       `pre_provider_other_ms=${preProviderOtherMs} ` +

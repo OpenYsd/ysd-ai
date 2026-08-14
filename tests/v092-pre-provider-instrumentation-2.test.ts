@@ -158,12 +158,21 @@ describe("★ (C–D) القياسان يحيطان ما يخصّهما وحده
     expect(before.trim().endsWith("const tParse = Date.now();")).toBe(true);
   });
 
-  it("★ model_policy_ms يحيط النداء وحده", () => {
-    const at = ROUTE.indexOf("const policy = await loadModelPolicy(");
+  it("★ الرقمان منفصلان: المدة عند الاستقرار والانتظار عند الوصول", () => {
+    /**
+     * بعد رقعة التوازي صار لسياسة النماذج رقمان:
+     * `model_policy_ms` مدةٌ كاملة تُلتقط عند استقرار الوعد، و
+     * `model_policy_wait_ms` ما دفعه المسار الحرج عند نقطة الانتظار.
+     * والداخل في المجموع هو الثاني وحده — وإلا حُسب الزمن المتداخل مرتين.
+     */
+    expect(ROUTE).toContain("stage.modelPolicyMs = Date.now() - tPolicyStart;");
+
+    const at = ROUTE.indexOf("const policy = await modelPolicyPromise;");
+    expect(at).toBeGreaterThan(0);
     const before = ROUTE.slice(at - 120, at);
     const after = ROUTE.slice(at, at + 220);
-    expect(before).toContain("const tPolicy = Date.now();");
-    expect(after).toContain("stage.modelPolicyMs = Date.now() - tPolicy;");
+    expect(before).toContain("const tPolicyWait = Date.now();");
+    expect(after).toContain("stage.modelPolicyWaitMs = Date.now() - tPolicyWait;");
   });
 });
 
@@ -188,9 +197,14 @@ describe("★ (E–F) المجموع والباقي", () => {
       ROUTE.indexOf("stage.conversationAccessMs +"),
       ROUTE.indexOf("const preProviderOtherMs"),
     );
-    for (const f of ["stage.requestParseMs", "stage.rateLimitMs", "stage.modelPolicyMs"]) {
+    for (const f of ["stage.requestParseMs", "stage.rateLimitMs", "stage.modelPolicyWaitMs"]) {
       expect(sumBlock).toContain(f);
     }
+    /**
+     * ★ والمدة الكاملة لسياسة النماذج **خارج** المجموع: تتداخل زمنيًّا مع
+     * تحليل الطلب ورحلة المحادثة، فإدخالها يحسب الزمن نفسه مرتين.
+     */
+    expect(sumBlock).not.toContain("stage.modelPolicyMs");
     // ★ ولا تفكيك السياسة داخل المجموع — وإلا حُسبت مرتين
     expect(sumBlock).not.toContain("policyTimings.primaryMs");
     expect(sumBlock).not.toContain("policyTimings.limitsMs");
