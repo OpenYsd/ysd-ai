@@ -16,7 +16,8 @@
     "test:signup:integration": "node scripts/v08-signup-matrix.mjs",
     "test:pg:concurrency": "node scripts/v08-pg-concurrency.mjs",
     "test:pg:guards": "node scripts/v081-pg-guards.mjs",
-    "test:pg:evidence": "node scripts/v09-pg-evidence.mjs"
+    "test:pg:evidence": "node scripts/v09-pg-evidence.mjs",
+    "test:pg:registry": "node scripts/v095-pg-model-registry.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
