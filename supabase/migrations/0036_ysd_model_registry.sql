@@ -41,33 +41,59 @@ insert into public.ai_providers (id, display_name, enabled)
 values ('ysd', 'YSD', false)
 on conflict (id) do nothing;
 
-insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, enabled)
-values ('ysd/model-alpha', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', false)
+-- `min_tier` مُصرَّح به عمدًا لا متروكًا للافتراض: الحارس أدناه يفحصه،
+-- وفحصُ قيمةٍ لم تُصرَّح يجعل الترحيلة تعتمد على افتراضٍ قد يتغيّر.
+insert into public.ai_models
+  (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+values
+  ('ysd/model-alpha', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', 'free', false)
 on conflict (id) do nothing;
 
--- ★ حارس التعارض: يفشل بوضوح بدل أن يمرّر حالة غير متوقّعة.
---
--- لو كان صفٌّ قائمًا بمالك آخر أو مفعَّلًا، فذلك يعني أن أحدًا أنشأه
--- بمعنى مختلف — وإكمال الترحيلة عندئذٍ يبني فوق أساس مجهول.
+/**
+ * ★ حارس التعارض — يفحص **كل ما تزرعه** الترحيلة.
+ *
+ * `on conflict do nothing` يعني أن صفًّا قائمًا يبقى كما هو صامتًا. فلو
+ * وُجد `ysd` أو `ysd/model-alpha` بقيَم أخرى، لَمضت الترحيلة وكأن البذر
+ * نجح — والبناء فوق أساسٍ مجهول أسوأ من الفشل.
+ *
+ * فيُقارَن كل حقلٍ زُرع، لا العيّنة منه. و`is distinct from` لا `<>` لأن
+ * الأخير يُعطي `null` على الصفّ الغائب فلا يدخل الشرط أصلًا — وهو بالضبط
+ * ما يجعل حارسًا يبدو صحيحًا وهو أعمى.
+ *
+ * و`created_at` مستثنى عمدًا: طابعُ إنشاء لا هوية ولا سياسة.
+ */
 do $$
 declare
-  v_provider_enabled boolean;
-  v_model_provider   text;
-  v_model_enabled    boolean;
+  v_p record;
+  v_m record;
 begin
-  select enabled into v_provider_enabled from public.ai_providers where id = 'ysd';
-  if v_provider_enabled is distinct from false then
-    raise exception 'ai_providers.ysd موجود بحالة غير متوقّعة (enabled=%)', v_provider_enabled;
+  select display_name, enabled into v_p
+  from public.ai_providers where id = 'ysd';
+
+  if v_p.display_name is distinct from 'YSD' then
+    raise exception 'ai_providers.ysd: display_name غير متوقّع (%)', v_p.display_name;
+  end if;
+  if v_p.enabled is distinct from false then
+    raise exception 'ai_providers.ysd: enabled غير متوقّع (%)', v_p.enabled;
   end if;
 
-  select provider_id, enabled into v_model_provider, v_model_enabled
+  select provider_id, display_name_ar, display_name_en, min_tier, enabled into v_m
   from public.ai_models where id = 'ysd/model-alpha';
 
-  if v_model_provider is distinct from 'ysd' then
-    raise exception 'ai_models.ysd/model-alpha مملوك لمزوّد غير متوقّع (%)', v_model_provider;
+  if v_m.provider_id is distinct from 'ysd' then
+    raise exception 'ai_models.ysd/model-alpha: provider_id غير متوقّع (%)', v_m.provider_id;
   end if;
-  if v_model_enabled is distinct from false then
-    raise exception 'ai_models.ysd/model-alpha مفعَّل خلافًا للمتوقّع';
+  if v_m.display_name_ar is distinct from 'نموذج YSD (ألفا)' then
+    raise exception 'ai_models.ysd/model-alpha: display_name_ar غير متوقّع (%)', v_m.display_name_ar;
+  end if;
+  if v_m.display_name_en is distinct from 'YSD Model (Alpha)' then
+    raise exception 'ai_models.ysd/model-alpha: display_name_en غير متوقّع (%)', v_m.display_name_en;
+  end if;
+  if v_m.min_tier is distinct from 'free'::public.plan_tier then
+    raise exception 'ai_models.ysd/model-alpha: min_tier غير متوقّع (%)', v_m.min_tier;
+  end if;
+  if v_m.enabled is distinct from false then
+    raise exception 'ai_models.ysd/model-alpha: enabled غير متوقّع (%)', v_m.enabled;
   end if;
 end $$;
 

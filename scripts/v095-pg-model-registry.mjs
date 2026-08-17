@@ -93,7 +93,8 @@ create role authenticated nologin;
 create role service_role nologin;
 grant usage on schema public to anon, authenticated, service_role;
 
-create type public.plan_tier as enum ('free', 'pro', 'business');
+-- النوع الحقيقي من 0001 — بأعضائه الأربعة لا بتقريب
+create type public.plan_tier as enum ('free', 'plus', 'pro', 'business');
 
 create table public.ai_providers (
   id text primary key,
@@ -124,8 +125,101 @@ function run() {
   startContainer();
   console.log("\n▶ تطبيق المخطط الأدنى ثم 0036…");
   psql(BASE, { tuples: false });
+
+  // ── ⓪ حارس التعارض — يُختبر **قبل** التطبيق الناجح ──
+  console.log("\n⓪ حارس التعارض — تطبيقٌ فعليّ على قاعدة متعارضة");
+
+  /**
+   * ★ لماذا هنا لا في آخر الملفّ.
+   *
+   * الترحيلة معاملةٌ واحدة (begin/commit)، ففشلها يُرجع كل شيء — بما فيه
+   * إنشاء الجداول. فتشغيلُ هذه السيناريوهات قبل التطبيق الناجح يعني أن
+   * التنظيف بينها لا يحتاج إسقاط جدول: يكفي محو بذرة ysd.
+   *
+   * والسؤال المقيس: `on conflict do nothing` يترك الصفّ القائم صامتًا —
+   * فهل تكتشف الترحيلة القيمة المختلفة وتفشل؟ ولا يُجاب إلا بتطبيقها فعلًا.
+   */
+  const clearSeed = () => {
+    psql(`
+      delete from public.ai_models where id = '${MA}';
+      delete from public.ai_providers where id = 'ysd';
+    `, { tuples: false });
+  };
+
+  const registryExists = () =>
+    lastValue(psql(`
+      select count(*) from information_schema.tables
+      where table_schema='public' and table_name='ai_model_versions';
+    `));
+
+  const conflictScenario = (label, seedSql) => {
+    clearSeed();
+    psql(seedSql, { tuples: false });
+    const r = tryPsql(mig("0036_ysd_model_registry.sql"));
+    ok(!r.ok && /غير متوقّع/.test(r.err), label, r.ok ? "مرّت صامتة!" : r.err.slice(0, 110));
+    // ★ والمعاملة رجعت بالكامل — لا جدول أُنشئ رغم بلوغ الحارس
+    ok(registryExists() === "0", `${label} — والمعاملة رجعت بالكامل`);
+  };
+
+  conflictScenario(
+    "(أ) مزوّد ysd معطَّل لكن display_name مختلف ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled)
+     values ('ysd', 'YSD Legacy', false);`,
+  );
+
+  conflictScenario(
+    "(ب) مزوّد ysd مفعَّل ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled)
+     values ('ysd', 'YSD', true);`,
+  );
+
+  conflictScenario(
+    "(ج) ysd/model-alpha معطَّل ومملوك لـysd لكن min_tier مختلف ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled) values ('ysd', 'YSD', false);
+     insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+     values ('${MA}', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', 'pro', false);`,
+  );
+
+  conflictScenario(
+    "(د) ysd/model-alpha بـdisplay_name عربيّ مختلف ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled) values ('ysd', 'YSD', false);
+     insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+     values ('${MA}', 'ysd', 'اسم آخر', 'YSD Model (Alpha)', 'free', false);`,
+  );
+
+  conflictScenario(
+    "(هـ) ysd/model-alpha بـdisplay_name إنجليزيّ مختلف ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled) values ('ysd', 'YSD', false);
+     insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+     values ('${MA}', 'ysd', 'نموذج YSD (ألفا)', 'Another Name', 'free', false);`,
+  );
+
+  conflictScenario(
+    "(و) ysd/model-alpha مملوك لمزوّد آخر ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled) values ('ysd', 'YSD', false);
+     insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+     values ('${MA}', 'openrouter', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', 'free', false);`,
+  );
+
+  conflictScenario(
+    "(ز) ysd/model-alpha مفعَّل ⇒ تفشل",
+    `insert into public.ai_providers (id, display_name, enabled) values ('ysd', 'YSD', false);
+     insert into public.ai_models (id, provider_id, display_name_ar, display_name_en, min_tier, enabled)
+     values ('${MA}', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', 'free', true);`,
+  );
+
+  // ★ وعلى قاعدة نظيفة تنجح — كي لا يكون الحارس مانعًا للكلّ
+  clearSeed();
+  console.log("\n▶ تطبيق 0036 على قاعدة نظيفة…");
   psql(mig("0036_ysd_model_registry.sql"), { tuples: false });
   console.log("  ✅ الترحيلة طُبّقت");
+
+  ok(
+    lastValue(psql(`select min_tier::text from public.ai_models where id='${MA}';`)) === "free",
+    "(ح) min_tier مزروع صراحةً بـfree",
+  );
+  const again = tryPsql(mig("0036_ysd_model_registry.sql"));
+  ok(again.ok, "(ط) وإعادة التطبيق على بذورها هي تنجح", again.err.slice(0, 110));
 
   // ── ① البذور خاملة ──
   console.log("\n① البذور — خاملة ولا تمسّ القائم");

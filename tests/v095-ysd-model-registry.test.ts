@@ -150,7 +150,19 @@ describe("★ (٦–٧) لا وصول للعميل", () => {
 describe("★ (٨) YSD مزروع معطَّلًا", () => {
   it("★ المزوّد والنموذج كلاهما enabled=false", () => {
     expect(CODE).toContain("values ('ysd', 'YSD', false)");
-    expect(CODE).toContain("values ('ysd/model-alpha', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', false)");
+    expect(CODE).toContain(
+      "('ysd/model-alpha', 'ysd', 'نموذج YSD (ألفا)', 'YSD Model (Alpha)', 'free', false)",
+    );
+  });
+
+  it("★ وmin_tier مُصرَّح به لا متروك للافتراض", () => {
+    /**
+     * الحارس يفحص `min_tier`، وفحصُ قيمةٍ لم تُصرَّح يجعل الترحيلة تعتمد
+     * على افتراض عمود قد يتغيّر في ترحيلة لاحقة.
+     */
+    expect(CODE).toContain(
+      "(id, provider_id, display_name_ar, display_name_en, min_tier, enabled)",
+    );
   });
 
   it("★ والإدراج لا يدهس صفًّا قائمًا", () => {
@@ -159,7 +171,43 @@ describe("★ (٨) YSD مزروع معطَّلًا", () => {
 
   it("★ وحارس تعارض يفشل بوضوح بدل التمرير الصامت", () => {
     expect(CODE).toContain("raise exception");
-    expect(CODE).toMatch(/is distinct from false/);
+    expect(CODE).toMatch(/is distinct from/);
+  });
+
+  it("★ ★ والحارس يفحص **كل** حقل يُزرع — لا عيّنة منه", () => {
+    /**
+     * `on conflict do nothing` يترك الصفّ القائم صامتًا. فحارسٌ يفحص بعض
+     * الحقول يمرّر تعارضًا في البقية — وهو ما كان قبل هذا التصحيح.
+     *
+     * فيُقارَن ما يُفحص بما يُزرع: مجموعتان يجب أن تتطابقا.
+     */
+    const providerFields = ["display_name", "enabled"];
+    const modelFields = [
+      "provider_id",
+      "display_name_ar",
+      "display_name_en",
+      "min_tier",
+      "enabled",
+    ];
+    for (const f of [...providerFields, ...modelFields]) {
+      expect(CODE, f).toMatch(new RegExp(`v_[pm]\\.${f} is distinct from`));
+    }
+  });
+
+  it("★ ويستعمل is distinct from لا <> — فالصفّ الغائب لا يفلت", () => {
+    /**
+     * `<>` يُعطي `null` حين يغيب الصفّ، فلا يدخل شرط `if` — فيبدو الحارس
+     * صحيحًا وهو أعمى عن الحالة التي وُضع لها أصلًا.
+     */
+    const guard = CODE.slice(CODE.indexOf("do $$"), CODE.indexOf("end $$;"));
+    expect(guard).not.toMatch(/v_[pm]\.\w+\s*<>/);
+    // سبعة فحوص: اثنان للمزوّد وخمسة للنموذج
+    expect((guard.match(/is distinct from/g) ?? []).length).toBe(7);
+  });
+
+  it("★ ولا يفحص created_at — طابعُ إنشاء لا هوية", () => {
+    const guard = CODE.slice(CODE.indexOf("do $$"), CODE.indexOf("end $$;"));
+    expect(guard).not.toContain("created_at");
   });
 });
 
