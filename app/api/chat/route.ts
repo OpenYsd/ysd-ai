@@ -920,8 +920,25 @@ export async function POST(req: NextRequest) {
          */
         const providerPhaseStart = Date.now();
         const fallbackProvider = getFallbackProvider();
+        /**
+         * ★ سياسة العبور بين المزوّدين (v0.9.3).
+         *
+         * `fallbackPolicy === "none"` تعني: لا يُحوَّل طلبٌ قُصد به هذا
+         * المزوّد إلى مزوّد آخر مهما فشل. فالمستخدم الذي اختار نموذجًا بعينه
+         * يريده هو؛ وإجابةٌ من غيره تحت اسمه أسوأ من رسالة عطل صريحة —
+         * لأن العطل يظهر والاستبدال لا يظهر.
+         *
+         * والغياب أو `"external"` يُبقيان السلوك القائم **حرفيًّا**: كل مزوّد
+         * اليوم لا يعلن هذه الخاصية، فالشرط يُختصر إلى ما كان.
+         *
+         * ولا يمسّ هذا سلسلة النماذج داخل المزوّد الواحد: تلك احتياطٌ داخليّ
+         * لا عبور فيه لحدود المزوّد، ولا تراه هذه السياسة.
+         */
+        const crossProviderAllowed = provider.fallbackPolicy !== "none";
         const usableFallback =
-          fallbackProvider && fallbackProvider.id !== provider.id ? fallbackProvider : null;
+          crossProviderAllowed && fallbackProvider && fallbackProvider.id !== provider.id
+            ? fallbackProvider
+            : null;
 
         /**
          * ★ التوجيه الذكي (v0.9.1) — ترتيبٌ وميزانية، لا تغيير في أي حدّ.

@@ -3,6 +3,7 @@ import { AnthropicProvider } from "./anthropic";
 import { NineRouterProvider } from "./nine-router";
 import { OpenRouterProvider } from "./openrouter";
 import { GroqProvider } from "./groq";
+import { YSDProvider } from "./ysd";
 
 /**
  * سجل الموفرين — نقطة الإضافة الوحيدة لأي موفر جديد.
@@ -24,6 +25,17 @@ const providers: AIProviderAdapter[] = [
    * دائمًا عن قائمة المستخدم بـ`userSelectable = false`.
    */
   new GroqProvider(),
+  /**
+   * v0.9.3: YSD — نموذج المنصّة، **خامل بالكامل**.
+   *
+   * `isConfigured()` يرد false بلا `YSD_PROVIDER_ENABLED=1`، فيرشّحه
+   * `getConfiguredProviders` قبل أن يصل إليه شيء. ونموذجه `enabled: false`
+   * فوق ذلك. فوجوده هنا لا يغيّر سلوك الإنتاج بحرف.
+   *
+   * وموضعه **آخر** القائمة مقصود: الترتيب يحدّد الافتراضي، ووضعه قبل
+   * OpenRouter كان سيغيّر المزوّد الافتراضي لحظة تهيئته.
+   */
+  new YSDProvider(),
   // new OpenAIProvider(),
   // new GoogleProvider(),
 ];
