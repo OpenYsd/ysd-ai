@@ -103,6 +103,16 @@ export function isServableDeployment(
 ): boolean {
   if (deployment.status !== "active") return false;
   if (version.status !== "approved") return false;
+  /**
+   * ★ الطابع يلزم مع الحالة — والقاعدة تفرضه، ولا نتّكل على ذلك.
+   *
+   * القيد في 0036 يمنع كتابة «معتمدة بلا `approved_at`». لكن هذه الدالة
+   * حدُّ ثقةٍ مستقلّ: قد يصلها صفٌّ من كاش قديم، أو من مخطط لم يُرحَّل
+   * بعد، أو من محاكاة في اختبار، أو من كتابةٍ بصلاحية عالية تجاوزت
+   * الطبقات. فحالةٌ بلا طابعها حالةٌ لا يُوثق بها مهما كان مصدرها.
+   */
+  if (!filled(version.approvedAt)) return false;
+  if (!filled(deployment.activatedAt)) return false;
   // النسخة والنشرة لنموذج منطقيّ واحد — وإلا خدمنا نموذجًا غير المقصود
   if (deployment.modelId !== version.modelId) return false;
   if (deployment.modelVersionId !== version.id) return false;
