@@ -29,6 +29,13 @@ import type { ChatRequest, UsageReport } from "./types";
 /** رموز مغلقة — لا نصّ من وقت التشغيل يعبر منها */
 export type YSDRuntimeFailureReason =
   | "invalid_target"
+  /**
+   * ★ إلغاءُ المستدعي — **ليس عطلًا**.
+   *
+   * كان يُصنَّف `network_error`، وذلك يكذب مرتين: يوهم بعطل شبكة لم يقع،
+   * ويُلوّث إحصاءات الأعطال بقرارٍ اتخذه المستخدم. فصار له رمزه.
+   */
+  | "aborted"
   | "unauthorized"
   | "rate_limit"
   | "timeout"
@@ -147,7 +154,13 @@ function createSseParser() {
       }
       return events;
     },
-    /** ما تبقّى بلا سطر جديد — يُفحص عند نهاية الجسم */
+    /**
+     * ما تبقّى بلا سطر جديد عند نهاية الجسم.
+     *
+     * ★ يُعاد كسطرٍ **خام** لا كحدثٍ مُحلَّل: قد يكون حمولةً مبتورة في
+     * منتصفها. والمستدعي وحده يقرّر — ويقبل `[DONE]` وحده لأنه رمزٌ تامّ
+     * لا يحتمل البتر، ويرفض ما عداه.
+     */
     rest(): string {
       return buffer.trim();
     },
@@ -193,6 +206,15 @@ export async function* streamYSDRuntimeChat(
     yield { type: "error", reason: "invalid_target" };
     return;
   }
+
+  /**
+   * ★ إشارة ملغاة **قبل** البدء — لا مؤقّت ولا اتصال.
+   *
+   * المستدعي انصرف قبل أن نبدأ. وإنشاء مؤقّت ثم إطلاق طلبٍ سيُجهض فورًا
+   * إنفاقٌ بلا فائدة، وقد يصل الطلب إلى وقت التشغيل فيبدأ توليدًا لا
+   * يقرأه أحد. والصمت هنا هو الجواب: لا إطار ولا نداء.
+   */
+  if (request.signal?.aborted) return;
 
   const control = new AbortController();
   const timeoutMs = effectiveTimeoutMs(request.budgetMs);
@@ -320,12 +342,24 @@ export async function* streamYSDRuntimeChat(
     }
 
     /**
-     * ★ حمولة معلّقة بلا سطر جديد عند نهاية الجسم.
+     * ★ ما تبقّى معلّقًا بلا سطر جديد.
      *
-     * تعني بثًّا مبتورًا في منتصف حدث — لا نصًّا صالحًا. فتُعامل كانقطاع.
+     * حالتان لا واحدة:
+     *
+     *   `data: [DONE]` — رمزٌ **تامّ** لا يحتمل البتر: لو وصل ناقصًا لَما
+     *   طابق النصّ. فقبولُه إنهاءٌ طبيعيّ لا تساهل، وكثيرٌ من الخوادم لا
+     *   تُلحق سطرًا جديدًا بآخر حدث.
+     *
+     *   وأي شيء آخر — حمولةٌ مبتورة في منتصفها، فتُعامل كانقطاع. ولا
+     *   تُحلَّل: تحليلُ نصفِ JSON إما يفشل أو ينجح كذبًا.
      */
     const trailing = parser.rest();
-    if (!sawDone && trailing.length > 0 && trailing !== "data: [DONE]") {
+    // آخر ما في مخزن فكّ الترميز — يُفرَغ كي لا يضيع محرف متعدّد البايتات
+    decoder.decode();
+
+    if (!sawDone && trailing === "data: [DONE]") sawDone = true;
+
+    if (!sawDone && trailing.length > 0) {
       if (sawText) {
         if (latestUsage) yield { type: "usage", usage: latestUsage };
         yield {
@@ -399,6 +433,9 @@ export async function requestYSDRuntimeJsonCompletion(
     return { ok: false, reason: "invalid_target" };
   }
 
+  // ★ ملغاة قبل البدء ⇒ رمزها الخاصّ، بلا مؤقّت وبلا اتصال
+  if (input.signal?.aborted) return { ok: false, reason: "aborted" };
+
   const control = new AbortController();
   const timeoutMs = effectiveTimeoutMs(input.timeoutMs);
   let timedOut = false;
@@ -429,6 +466,13 @@ export async function requestYSDRuntimeJsonCompletion(
         signal: control.signal,
       });
     } catch {
+      /**
+       * الترتيب مقصود: الإلغاء أولًا.
+       *
+       * فلو أُلغي أثناء الطيران لَبدا الاستثناء كعطل شبكة — وهو قرار
+       * المستدعي لا عطلٌ عندنا. والمهلة تليه لأنها عطلٌ فعليّ.
+       */
+      if (input.signal?.aborted) return { ok: false, reason: "aborted" };
       return { ok: false, reason: timedOut ? "timeout" : "network_error" };
     }
 

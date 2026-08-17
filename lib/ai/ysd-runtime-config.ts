@@ -108,7 +108,13 @@ export function readYSDRuntimeConfig(
    */
   const checked = checkProviderUrl(rawUrl, {
     source: "env",
-    isProduction: process.env.NODE_ENV === "production",
+    /**
+     * ★ من البيئة **المحقونة** لا من بيئة العملية.
+     *
+     * الدالة تُعلن أن `env` اعتمادها؛ فخلطُ مصدرين يجعل نتيجتها تتغيّر
+     * بما لم يُمرَّر إليها — ويجعل اختبارها يلمس بيئة العملية ليقيس شرطًا.
+     */
+    isProduction: env.NODE_ENV === "production",
   });
   if (!checked.ok) {
     // الأسباب المشتركة تُمرَّر كما هي؛ وما لا يخصّ هذا المسار يُعمَّم

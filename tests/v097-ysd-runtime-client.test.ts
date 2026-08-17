@@ -663,3 +663,164 @@ describe("★ حدود الناقل", () => {
     }
   });
 });
+
+/* ═══════════ تصحيحات الرقعة — الإلغاء ونهاية البثّ ═══════════ */
+
+describe("★ الإلغاء المسبق — لا مؤقّت ولا اتصال", () => {
+  const preAborted = () => {
+    const ac = new AbortController();
+    ac.abort();
+    return ac.signal;
+  };
+
+  it("★ البثّ: إشارة ملغاة سلفًا ⇒ صفر إطارات وصفر نداءات", async () => {
+    const { impl, calls } = fakeFetch(() => {
+      throw new Error("يجب ألّا يُستدعى");
+    });
+    const chunks = await collect(
+      streamYSDRuntimeChat(
+        config(),
+        deployment(),
+        version(),
+        request({ signal: preAborted() }),
+        impl,
+      ),
+    );
+    expect(calls).toHaveLength(0);
+    expect(chunks).toHaveLength(0); // ★ ولا حتى إطار خطأ
+  });
+
+  it("★ JSON: إشارة ملغاة سلفًا ⇒ aborted بصفر نداءات", async () => {
+    const { impl, calls } = fakeFetch(() => {
+      throw new Error("يجب ألّا يُستدعى");
+    });
+    const r = await requestYSDRuntimeJsonCompletion(
+      config(),
+      deployment(),
+      version(),
+      {
+        systemPrompt: "تعليمات",
+        userText: "سؤال",
+        maxTokens: 500,
+        timeoutMs: 5_000,
+        signal: preAborted(),
+      },
+      impl,
+    );
+    expect(calls).toHaveLength(0);
+    expect(r).toEqual({ ok: false, reason: "aborted" });
+  });
+
+  it("★ JSON: إلغاء أثناء الطيران ⇒ aborted لا network_error", async () => {
+    const ac = new AbortController();
+    const { impl } = fakeFetch(() => {
+      ac.abort();
+      throw new Error("AbortError");
+    });
+    const r = await requestYSDRuntimeJsonCompletion(
+      config(),
+      deployment(),
+      version(),
+      {
+        systemPrompt: "تعليمات",
+        userText: "سؤال",
+        maxTokens: 500,
+        timeoutMs: 5_000,
+        signal: ac.signal,
+      },
+      impl,
+    );
+    expect(r).toEqual({ ok: false, reason: "aborted" });
+  });
+
+  it("★ والمهلة تبقى timeout لا aborted", async () => {
+    const { impl } = fakeFetch(
+      () =>
+        new Promise<Response>((_, reject) => {
+          setTimeout(() => reject(new Error("aborted by timer")), 60);
+        }),
+    );
+    const r = await requestYSDRuntimeJsonCompletion(
+      config(),
+      deployment(),
+      version(),
+      { systemPrompt: "س", userText: "ن", maxTokens: 10, timeoutMs: 20 },
+      impl,
+    );
+    expect(r).toEqual({ ok: false, reason: "timeout" });
+  });
+
+  it("★ وعطل الشبكة الحقيقيّ يبقى network_error", async () => {
+    const { impl } = fakeFetch(() => {
+      throw new Error("ECONNRESET");
+    });
+    const r = await requestYSDRuntimeJsonCompletion(
+      config(),
+      deployment(),
+      version(),
+      { systemPrompt: "س", userText: "ن", maxTokens: 10, timeoutMs: 5_000 },
+      impl,
+    );
+    expect(r).toEqual({ ok: false, reason: "network_error" });
+  });
+});
+
+describe("★ نهاية البثّ — [DONE] بلا سطر جديد", () => {
+  const runStream2 = async (parts: string[]) => {
+    const { impl } = fakeFetch(() => streamResponse(parts));
+    return collect(streamYSDRuntimeChat(config(), deployment(), version(), request(), impl));
+  };
+
+  it("★ [DONE] في آخر البايتات بلا سطر جديد ⇒ إنهاء طبيعيّ", async () => {
+    const chunks = await runStream2([
+      'data: {"choices":[{"delta":{"content":"نصّ"}}]}\n\n',
+      "data: [DONE]",
+    ]);
+    expect(chunks.filter((c) => c.type === "text")).toHaveLength(1);
+    // ★ لا incomplete_provider — الرمز تامّ لا يحتمل البتر
+    expect(chunks[chunks.length - 1]).toEqual({ type: "done" });
+  });
+
+  it("★ ومقسومًا بين دفعتين كذلك", async () => {
+    const chunks = await runStream2([
+      'data: {"choices":[{"delta":{"content":"أ"}}]}\n\n',
+      "data: [DO",
+      "NE]",
+    ]);
+    expect(chunks[chunks.length - 1]).toEqual({ type: "done" });
+  });
+
+  it("★ ومع usage قبله تُبثّ مرة ثم تنتهي طبيعيًّا", async () => {
+    const chunks = await runStream2([
+      'data: {"choices":[{"delta":{"content":"أ"}}]}\n\n',
+      'data: {"usage":{"prompt_tokens":3,"completion_tokens":4}}\n\n',
+      "data: [DONE]",
+    ]);
+    expect(chunks.filter((c) => c.type === "usage")).toHaveLength(1);
+    expect(chunks[chunks.length - 1]).toEqual({ type: "done" });
+  });
+
+  it("★ ★ ولا يقبل JSON مبتورًا — الفشل المغلق باقٍ", async () => {
+    const truncated = await runStream2([
+      'data: {"choices":[{"delta":{"content":"أ"}}]}\n\n',
+      'data: {"choices":[{"delta":{"cont',
+    ]);
+    // نصٌّ خرج ⇒ ردٌّ ناقص موسوم، لا إنهاء طبيعيّ
+    expect(truncated[truncated.length - 1]).toEqual({
+      type: "done",
+      completion: "incomplete_provider",
+      completionReason: "stream_interrupted",
+    });
+
+    const truncatedNoText = await runStream2(['data: {"choices":[{"delta"']);
+    expect(errorReason(truncatedNoText)).toBe("invalid_response");
+  });
+
+  it("★ ورمزٌ يشبه [DONE] ولا يطابقه يُعامَل كبتر", async () => {
+    const chunks = await runStream2([
+      'data: {"choices":[{"delta":{"content":"أ"}}]}\n\n',
+      "data: [DON",
+    ]);
+    expect(chunks[chunks.length - 1]).toMatchObject({ completion: "incomplete_provider" });
+  });
+});

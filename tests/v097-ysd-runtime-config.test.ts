@@ -276,3 +276,70 @@ describe("★ (B) .env.example", () => {
     }
   });
 });
+
+/* ═══════════ تصحيح الرقعة — البيئة المحقونة ═══════════ */
+
+describe("★ NODE_ENV المحقون هو المصدر الوحيد", () => {
+  it("★ production محقونة + HTTP عام ⇒ insecure_in_production", () => {
+    const r = readYSDRuntimeConfig(
+      env({ NODE_ENV: "production", YSD_RUNTIME_BASE_URL: "http://public.example/v1" }),
+    );
+    expect(reason(r)).toBe("insecure_in_production");
+  });
+
+  it("★ development محقونة + HTTP عام ⇒ يُقبل وفق سياسة الحارس القائم", () => {
+    const r = readYSDRuntimeConfig(
+      env({ NODE_ENV: "development", YSD_RUNTIME_BASE_URL: "http://public.example/v1" }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("★ ★ ولا تلمس الدالة بيئة العملية — الحكم من المحقونة وحدها", () => {
+    /**
+     * الاختباران يمرّران `NODE_ENV` متعارضًا مع بيئة العملية، فلو قرأت
+     * الدالة `process.env` لتناقضت النتيجتان. ولا يُعدَّل `process.env`
+     * هنا إطلاقًا — فالاختبار لا يترك أثرًا على غيره.
+     */
+    const before = process.env.NODE_ENV;
+
+    const prod = readYSDRuntimeConfig(
+      env({ NODE_ENV: "production", YSD_RUNTIME_BASE_URL: "http://public.example/v1" }),
+    );
+    const dev = readYSDRuntimeConfig(
+      env({ NODE_ENV: "development", YSD_RUNTIME_BASE_URL: "http://public.example/v1" }),
+    );
+
+    expect(reason(prod)).toBe("insecure_in_production");
+    expect(dev.ok).toBe(true);
+    expect(process.env.NODE_ENV).toBe(before); // لم تُمسّ
+
+    /**
+     * وفي **الشيفرة** لا في الشرح: التعليق يذكر `process.env` ليُفهم سبب
+     * تجنّبه، وحارسٌ يقرأ التعليق يمنع التوثيق لا الانحدار.
+     */
+    const CODE = SRC.split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+
+    /**
+     * `process.env` مسموحٌ في موضعٍ واحد فقط: **افتراض المعامل**. فذلك
+     * ملاءمةٌ للمستدعي لا خلطٌ للمصدرين — الحكم يبقى على ما وصل الدالة.
+     *
+     * وأيّ قراءة أخرى منه تعني نتيجةً تتغيّر بما لم يُمرَّر، وهو ما يمنعه
+     * هذا الحارس: موضعٌ واحد، وهو التوقيع.
+     */
+    const envReads = CODE.match(/process\.env/g) ?? [];
+    expect(envReads).toHaveLength(1);
+    expect(CODE).toContain("env: NodeJS.ProcessEnv = process.env");
+    // ★ والحكم على الإنتاج من المحقونة صراحةً
+    expect(CODE).toContain('isProduction: env.NODE_ENV === "production"');
+    expect(CODE).not.toContain('process.env.NODE_ENV');
+  });
+
+  it("★ وHTTPS يُقبل في الإنتاج المحقون", () => {
+    const r = readYSDRuntimeConfig(
+      env({ NODE_ENV: "production", YSD_RUNTIME_BASE_URL: "https://secure.example/v1" }),
+    );
+    expect(r.ok).toBe(true);
+  });
+});
