@@ -64,6 +64,14 @@ export class YSDProvider implements AIProviderAdapter {
   readonly fallbackPolicy = "none" as const;
 
   /**
+   * ولا يصلح بديلًا لأحد في هذه المرحلة — لا خدمة خلفه بعد.
+   *
+   * وهي الوجه الآخر من `fallbackPolicy`: تلك تمنع الخروج منه، وهذه تمنع
+   * الدخول إليه. فلا يُحوَّل طلبه إلى غيره، ولا يُحوَّل إليه طلب غيره.
+   */
+  readonly fallbackEligible = false;
+
+  /**
    * مغلق افتراضيًّا: الغياب أو أي قيمة غير `"1"` تعني `false`.
    *
    * فوجود هذا المزوّد في السجلّ لا يغيّر سلوك الإنتاج بحرف — يرشّحه

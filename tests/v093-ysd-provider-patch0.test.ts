@@ -191,7 +191,17 @@ describe("★ (٣–٤) fallbackPolicy", () => {
 
 describe("★ (٥–٦) المزوّدون القائمون", () => {
   it("★ (٥) Groq يبقى المزوّد الاحتياطيّ — وYSD لا ينافسه", () => {
-    // الاحتياط يشترط userSelectable === false، وYSD يعلن true
+    /**
+     * ★ حُدِّث في v0.9.3: كان المعيار `userSelectable === false` — أي «كل
+     * مخفيّ احتياطٌ». وصار الإعلان الصريح `fallbackEligible` وحده.
+     *
+     * والحارس لم يُحذَف بل صار **أدقّ**: يفحص السبب الحقيقيّ لا العَرَض.
+     * فلو أُخفي YSD يومًا (`userSelectable = false`) يبقى غير مرشّح، وذلك
+     * ما كان النصّ القديم يعجز عن ضمانه.
+     */
+    expect(new GroqProvider().fallbackEligible).toBe(true);
+    expect(new YSDProvider().fallbackEligible).toBe(false);
+    // والإخفاء يبقى مفهومًا منفصلًا
     expect(new YSDProvider().userSelectable).toBe(true);
     expect(new GroqProvider().userSelectable).toBe(false);
 

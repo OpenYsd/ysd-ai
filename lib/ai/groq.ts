@@ -78,14 +78,25 @@ export class GroqProvider implements AIProviderAdapter {
   readonly supportsStreaming = true;
 
   /**
-   * ★ مُهيّأ ≠ قابل للاختيار.
+   * ★ الإخفاء وحده — لا علاقة له بالاحتياط.
    *
-   * `isConfigured()` تقول إن المفتاح موجود فيصير الاحتياط ممكنًا.
-   * و`userSelectable = false` تُخفيه عن قائمة النماذج وعن
-   * `resolveProviderForModel` — فلا يستطيع مستخدم توجيه طلبه إليه مباشرة.
-   * المفهومان منفصلان عمدًا: لولا ذلك لَكان إخفاؤه يعطّل الاحتياط نفسه.
+   * يُخفيه عن قائمة النماذج وعن `resolveProviderForModel`، فلا يستطيع
+   * مستخدم توجيه طلبه إليه مباشرة. وهذا كل ما يقوله.
+   *
+   * وحتى v0.9.3 كان السجلّ يقرأ هذه الخاصية على أنها إعلان احتياط أيضًا —
+   * فكان إخفاء أي مزوّد يرشّحه للاحتياط بلا قصد. الأهليّة انتقلت إلى
+   * `fallbackEligible` أدناه.
    */
   readonly userSelectable = false;
+
+  /**
+   * ★ وهذا هو ما يجعله احتياطًا — إعلانٌ صريح لا استنتاج.
+   *
+   * Groq مزوّد مستقل بمفتاحه وحدوده، يُجرَّب بعد فشل سلسلة OpenRouter
+   * كاملةً. و`isConfigured()` تبقى الشرط الثاني: الأهليّة نيّة، والتهيئة
+   * قدرة، ولا يكفي أحدهما وحده.
+   */
+  readonly fallbackEligible = true;
 
   isConfigured(): boolean {
     return Boolean(process.env.GROQ_API_KEY);

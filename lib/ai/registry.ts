@@ -44,19 +44,44 @@ export function getConfiguredProviders(): AIProviderAdapter[] {
   return providers.filter((p) => p.isConfigured());
 }
 
-/** المزوّدون الذين يجوز للمستخدم اختيار نماذجهم — الاحتياطيون مستثنون */
+/**
+ * المزوّدون الذين يجوز للمستخدم اختيار نماذجهم.
+ *
+ * المعيار الوحيد هنا هو **الظهور**: `userSelectable !== false`. ولا شأن له
+ * بالاحتياط — ذاك `isFallbackCandidate` أدناه، ولا رابط بين الدالتين.
+ */
 function getSelectableProviders(): AIProviderAdapter[] {
   return getConfiguredProviders().filter((p) => p.userSelectable !== false);
 }
 
 /**
+ * ★ هل يصلح هذا المزوّد بديلًا لمزوّد آخر فشل؟
+ *
+ * شرطان لا واحد: **الأهليّة** إعلانٌ صريح من المزوّد نفسه، و**التهيئة**
+ * قدرةٌ فعلية على العمل. فالمُعلِن بلا مفتاح لا يصلح، والمُهيّأ بلا إعلان
+ * لا يُدَسّ.
+ *
+ * والافتراض آمن: `undefined` تعني «لا» — فمزوّد جديد لا يصير بديلًا لأحد
+ * بمجرد إضافته إلى السجلّ.
+ */
+export function isFallbackCandidate(p: AIProviderAdapter): boolean {
+  return p.fallbackEligible === true && p.isConfigured();
+}
+
+/**
  * المزوّد الاحتياطي: يُستدعى من المسار بعد فشل سلسلة المزوّد الأساسي.
  *
- * يتخطّى `getSelectableProviders` عمدًا — فالإخفاء عن المستخدم لا يعني
- * التعطيل. وغيابه (بلا مفتاح) يعني احتياطًا معطّلًا بلا أي فشل إقلاع.
+ * ── ما تغيّر في v0.9.3 ──
+ *
+ * كان المعيار `userSelectable === false` — أي «كل مخفيّ احتياطٌ». وذلك خلطٌ
+ * بين مفهومين: الإخفاء قرار عرض، والاحتياط قرار دور. وأثره خطرٌ صامت: أيّ
+ * مزوّد يُخفى لسببٍ آخر — نموذج المنصّة مثلًا — كان يصير مرشّحًا للاحتياط
+ * بلا أن يقصد أحد، فيتلقّى طلبات مزوّد آخر.
+ *
+ * فصار المعيار الإعلان الصريح وحده. والإخفاء لم يعد يقول شيئًا عن الدور.
  */
 export function getFallbackProvider(): AIProviderAdapter | null {
-  return providers.find((p) => p.userSelectable === false && p.isConfigured()) ?? null;
+  return providers.find(isFallbackCandidate) ?? null;
 }
 
 export function listAvailableModels(): ModelInfo[] {
