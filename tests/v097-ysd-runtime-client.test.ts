@@ -655,8 +655,19 @@ describe("★ حدود الناقل", () => {
     expect((SRC.match(/clearTimeout\(/g) ?? []).length).toBe(2);
   });
 
-  it("★ ولا يُوصَل بمزوّد YSD بعد", () => {
-    for (const f of ["lib/ai/ysd.ts", "lib/ai/registry.ts", "app/api/chat/route.ts"]) {
+  it("★ موصولٌ بمزوّد YSD وحده — لا بالمسار ولا بالسجلّ", () => {
+    /**
+     * ★ حُدِّث في الرقعة الخامسة: صار الناقل موصولًا — لكن بمزوّد YSD
+     * **وحده**. فالمسار العامّ لا يعرفه، ولا يستوردهما سجلّ المزوّدين.
+     *
+     * فالحدّ لم يُرفَع بل انتقل: كان «لا مستدعي»، وصار «مستدعٍ واحد
+     * معلوم». وذلك أدقّ — إذ يمنع تسرّبه إلى طبقات لا تخصّه.
+     */
+    const provider = readFileSync("lib/ai/ysd.ts", "utf8");
+    expect(provider).toContain("ysd-runtime-client");
+    expect(provider).toContain("ysd-runtime-config");
+
+    for (const f of ["lib/ai/registry.ts", "app/api/chat/route.ts", "lib/ai/model-policy.ts"]) {
       const src = readFileSync(f, "utf8");
       expect(src, f).not.toContain("ysd-runtime-client");
       expect(src, f).not.toContain("ysd-runtime-config");

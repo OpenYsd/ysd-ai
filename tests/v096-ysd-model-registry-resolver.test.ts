@@ -499,10 +499,18 @@ describe("★ تشديد isServableDeployment", () => {
 /* ═══════════ لا تكامل بعد ═══════════ */
 
 describe("★ الرقعة لا تمسّ المسار ولا المزوّدين", () => {
-  it("★ لا مستدعي للحلّال بعد", () => {
+  it("★ مستدعٍ واحد معلوم: مزوّد YSD — لا المسار ولا السجلّ", () => {
+    /**
+     * ★ حُدِّث في الرقعة الخامسة. الحدّ لم يُرفَع بل صار أدقّ: مستدعٍ واحد
+     * معلوم بدل «لا مستدعي». فلا يتسرّب الوصول إلى القاعدة إلى طبقاتٍ
+     * لا تخصّها.
+     */
+    const provider = readFileSync("lib/ai/ysd.ts", "utf8");
+    expect(provider).toContain("model-registry-resolver");
+    expect(provider).toContain("resolveServableDeployment");
+
     for (const f of [
       "app/api/chat/route.ts",
-      "lib/ai/ysd.ts",
       "lib/ai/registry.ts",
       "lib/ai/model-policy.ts",
     ]) {

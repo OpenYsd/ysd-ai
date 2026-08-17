@@ -322,11 +322,17 @@ describe("★ (١٣–١٧) بوابة الخدمة", () => {
 /* ═════════ لا تكامل مع المحادثة ═════════ */
 
 describe("★ الرقعة لا تمسّ مسار المحادثة", () => {
-  it("★ لا مستدعي لـmodel-registry بعد", () => {
-    const ROUTE = readFileSync("app/api/chat/route.ts", "utf8");
+  it("★ السجلّ يصل مزوّد YSD وحده — لا المسار ولا سياسة النماذج", () => {
+    /**
+     * ★ حُدِّث في الرقعة الخامسة: مزوّد YSD صار يستورد أنواع السجلّ ويحلّ
+     * نشرته. والمسار وسياسة النماذج ما زالا لا يعرفانه — وذلك ما يهمّ.
+     */
     const YSD = readFileSync("lib/ai/ysd.ts", "utf8");
+    expect(YSD).toContain("model-registry");
+
+    const ROUTE = readFileSync("app/api/chat/route.ts", "utf8");
     const POLICY = readFileSync("lib/ai/model-policy.ts", "utf8");
-    for (const [name, src] of [["route", ROUTE], ["ysd", YSD], ["policy", POLICY]] as const) {
+    for (const [name, src] of [["route", ROUTE], ["policy", POLICY]] as const) {
       expect(src, name).not.toContain("model-registry");
       expect(src, name).not.toContain("isServableDeployment");
     }

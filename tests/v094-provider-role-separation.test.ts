@@ -154,10 +154,28 @@ describe("★ (٥–٧) السجلّ", () => {
     }
   });
 
-  it("★ (٧) YSD لا يصير احتياطًا حتى مع العَلَم مفتوحًا", () => {
+  it("★ (٧) YSD لا يصير احتياطًا حتى وهو مُهيّأ بالكامل", () => {
+    /**
+     * ★ حُدِّث في الرقعة الخامسة: `isConfigured` صارت تشترط ثلاثة — العَلَم
+     * وإعداد وقت التشغيل وصلاحية السجلّ. فالعَلَم وحده لم يعد يجعله مُهيّأً،
+     * وتُحقن الجاهزية هنا كي يُقاس **الأهمّ**: أنه لا يصير احتياطًا حتى
+     * وهو جاهز تمامًا.
+     */
     process.env.YSD_PROVIDER_ENABLED = "1";
-    expect(new YSDProvider().isConfigured()).toBe(true);
-    expect(isFallbackCandidate(new YSDProvider())).toBe(false);
+    const ready = new YSDProvider({
+      readRuntimeConfig: () => ({
+        ok: true,
+        config: {
+          deploymentEnvironment: "production",
+          endpointAlias: "ysd-inference-primary",
+          baseUrl: "https://runtime.internal.example/v1",
+          apiKey: "k",
+        },
+      }),
+      hasRegistryAccess: () => true,
+    });
+    expect(ready.isConfigured()).toBe(true);
+    expect(isFallbackCandidate(ready)).toBe(false);
     expect(getFallbackProvider()?.id).not.toBe(YSD_PROVIDER_ID);
   });
 

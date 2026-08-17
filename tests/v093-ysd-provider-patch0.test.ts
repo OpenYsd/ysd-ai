@@ -33,6 +33,15 @@ import {
 import type { AIProviderAdapter } from "@/lib/ai/types";
 import { OpenRouterProvider } from "@/lib/ai/openrouter";
 import { GroqProvider } from "@/lib/ai/groq";
+import { ERROR_MESSAGES } from "@/lib/ai/error-codes";
+import type { ChatRequest } from "@/lib/ai/types";
+
+/** طلب أدنى — المزوّد صار يستقبله فعلًا بعد التوصيل */
+const chatRequest = (over: Partial<ChatRequest> = {}): ChatRequest => ({
+  modelId: YSD_ALPHA_MODEL_ID,
+  messages: [{ role: "user", content: "مرحبًا" }],
+  ...over,
+});
 
 const YSD_SRC = readFileSync("lib/ai/ysd.ts", "utf8");
 const ROUTE = readFileSync("app/api/chat/route.ts", "utf8");
@@ -81,9 +90,33 @@ describe("★ (٢) مع YSD_PROVIDER_ENABLED=1", () => {
     process.env.YSD_PROVIDER_ENABLED = "1";
   });
 
-  it("★ المزوّد مُهيّأ", () => {
-    expect(new YSDProvider().isConfigured()).toBe(true);
-    expect(getConfiguredProviders().some((p) => p.id === YSD_PROVIDER_ID)).toBe(true);
+  /**
+   * ★ حُدِّث في الرقعة الخامسة: العَلَم وحده **لم يعد كافيًا**.
+   *
+   * كان يكفي، وذلك إعلانٌ كاذب: يقول «المزوّد جاهز» بينما قد يغيب عنوان
+   * وقت التشغيل أو مفتاحه أو صلاحية السجلّ — فيصل الطلب إلى مزوّدٍ لا
+   * يستطيع خدمته. الآن ثلاثة شروط، والاختبار يقيسها كلها.
+   */
+  it("★ العَلَم وحده لا يكفي — الجاهزية ثلاثة شروط", () => {
+    // العَلَم مفتوح، لكن وقت التشغيل والسجلّ غير جاهزين في بيئة الاختبار
+    expect(new YSDProvider().isConfigured()).toBe(false);
+    expect(getConfiguredProviders().some((p) => p.id === YSD_PROVIDER_ID)).toBe(false);
+  });
+
+  it("★ ومع اكتمال الثلاثة يصير مُهيّأ", () => {
+    const ready = new YSDProvider({
+      readRuntimeConfig: () => ({
+        ok: true,
+        config: {
+          deploymentEnvironment: "production",
+          endpointAlias: "ysd-inference-primary",
+          baseUrl: "https://runtime.internal.example/v1",
+          apiKey: "k",
+        },
+      }),
+      hasRegistryAccess: () => true,
+    });
+    expect(ready.isConfigured()).toBe(true);
   });
 
   it("★ لكن model-alpha يبقى غير قابل للاختيار — الطبقة الثانية", () => {
@@ -97,25 +130,32 @@ describe("★ (٢) مع YSD_PROVIDER_ENABLED=1", () => {
     expect(resolveProviderForModel(YSD_ALPHA_MODEL_ID)).toBeNull();
   });
 
+  /**
+   * ★ حُدِّث في v0.9.3/الرقعة الخامسة: صار المزوّد يستقبل الطلب فعلًا.
+   *
+   * الدالتان صارتا تأخذان وسائطهما، والرسالة صارت من المصدر المركزيّ
+   * (`ERROR_MESSAGES`) بدل نصٍّ محليّ. والمُقاس هو هو: **صفر شبكة، وفشل
+   * مغلق برمز مصنَّف** — بل صار أقوى، لأن المسار الآن حقيقيّ ولم يعد
+   * جذعًا يردّ ثابتًا.
+   */
   it("★ ولا نداء شبكيّ: البثّ يفشل مغلقًا بإطار خطأ مصنَّف", async () => {
     const fetchSpy = globalThis.fetch;
     let called = false;
     globalThis.fetch = (async () => {
       called = true;
-      throw new Error("no network allowed in patch 0");
+      throw new Error("no network allowed while dormant");
     }) as typeof fetch;
 
     try {
       const chunks = [];
-      for await (const c of new YSDProvider().streamChat()) chunks.push(c);
+      for await (const c of new YSDProvider().streamChat(chatRequest())) chunks.push(c);
 
       expect(called).toBe(false);
       expect(chunks).toHaveLength(1);
       expect(chunks[0]!.type).toBe("error");
       expect(chunks[0]!.errorCode).toBe("provider_unavailable");
-      expect(chunks[0]!.error).toBe(
-        "خدمة الذكاء الاصطناعي غير متاحة الآن. حاول مرة أخرى لاحقًا.",
-      );
+      // الرسالة من المصدر المركزيّ — لا نصّ موازٍ يتباعد عنه
+      expect(chunks[0]!.error).toBe(ERROR_MESSAGES.provider_unavailable);
     } finally {
       globalThis.fetch = fetchSpy;
     }
@@ -124,7 +164,7 @@ describe("★ (٢) مع YSD_PROVIDER_ENABLED=1", () => {
   it("★ ولا يرمي استثناءً خامًا — مزوّد خامل لا يُسقط طلبًا", async () => {
     await expect(
       (async () => {
-        for await (const _ of new YSDProvider().streamChat()) {
+        for await (const _ of new YSDProvider().streamChat(chatRequest())) {
           /* يُستهلك */
         }
       })(),
@@ -132,7 +172,12 @@ describe("★ (٢) مع YSD_PROVIDER_ENABLED=1", () => {
   });
 
   it("★ وretrieval JSON يعلن الفشل بلا محاولة", async () => {
-    const r = await new YSDProvider().requestJsonCompletion();
+    const r = await new YSDProvider().requestJsonCompletion({
+      systemPrompt: "تعليمات",
+      userText: "سؤال",
+      maxTokens: 100,
+      timeoutMs: 1_000,
+    });
     expect(r).toEqual({ ok: false, reason: "error" });
   });
 });
@@ -247,10 +292,20 @@ describe("★ (٧–٩) ما لا تحويه الرقعة", () => {
     }
   });
 
-  it("★ (٩) ولا مفتاح ولا سرّ — عَلَم التفعيل وحده", () => {
+  it("★ (٩) ولا مفتاح ولا سرّ — مجموعة بيئة مغلقة", () => {
+    /**
+     * ★ اتّسعت في الرقعة الخامسة إلى اثنين، وبقيت **مغلقة**.
+     *
+     * `NEXT_PUBLIC_SUPABASE_URL` عنوانٌ عامّ بطبيعته (يصل المتصفّح أصلًا)،
+     * ويُقرأ لفحص الجاهزية لا للاتصال. وقيمة مفتاح الخدمة لا تُقرأ هنا
+     * إطلاقًا: `isServiceRoleConfigured` تقول «موجود» ولا تكشف شيئًا.
+     */
     const envRefs = [...YSD_SRC.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
-    expect(envRefs).toEqual(["YSD_PROVIDER_ENABLED"]);
-    for (const bad of ["API_KEY", "SECRET", "TOKEN", "Authorization", "Bearer"]) {
+    expect(new Set(envRefs)).toEqual(
+      new Set(["YSD_PROVIDER_ENABLED", "NEXT_PUBLIC_SUPABASE_URL"]),
+    );
+    // ★ ولا اسم سرّ ولا ترويسة اعتماد
+    for (const bad of ["API_KEY", "SERVICE_ROLE", "SECRET", "Authorization", "Bearer"]) {
       expect(YSD_SRC, bad).not.toContain(bad);
     }
   });

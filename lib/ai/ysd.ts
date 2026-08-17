@@ -1,32 +1,43 @@
-import type { AIProviderAdapter, ModelInfo, StreamChunk } from "./types";
+import "server-only";
+
+import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk } from "./types";
+import type { ModelDeploymentRecord, ModelVersionRecord } from "./model-registry";
+import { readYSDRuntimeConfig, type YSDRuntimeConfig } from "./ysd-runtime-config";
+import {
+  requestYSDRuntimeJsonCompletion,
+  streamYSDRuntimeChat,
+  type YSDRuntimeFailureReason,
+} from "./ysd-runtime-client";
+import { resolveServableDeployment } from "./model-registry-resolver";
+import { getAdminClient, isServiceRoleConfigured } from "@/lib/supabase/admin";
+import { ERROR_MESSAGES, type ChatErrorCode } from "./error-codes";
 
 /**
- * YSD — مزوّد نموذج المنصّة، **خامل بالكامل في هذه الرقعة**.
+ * YSD — مزوّد نموذج المنصّة، **موصولٌ بالكامل وخاملٌ بالكامل**.
  *
- * ── ما هذا الملف ──
+ * ── ما تغيّر في هذه الرقعة ──
  *
- * عقدٌ لا خدمة. يُثبّت شكل المزوّد ومعرّفاته وسياسته كي تُبنى عليه الرقعات
- * التالية، ولا يحمل نداءً شبكيًّا ولا عنوانًا ولا مفتاحًا. فلا شيء هنا يمكن
- * أن يتصل بشيء.
+ * صار المسار حقيقيًّا من طرفه إلى طرفه:
  *
- * ── لماذا خامل لا مؤجَّل ──
+ *   إعداد وقت التشغيل → عميل السجلّ الخادميّ → حلّ النشرة الصالحة
+ *   → ناقل وقت التشغيل
  *
- * التعطيل هنا **مزدوج ومقصود**:
+ * ولم يتغيّر شيء للمستخدم: `ysd/model-alpha` ما يزال `enabled: false`، فلا
+ * يظهر في قائمة ولا يُوجَّه إليه طلب. توصيلٌ لا تفعيل — يُختبر الأنبوب
+ * كاملًا قبل أن يُفتح الصنبور.
  *
- *   (١) `isConfigured()` يرد `false` بلا `YSD_PROVIDER_ENABLED=1`، فيرشّحه
- *       السجلّ فلا يصل إليه طلب أصلًا.
- *   (٢) `enabled: false` على النموذج، فحتى لو فُتح العَلَم لا يظهر للمستخدم
- *       ولا يُوجَّه إليه طلب.
+ * ── وثلاث طبقات تمنع الخدمة اليوم ──
  *
- * والطبقتان لأن الأولى وحدها تجعل فتح العَلَم — لتجربة أو بالخطأ — يعرض على
- * المستخدم نموذجًا لا وجود له خلفه. والثانية تُرفع في رقعة تفعيل مستقلّة،
- * بعد سجلّ النماذج وواجهة YSD الحقيقية.
+ *   (١) `YSD_PROVIDER_ENABLED` مغلق ⇒ يرشّحه السجلّ فلا يصله طلب.
+ *   (٢) إعداد وقت التشغيل غير مكتمل ⇒ `isConfigured` تردّ `false`.
+ *   (٣) النموذج `enabled: false` ⇒ لا يظهر ولا يُختار.
  *
- * ── وسياسته ──
+ * ── ولا عبور لحدود المزوّد ──
  *
- * `fallbackPolicy = "none"`: لا يُحوَّل طلبٌ قُصد به نموذج المنصّة إلى مزوّد
- * خارجيّ. فالمستخدم الذي اختار YSD يريد YSD؛ وإجابةٌ من غيره تحت اسمه أسوأ
- * من رسالة عطل صريحة — لأن العطل يظهر والاستبدال لا يظهر.
+ * `fallbackPolicy = "none"` و`fallbackEligible = false`: فشلُ السجلّ أو
+ * وقت التشغيل يبقى فشل YSD، ولا يُحوَّل الطلب إلى Groq أو OpenRouter.
+ * فالمستخدم الذي اختار نموذج المنصّة يريده هو؛ وإجابةٌ من غيره تحت اسمه
+ * أسوأ من عطلٍ صريح — لأن العطل يظهر والاستبدال لا يظهر.
  */
 
 export const YSD_PROVIDER_ID = "ysd";
@@ -38,18 +49,86 @@ export const YSD_ALPHA_MODEL_ID = "ysd/model-alpha";
  * ★ قيمة تعاقدية مؤقتة — **ليست قدرة مقيسة**.
  *
  * وُضعت محافظةً عمدًا كي لا تُبنى عليها قرارات إنتاج (تقدير رموز، تقليم
- * سياق، اختيار نموذج). وتُستبدل بالقيمة الحقيقية حين تُبنى واجهة YSD
- * ويُقاس السياق فعلًا. ولا يقرأها اليوم أحد: النموذج `enabled: false`.
+ * سياق، اختيار نموذج). وتُستبدل بالقيمة الحقيقية حين يُقاس السياق فعلًا.
  */
 const CONTRACT_PLACEHOLDER_CONTEXT_WINDOW = 8_192;
 
 /**
- * رسالة العطل العامة — هي نفسها المستعملة في مسارات المزوّدين الأخرى.
+ * ★ اعتمادات المزوّد — تُحقن كاملةً.
  *
- * لا تذكر YSD ولا سببًا داخليًّا: المستخدم لا يعنيه أي مزوّد تعثّر، ورسالةٌ
- * تسمّي مكوّنًا داخليًّا تُسرّب بنية النظام بلا فائدة له.
+ * لولا ذلك لَاحتاج اختبارُ مسارٍ من أربع طبقات محاكاةً عامّة هشّة تُطابق
+ * الوحدات بأسمائها. والحقن يجعل كل فرعٍ قابلًا للقياس بلا شبكة ولا قاعدة
+ * ولا سرّ — وهو شرطُ أن نثق بالخمول نفسه.
  */
-const UNAVAILABLE_MESSAGE = "خدمة الذكاء الاصطناعي غير متاحة الآن. حاول مرة أخرى لاحقًا.";
+export interface YSDProviderDependencies {
+  readRuntimeConfig: typeof readYSDRuntimeConfig;
+  hasRegistryAccess: () => boolean;
+  getAdminClient: typeof getAdminClient;
+  resolveDeployment: typeof resolveServableDeployment;
+  streamRuntimeChat: typeof streamYSDRuntimeChat;
+  requestRuntimeJsonCompletion: typeof requestYSDRuntimeJsonCompletion;
+}
+
+/**
+ * جاهزية السجلّ — **تهيئةٌ لا اتصال**.
+ *
+ * تُقرأ في `isConfigured` التي تُستدعى في كل طلب تقريبًا، فرحلةٌ شبكية هنا
+ * تكلّف كل طلبٍ في النظام. والسؤال المقصود «هل يمكن أن نتصل؟» لا «هل
+ * اتصلنا؟» — والثانية تُجاب عند الحاجة لا قبلها.
+ *
+ * ولا تُقرأ قيمة المفتاح ولا تُمرَّر: `isServiceRoleConfigured` تقول
+ * «موجود» ولا تكشف شيئًا.
+ */
+function defaultHasRegistryAccess(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (typeof url !== "string" || url.trim().length === 0) return false;
+  return isServiceRoleConfigured();
+}
+
+const DEFAULTS: YSDProviderDependencies = {
+  readRuntimeConfig: readYSDRuntimeConfig,
+  hasRegistryAccess: defaultHasRegistryAccess,
+  getAdminClient,
+  resolveDeployment: resolveServableDeployment,
+  streamRuntimeChat: streamYSDRuntimeChat,
+  requestRuntimeJsonCompletion: requestYSDRuntimeJsonCompletion,
+};
+
+/** الهدف المحلول — داخليّ بحت، لا يخرج منه شيء إلى المستخدم */
+interface RuntimeTarget {
+  config: YSDRuntimeConfig;
+  deployment: ModelDeploymentRecord;
+  version: ModelVersionRecord;
+}
+
+/**
+ * ★ تحويل سبب وقت التشغيل إلى رمز خطأ عامّ.
+ *
+ * `YSDRuntimeFailureReason` مفردات داخلية تصف **أين** تعثّر المسار. ولا
+ * يعني المستخدمَ ذلك: أهو السجلّ أم النسخة أم وقت التشغيل؟ سؤالٌ تشغيليّ
+ * لا يغيّر ما يفعله. فيُختصر إلى ما يفيده: أهي مهلة، أم ضغط، أم انقطاع،
+ * أم تعذّرٌ عامّ.
+ */
+function errorCodeFor(reason: YSDRuntimeFailureReason): ChatErrorCode {
+  switch (reason) {
+    case "rate_limit":
+      return "rate_limit";
+    case "timeout":
+      return "timeout";
+    case "network_error":
+      return "network_error";
+    default:
+      // unauthorized · runtime_unavailable · invalid_response · stream_error · invalid_target
+      return "provider_unavailable";
+  }
+}
+
+/** إطار الخطأ العامّ — الرسالة من المصدر المركزيّ لا من هنا */
+const providerError = (code: ChatErrorCode = "provider_unavailable"): StreamChunk => ({
+  type: "error",
+  error: ERROR_MESSAGES[code],
+  errorCode: code,
+});
 
 export class YSDProvider implements AIProviderAdapter {
   readonly id = YSD_PROVIDER_ID;
@@ -71,14 +150,27 @@ export class YSDProvider implements AIProviderAdapter {
    */
   readonly fallbackEligible = false;
 
+  private readonly deps: YSDProviderDependencies;
+
+  constructor(deps: Partial<YSDProviderDependencies> = {}) {
+    this.deps = { ...DEFAULTS, ...deps };
+  }
+
   /**
-   * مغلق افتراضيًّا: الغياب أو أي قيمة غير `"1"` تعني `false`.
+   * ★ ثلاثة شروط لا واحد — والعَلَم أضعفها.
    *
-   * فوجود هذا المزوّد في السجلّ لا يغيّر سلوك الإنتاج بحرف — يرشّحه
-   * `getConfiguredProviders` قبل أن يصل إليه شيء.
+   * كان `YSD_PROVIDER_ENABLED` وحده كافيًا، وذلك إعلانٌ كاذب: يقول «المزوّد
+   * جاهز» بينما قد يغيب عنوان وقت التشغيل أو مفتاحه أو صلاحية السجلّ.
+   * فيصل الطلب إلى مزوّدٍ لا يستطيع خدمته، ويظهر العطل عند المستخدم بدل
+   * أن يُمنع الطلب أصلًا.
+   *
+   * ولا قاعدة ولا شبكة ولا `getAdminClient` هنا: تُستدعى في كل طلب تقريبًا،
+   * ورحلةٌ واحدة فيها تكلّف النظام كلَّه.
    */
   isConfigured(): boolean {
-    return process.env.YSD_PROVIDER_ENABLED === "1";
+    if (process.env.YSD_PROVIDER_ENABLED !== "1") return false;
+    if (!this.deps.readRuntimeConfig().ok) return false;
+    return this.deps.hasRegistryAccess() === true;
   }
 
   listModels(): ModelInfo[] {
@@ -90,9 +182,10 @@ export class YSDProvider implements AIProviderAdapter {
         displayNameEn: "YSD Model (Alpha)",
         contextWindow: CONTRACT_PLACEHOLDER_CONTEXT_WINDOW,
         /**
-         * ★ `false` عمدًا — الطبقة الثانية من التعطيل.
+         * ★ `false` ثابتٌ لا يتغيّر بأي متغيّر بيئة.
          *
-         * يبقى كذلك حتى تكتمل واجهة YSD ويُرفع في رقعة تفعيل مستقلّة.
+         * التوصيل لا يعني التفعيل. ورفعُه إلى `true` رقعةٌ مستقلّة تُتخذ
+         * بقرار، لا أثرٌ جانبيّ لفتح عَلَمٍ آخر.
          */
         enabled: false,
       },
@@ -100,30 +193,160 @@ export class YSDProvider implements AIProviderAdapter {
   }
 
   /**
-   * يفشل **مغلقًا** بلا أي اتصال.
+   * يحلّ الهدف الصالح للخدمة — أو `null` بلا تفصيل.
    *
-   * لا `fetch` ولا عنوان ولا مفتاح ولا استثناء خام: يُعيد إطار خطأ مصنَّفًا
-   * كما تفعل بقية المزوّدين عند التعثّر، فيسلك المسار مساره المعتاد بلا
-   * حالة خاصة. ورمي استثناء هنا كان سيجعل مزوّدًا خاملًا يُسقط طلبًا.
+   * الترتيب مقصود: كل فحصٍ أرخص يسبق ما هو أغلى منه. فلا رحلة قاعدة قبل
+   * أن يثبت اكتمال الإعداد، ولا نداء وقت تشغيل قبل أن تثبت النشرة.
+   *
+   * وكل وصولٍ إلى القاعدة يمرّ بالحلّال وحده — لا استعلام مباشر من هنا.
    */
-  async *streamChat(): AsyncGenerator<StreamChunk> {
-    yield {
-      type: "error",
-      error: UNAVAILABLE_MESSAGE,
-      errorCode: "provider_unavailable",
+  private async resolveRuntimeTarget(modelId: string): Promise<RuntimeTarget | null> {
+    /**
+     * ★ نموذج واحد مملوك — لا وكالة عامّة.
+     *
+     * بلا هذا الشرط يصير المزوّد بابًا لأي معرّفٍ في القاعدة: يكفي صفٌّ
+     * مكتوبٌ بخطأ ليُوجَّه إليه طلب تحت اسم YSD.
+     */
+    if (modelId !== YSD_ALPHA_MODEL_ID) return null;
+
+    if (process.env.YSD_PROVIDER_ENABLED !== "1") return null;
+
+    const configResult = this.deps.readRuntimeConfig();
+    if (!configResult.ok) return null;
+
+    if (this.deps.hasRegistryAccess() !== true) return null;
+
+    let client;
+    try {
+      client = this.deps.getAdminClient();
+    } catch {
+      // عطلٌ غير متوقّع في إنشاء العميل — يُبتلع رمزًا لا نصًّا
+      return null;
+    }
+    if (!client) return null;
+
+    let resolution;
+    try {
+      resolution = await this.deps.resolveDeployment(
+        client,
+        modelId,
+        configResult.config.deploymentEnvironment,
+      );
+    } catch {
+      return null;
+    }
+    if (!resolution.ok) return null;
+
+    return {
+      config: configResult.config,
+      deployment: resolution.deployment,
+      version: resolution.version,
     };
   }
 
   /**
-   * غير عامل بعد — يُعلن الفشل بلا محاولة.
+   * يبثّ من وقت تشغيل YSD.
    *
-   * وجوده يجعل المسار يعامله كمزوّدٍ لا يصلح للاسترداد بدل أن يفترض قدرة
-   * غير موجودة. ولا `healthCheck` هنا: فحصٌ يقول «متصل» بلا اتصال كذبٌ
-   * تُبنى عليه قرارات.
+   * ولا يخرج من هنا شيءٌ عن الهدف: لا معرّف نتاج ولا اسم مستعار ولا عنوان
+   * ولا معرّف نشرة. و`meta.model` هو **المعرّف المنطقيّ** الذي طلبه
+   * المستخدم — فهو ما يُحفظ في المحادثة وما يُعرض له. أما `runtimeModel`
+   * فتفصيلٌ تشغيليّ يتغيّر مع كل ترقية نسخة، وتسريبُه يجعل تاريخ المحادثة
+   * يحمل معرّفات نتاجٍ لا معنى لها بعد شهر.
    */
-  async requestJsonCompletion(): Promise<
-    { ok: true; text: string } | { ok: false; reason: "timeout" | "error" }
-  > {
-    return { ok: false, reason: "error" };
+  async *streamChat(req: ChatRequest): AsyncGenerator<StreamChunk> {
+    // ★ ملغى قبل البدء ⇒ صمتٌ تامّ، بلا قاعدة ولا وقت تشغيل
+    if (req.signal?.aborted) return;
+
+    let target: RuntimeTarget | null;
+    try {
+      target = await this.resolveRuntimeTarget(req.modelId);
+    } catch {
+      yield providerError();
+      return;
+    }
+    if (!target) {
+      yield providerError();
+      return;
+    }
+
+    // ★ وقد ينصرف المستخدم أثناء استعلام السجلّ — فلا يبدأ توليدٌ لا يقرأه
+    if (req.signal?.aborted) return;
+
+    yield { type: "meta", model: req.modelId };
+
+    try {
+      for await (const chunk of this.deps.streamRuntimeChat(
+        target.config,
+        target.deployment,
+        target.version,
+        req,
+      )) {
+        if (chunk.type === "text") {
+          yield { type: "text", text: chunk.text };
+        } else if (chunk.type === "usage") {
+          yield { type: "usage", usage: chunk.usage };
+        } else if (chunk.type === "done") {
+          yield {
+            type: "done",
+            ...(chunk.completion ? { completion: chunk.completion } : {}),
+            ...(chunk.completionReason ? { completionReason: chunk.completionReason } : {}),
+          };
+          return;
+        } else {
+          // ★ إلغاء المستدعي ليس عطلًا يُعرض — ينتهي البثّ صامتًا
+          if (chunk.reason === "aborted") return;
+          yield providerError(errorCodeFor(chunk.reason));
+          return;
+        }
+      }
+    } catch {
+      // استثناء غير متوقّع من الناقل — رمزٌ عامّ بلا أثر منه
+      yield providerError();
+    }
+  }
+
+  /**
+   * نداء JSON غير متدفّق — لاسترداد الاستشهادات.
+   *
+   * ★ يستعمل `YSD_ALPHA_MODEL_ID` صراحةً لأن عقد `AIProviderAdapter` لا
+   * يمرّر `modelId` إلى هذه الدالة (عمدًا: منعُ تسريب معرّف نموذجٍ عبر
+   * حدود المزوّد). وذلك صحيحٌ **ما دام لـYSD نموذج منطقيّ واحد**.
+   *
+   * فإن أُضيف نموذج ثانٍ، وجب تغيير عقد الاسترداد **قبل** تفعيله — وإلا
+   * استُرِدّت استشهادات نموذجٍ من نموذجٍ آخر.
+   */
+  async requestJsonCompletion(input: {
+    systemPrompt: string;
+    userText: string;
+    maxTokens: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }> {
+    // عقد المحوّل لا يعرف `aborted` — فالإلغاء يُبلَّغ كتعذّر عامّ
+    if (input.signal?.aborted) return { ok: false, reason: "error" };
+
+    let target: RuntimeTarget | null;
+    try {
+      target = await this.resolveRuntimeTarget(YSD_ALPHA_MODEL_ID);
+    } catch {
+      return { ok: false, reason: "error" };
+    }
+    if (!target) return { ok: false, reason: "error" };
+
+    if (input.signal?.aborted) return { ok: false, reason: "error" };
+
+    try {
+      const result = await this.deps.requestRuntimeJsonCompletion(
+        target.config,
+        target.deployment,
+        target.version,
+        input,
+      );
+      if (result.ok) return { ok: true, text: result.text };
+      // المهلة وحدها تُميَّز — وما عداها تعذّرٌ عامّ بلا تفصيل تشغيليّ
+      return { ok: false, reason: result.reason === "timeout" ? "timeout" : "error" };
+    } catch {
+      return { ok: false, reason: "error" };
+    }
   }
 }
