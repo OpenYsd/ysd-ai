@@ -181,6 +181,38 @@ function applyCompletionBudget(
   if (typeof maxTokens === "number") payload.max_tokens = maxTokens;
 }
 
+/**
+ * ★ رسالةٌ واحدة لـGroq/gpt-oss — بلا دور نظام.
+ *
+ * توصية Groq الرسمية لعائلة `gpt-oss`: **تجنّب موجّه النظام، وضع
+ * التعليمات كلها في رسالة المستخدم**. وقد ظهر أثر مخالفتها حيًّا: عاد
+ * وقت التشغيل بنصٍّ فعليّ لم يطابق ما طُلب حرفيًّا.
+ *
+ * ── ولماذا الدمج عامٌّ لا خاصّ ──
+ *
+ * هذا الناقل لا يعرف شيئًا عن اختبار الجاهزية ولا عن علامته. هو يعرف
+ * موجّهًا ونصَّ مستخدمٍ فيدمجهما. ولو عرف العلامة لصار عقده مربوطًا
+ * بمستدعٍ بعينه — فيُعدَّل الناقل كلما تغيّر ذلك المستدعي.
+ *
+ * ── والفاصل سطران ──
+ *
+ * كي تبقى التعليمة والطلب مقروءين منفصلين للنموذج، لا جملةً واحدة
+ * ملتبسة.
+ */
+function buildJsonMessages(
+  systemPrompt: string,
+  userText: string,
+  mergeIntoUser: boolean,
+): { role: string; content: string }[] {
+  if (mergeIntoUser && systemPrompt.length > 0) {
+    return [{ role: "user", content: `${systemPrompt}\n\n${userText}` }];
+  }
+  return [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userText },
+  ];
+}
+
 /** يُصنِّف حالة HTTP إلى رمز مغلق — بلا قراءة الجسم إطلاقًا */
 function reasonFromStatus(status: number): YSDRuntimeFailureReason {
   if (status === 401 || status === 403) return "unauthorized";
@@ -532,22 +564,23 @@ export async function requestYSDRuntimeJsonCompletion(
   const onCallerAbort = () => control.abort();
   input.signal?.addEventListener("abort", onCallerAbort);
 
+  /**
+   * ★ الملمح يُحسب مرّةً ويُستعمل مرّتين — لا يُعاد حسابه.
+   *
+   * فحسابان منفصلان يفترقان بتعديلٍ واحد، فيصير الجسم نصفَه بملمحٍ
+   * ونصفَه بلا ملمح — وهي أسوأ حالةٍ ممكنة: لا القديمة ولا الجديدة.
+   */
+  const useGroqProfile = needsGroqGptOssProfile(config, deployment);
+
   const jsonPayload: Record<string, unknown> = {
     model: deployment.runtimeModel,
-    messages: [
-      { role: "system", content: input.systemPrompt },
-      { role: "user", content: input.userText },
-    ],
+    // ★ دمج التعليمة في رسالة المستخدم — انظر `buildJsonMessages`
+    messages: buildJsonMessages(input.systemPrompt, input.userText, useGroqProfile),
     stream: false,
     // ثابتٌ محافظ: المهمّة استخراجٌ لا توليدٌ إبداعيّ
     temperature: 0,
   };
-  // ★ الملمح للهدف المعنيّ وحده — انظر `needsGroqGptOssProfile`
-  applyCompletionBudget(
-    jsonPayload,
-    input.maxTokens,
-    needsGroqGptOssProfile(config, deployment),
-  );
+  applyCompletionBudget(jsonPayload, input.maxTokens, useGroqProfile);
 
   try {
     let res: Response;

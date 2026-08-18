@@ -109,13 +109,19 @@ const sseResponse = (text: string) => {
 };
 
 /** يلتقط الجسم المرسَل فعلًا — لا نصّ المصدر */
-async function jsonBody(baseUrl: string, runtimeModel: string, maxTokens = 16) {
+async function jsonBody(
+  baseUrl: string,
+  runtimeModel: string,
+  maxTokens = 16,
+  systemPrompt = "s",
+  userText = "u",
+) {
   const fetchSpy = vi.fn(async () => jsonResponse("YSD_SMOKE_OK"));
   const res = await requestYSDRuntimeJsonCompletion(
     config(baseUrl),
     deployment(runtimeModel),
     version,
-    { systemPrompt: "s", userText: "u", maxTokens, timeoutMs: 5_000 },
+    { systemPrompt, userText, maxTokens, timeoutMs: 5_000 },
     fetchSpy as unknown as typeof fetch,
   );
   const call = fetchSpy.mock.calls[0] as unknown as [string, RequestInit] | undefined;
@@ -280,6 +286,101 @@ describe("★ وما عداها يبقى حرفيًّا كما كان", () => {
       expect(body, m).not.toHaveProperty("include_reasoning");
       expect(body!.max_tokens, m).toBe(16);
     }
+  });
+});
+
+
+/* ═══════════ صيغة الرسالة: Groq/gpt-oss ═══════════ */
+
+/**
+ * ★ توصية Groq الرسمية لعائلة `gpt-oss`: تجنّب موجّه النظام وضع التعليمات
+ * كلها في رسالة المستخدم.
+ *
+ * وقد ظهر أثر مخالفتها حيًّا: بعد إصلاح سقف الإكمال عاد وقت التشغيل بنصٍّ
+ * فعليّ — لكنه لم يطابق ما طُلب حرفيًّا. فالعطل انتقل من «لا يولّد» إلى
+ * «يولّد ولا يتبع»، وهذا علاج الثانية.
+ */
+describe("★ صيغة الرسالة — رسالةٌ واحدة لا دورَ نظامٍ فيها", () => {
+  const SYS = "s-instruction";
+  const USER = "u-request";
+
+  const msgs = (body: Record<string, unknown> | null) =>
+    (body?.messages ?? []) as Array<{ role: string; content: string }>;
+
+  it("★ ★ Groq + gpt-oss ⇒ رسالةُ مستخدمٍ واحدة تحمل الاثنين", async () => {
+    const { body } = await jsonBody(GROQ_URL, GPT_OSS, 16, SYS, USER);
+    const m = msgs(body);
+    expect(m).toHaveLength(1);
+    expect(m[0]!.role).toBe("user");
+    expect(m[0]!.content).toContain(SYS);
+    expect(m[0]!.content).toContain(USER);
+    // التعليمة أولًا ثم الطلب، مفصولين بسطرين
+    expect(m[0]!.content).toBe(`${SYS}\n\n${USER}`);
+    expect(m.some((x) => x.role === "system")).toBe(false);
+  });
+
+  it("★ ★ ومضيفٌ آخر بـgpt-oss ⇒ نظامٌ ومستخدم كما كان", async () => {
+    const m = msgs((await jsonBody(OTHER_URL, GPT_OSS, 16, SYS, USER)).body);
+    expect(m).toHaveLength(2);
+    expect(m[0]).toEqual({ role: "system", content: SYS });
+    expect(m[1]).toEqual({ role: "user", content: USER });
+  });
+
+  it("★ ★ وGroq بنموذجٍ آخر ⇒ نظامٌ ومستخدم كما كان", async () => {
+    const m = msgs((await jsonBody(GROQ_URL, OTHER_MODEL, 16, SYS, USER)).body);
+    expect(m).toHaveLength(2);
+    expect(m[0]!.role).toBe("system");
+    expect(m[1]!.role).toBe("user");
+  });
+
+  it("★ ★ ومضيفٌ منتحل ⇒ نظامٌ ومستخدم كما كان", async () => {
+    for (const url of [
+      "https://api.groq.com.evil.test/openai/v1",
+      "https://api.groq.company/openai/v1",
+      "https://eu.api.groq.com/openai/v1",
+    ]) {
+      const m = msgs((await jsonBody(url, GPT_OSS, 16, SYS, USER)).body);
+      expect(m, url).toHaveLength(2);
+      expect(m[0]!.role, url).toBe("system");
+    }
+  });
+
+  it("★ وموجّهُ نظامٍ فارغ لا يُنتج فاصلًا معلّقًا", async () => {
+    const m = msgs((await jsonBody(GROQ_URL, GPT_OSS, 16, "", USER)).body);
+    expect(m).toHaveLength(2);
+    expect(m[1]!.content).toBe(USER);
+  });
+
+  it("★ ★ وسقفُ الإكمال والتفكير كما ضُبطا — الدمج لم يمسّهما", async () => {
+    const { body } = await jsonBody(GROQ_URL, GPT_OSS, 16, SYS, USER);
+    expect(body!.max_completion_tokens).toBe(16);
+    expect(body).not.toHaveProperty("max_tokens");
+    expect(body!.include_reasoning).toBe(false);
+    expect(body!.reasoning_effort).toBe("low");
+  });
+
+  it("★ ★ والناقل لا يعرف علامة الاختبار", () => {
+    /**
+     * لو عرفها لصار عقده مربوطًا بمستدعٍ بعينه، فيُعدَّل الناقل كلما تغيّر
+     * ذلك المستدعي. وهو يعرف موجّهًا ونصَّ مستخدمٍ فيدمجهما — لا أكثر.
+     */
+    expect(CLIENT_SRC).not.toContain("YSD_SMOKE_OK");
+    expect(CLIENT_SRC).not.toContain("SMOKE_MARKER");
+    expect(CLIENT_SRC).not.toContain("smoke");
+  });
+
+  it("★ والبثّ لم يُمسّ — يبقى نظامًا ورسائل", async () => {
+    /**
+     * العطل قِيس في مسار JSON وحده. وتوسيعُ العلاج إلى البثّ بلا قياسٍ
+     * تغييرٌ في مسارٍ سليم لأجل فرضية.
+     */
+    const { body } = await streamBody(GROQ_URL, GPT_OSS);
+    const m = (body?.messages ?? []) as Array<{ role: string }>;
+    expect(m.some((x) => x.role === "user")).toBe(true);
+    const code = CLIENT_SRC.split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+    expect((code.match(/buildJsonMessages\(/g) ?? []).length).toBe(2);
   });
 });
 
