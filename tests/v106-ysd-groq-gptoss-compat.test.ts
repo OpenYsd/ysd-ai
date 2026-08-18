@@ -384,6 +384,69 @@ describe("★ صيغة الرسالة — رسالةٌ واحدة لا دورَ 
   });
 });
 
+
+/* ═══════════ توقيع القطع: 200 بلا محتوى ═══════════ */
+
+/**
+ * ★ الحالة التي أنتجت `503` رغم `200` من Groq.
+ *
+ * سجلّ Groq الحيّ (2026-08-18): `HTTP 200`، و`Output tokens: 16` —
+ * مساويًا للسقف بالضبط. و`include_reasoning: false` يمنع **إعادة**
+ * التفكير لا **توليده**، فاستهلكت مقدّمةُ التفكير السقف كلَّه ولم يبدأ
+ * الجواب.
+ *
+ * وهذه المجموعة تحرس **السلسلة** لا الرقم: أن ردًّا ناجحًا بمحتوى فارغ
+ * يبقى `invalid_response` — فلو خُفِّف هذا الشرط يومًا لَمرّ ردٌّ فارغ
+ * كأنه جواب، ولَنجح اختبار الجاهزية على خدمةٍ لا تجيب.
+ */
+describe("★ ردٌّ ناجح بمحتوى فارغ يبقى عطلًا", () => {
+  const emptyish = (content: unknown) =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content } }] }),
+    }) as unknown as Response;
+
+  const call = async (content: unknown) =>
+    requestYSDRuntimeJsonCompletion(
+      config(GROQ_URL),
+      deployment(GPT_OSS),
+      version,
+      { systemPrompt: "s", userText: "u", maxTokens: 128, timeoutMs: 5_000 },
+      (async () => emptyish(content)) as unknown as typeof fetch,
+    );
+
+  it("★ ★ محتوًى فارغ أو بمسافاتٍ وحدها ⇒ invalid_response", async () => {
+    for (const content of ["", "   ", "\n\n", "\t"]) {
+      const res = await call(content);
+      expect(res.ok, JSON.stringify(content)).toBe(false);
+      if (!res.ok) expect(res.reason, JSON.stringify(content)).toBe("invalid_response");
+    }
+  });
+
+  it("★ ومحتوًى غائب أو ليس نصًّا ⇒ invalid_response", async () => {
+    for (const content of [undefined, null, 42, {}, []]) {
+      const res = await call(content);
+      expect(res.ok, String(content)).toBe(false);
+      if (!res.ok) expect(res.reason, String(content)).toBe("invalid_response");
+    }
+  });
+
+  it("★ ★ والسقف المرفوع لا يغيّر هذا الحكم", async () => {
+    /**
+     * رفعُ السقف يزيل **سبب** القطع، ولا يجعل الفراغ مقبولًا. ولو أفرغ
+     * وقتُ تشغيلٍ ردَّه لسببٍ آخر لبقي عطلًا كما هو.
+     */
+    const res = await call("");
+    expect(res.ok).toBe(false);
+  });
+
+  it("★ وأولُ محتوًى فعليّ يُقبل كما هو", async () => {
+    const res = await call("YSD_SMOKE_OK");
+    expect(res).toEqual({ ok: true, text: "YSD_SMOKE_OK" });
+  });
+});
+
 /* ═══════════ الحدود ═══════════ */
 
 describe("★ حدود الملمح", () => {
@@ -431,7 +494,15 @@ describe("★ حدود الملمح", () => {
   it("★ ولا تتغيّر ثوابت الاختبار الصغير", () => {
     const smoke = readFileSync("lib/ai/ysd-smoke-test.ts", "utf8");
     expect(smoke).toContain('const SMOKE_MARKER = "YSD_SMOKE_OK";');
-    expect(smoke).toContain("const SMOKE_MAX_TOKENS = 16;");
+    /**
+     * ★ رُفع إلى ١٢٨ بعد قطعٍ حيّ عند ١٦ — والأرضية تحفظ السبب.
+     *
+     * فالرقم وحده يُنسى سببُه، ومن يراه كبيرًا يومًا قد يقصّه فيعود
+     * العطل نفسه: مقدّمةُ التفكير تستهلك السقف قبل أن يبدأ الجواب.
+     */
+    expect(smoke).toContain("const SMOKE_MAX_TOKENS = 128;");
+    const budget = Number(/const SMOKE_MAX_TOKENS = (\d+);/.exec(smoke)?.[1]);
+    expect(budget).toBeGreaterThanOrEqual(64);
     expect(smoke).toContain("const SMOKE_TIMEOUT_MS = 5_000;");
     expect(smoke).toContain('if (result.text.trim() !== SMOKE_MARKER) return fail("unexpected_output");');
   });
