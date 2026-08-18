@@ -109,6 +109,78 @@ const authHeaders = (config: YSDRuntimeConfig): Record<string, string> => ({
   Authorization: `Bearer ${config.apiKey}`,
 });
 
+/* ═════════════════ ملمح التوافق ═════════════════ */
+
+/**
+ * ★ لماذا يلزم ملمحٌ أصلًا — والعقد «متوافق مع OpenAI».
+ *
+ * لأن التوافق في الأسماء لا يعني التوافق في المعنى. ونماذج `gpt-oss` على
+ * Groq نماذجُ تفكير: يُنتَج التفكير أولًا ويُحاسَب على السقف نفسه. فـ
+ * `max_tokens = 16` تُستهلك في التفكير قبل أن يخرج حرفٌ واحد، ويعود ردٌّ
+ * ناجح بمحتوى فارغ.
+ *
+ * وقد قِيس ذلك حيًّا في هذا المشروع سلفًا (2026-08-11) على مسار Groq
+ * العامّ: أربعةٌ وعشرون إطارًا بصفر بايت محتوى، والجواب احتاج ٢٦ رمزًا
+ * والسقف ٢٤ — فوقع القطع قبل أول حرف. و`lib/ai/groq.ts` يحمل العلاج منذ
+ * ذلك اليوم؛ وهذا الناقل كُتب مستقلًّا فلم يرثه.
+ *
+ * ── ولماذا لا يُرفع السقف بدل ذلك ──
+ *
+ * لأن رفعه يُخفي العطل ولا يُصلحه: يبقى التفكير يستهلك الميزانية، ويصير
+ * كل ردٍّ أبطأ وأغلى، ويعود العطل عند أول طلبٍ أطول قليلًا. و
+ * `max_completion_tokens` هو الحقل الذي يحدّ **الإكمال وحده**.
+ */
+
+/** المضيف الوحيد الذي يستحقّ الملمح — يُقارَن مضيفًا لا بادئةَ نصّ */
+const GROQ_HOSTNAME = "api.groq.com";
+/** وعائلة النماذج الوحيدة داخله */
+const GPT_OSS_PREFIX = "openai/gpt-oss-";
+
+/**
+ * ★ هل يلزم هذا الهدفَ ملمحُ Groq؟ — شرطان معًا، وتحليلٌ آمن.
+ *
+ * `startsWith("https://api.groq.com")` كان يقبل
+ * `https://api.groq.com.evil.test` — بادئةٌ صادقة ومضيفٌ آخر. فيُحلَّل
+ * العنوان ويُقارَن `hostname` كاملًا.
+ *
+ * وعنوانٌ لا يُحلَّل لا يرمي هنا: يُعاد `false` فيبقى السلوك القديم
+ * حرفيًّا، ويُرفض الطلب لاحقًا في مساره الطبيعيّ. وحارسُ توافقٍ يُسقط
+ * الطلب بعطلٍ جديد أسوأ من عدم وجوده.
+ */
+function needsGroqGptOssProfile(
+  config: YSDRuntimeConfig,
+  deployment: ModelDeploymentRecord,
+): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(config.baseUrl).hostname;
+  } catch {
+    return false;
+  }
+  if (hostname !== GROQ_HOSTNAME) return false;
+  return deployment.runtimeModel.startsWith(GPT_OSS_PREFIX);
+}
+
+/**
+ * ★ يضع سقف الإكمال في حقله الصحيح — ولا يلمس شيئًا آخر.
+ *
+ * ولا يُضاف `max_tokens` قطّ حين يُطبَّق الملمح: إرسالُ الاثنين معًا يترك
+ * التفسير لوقت التشغيل، وهو ما جئنا نحسمه.
+ */
+function applyCompletionBudget(
+  payload: Record<string, unknown>,
+  maxTokens: number | undefined,
+  useGroqProfile: boolean,
+): void {
+  if (useGroqProfile) {
+    if (typeof maxTokens === "number") payload.max_completion_tokens = maxTokens;
+    payload.include_reasoning = false;
+    payload.reasoning_effort = "low";
+    return;
+  }
+  if (typeof maxTokens === "number") payload.max_tokens = maxTokens;
+}
+
 /** يُصنِّف حالة HTTP إلى رمز مغلق — بلا قراءة الجسم إطلاقًا */
 function reasonFromStatus(status: number): YSDRuntimeFailureReason {
   if (status === 401 || status === 403) return "unauthorized";
@@ -262,7 +334,12 @@ export async function* streamYSDRuntimeChat(
       messages,
       stream: true,
     };
-    if (typeof request.maxTokens === "number") payload.max_tokens = request.maxTokens;
+    // ★ الملمح للهدف المعنيّ وحده — وما عداه يبقى حرفيًّا كما كان
+    applyCompletionBudget(
+      payload,
+      request.maxTokens,
+      needsGroqGptOssProfile(config, deployment),
+    );
     if (typeof request.temperature === "number") payload.temperature = request.temperature;
 
     let res: Response;
@@ -455,23 +532,30 @@ export async function requestYSDRuntimeJsonCompletion(
   const onCallerAbort = () => control.abort();
   input.signal?.addEventListener("abort", onCallerAbort);
 
+  const jsonPayload: Record<string, unknown> = {
+    model: deployment.runtimeModel,
+    messages: [
+      { role: "system", content: input.systemPrompt },
+      { role: "user", content: input.userText },
+    ],
+    stream: false,
+    // ثابتٌ محافظ: المهمّة استخراجٌ لا توليدٌ إبداعيّ
+    temperature: 0,
+  };
+  // ★ الملمح للهدف المعنيّ وحده — انظر `needsGroqGptOssProfile`
+  applyCompletionBudget(
+    jsonPayload,
+    input.maxTokens,
+    needsGroqGptOssProfile(config, deployment),
+  );
+
   try {
     let res: Response;
     try {
       res = await fetchImpl(completionsUrl(config), {
         method: "POST",
         headers: authHeaders(config),
-        body: JSON.stringify({
-          model: deployment.runtimeModel,
-          messages: [
-            { role: "system", content: input.systemPrompt },
-            { role: "user", content: input.userText },
-          ],
-          stream: false,
-          max_tokens: input.maxTokens,
-          // ثابتٌ محافظ: المهمّة استخراجٌ لا توليدٌ إبداعيّ
-          temperature: 0,
-        }),
+        body: JSON.stringify(jsonPayload),
         signal: control.signal,
       });
     } catch {
