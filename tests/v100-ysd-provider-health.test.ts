@@ -88,12 +88,22 @@ const failReadiness = (
   vi.fn(async () => ({ ok: false, reason, modelCount, latencyMs: 9 }) as YSDRuntimeReadinessResult);
 
 const original = process.env.YSD_PROVIDER_ENABLED;
+const originalAlpha = process.env.YSD_MODEL_ALPHA_ENABLED;
 beforeEach(() => {
   process.env.YSD_PROVIDER_ENABLED = "1";
+  /**
+   * ★ ومفتاح الإذن يبقى **مغلقًا** هنا عمدًا (الرقعة الثامنة).
+   *
+   * الفاحص لا يخضع له، وهذه المجموعة تقيسه. فإبقاؤه مغلقًا يجعل كل
+   * اختبارٍ فيها يُثبت الفصل نفسه: «متصل» لا تعني «مفتوح للناس».
+   */
+  delete process.env.YSD_MODEL_ALPHA_ENABLED;
 });
 afterEach(() => {
   if (original === undefined) delete process.env.YSD_PROVIDER_ENABLED;
   else process.env.YSD_PROVIDER_ENABLED = original;
+  if (originalAlpha === undefined) delete process.env.YSD_MODEL_ALPHA_ENABLED;
+  else process.env.YSD_MODEL_ALPHA_ENABLED = originalAlpha;
 });
 
 /* ═══════════ (١–٣) إعدادٌ ناقص ═══════════ */
@@ -434,9 +444,17 @@ describe("★ (٢٧) ما يصل لوحة الإدارة", () => {
 /* ═══════════ لا تفعيل ═══════════ */
 
 describe("★ الرقعة لا تفعّل شيئًا", () => {
-  it("★ model-alpha ما يزال معطَّلًا", () => {
+  it("★ model-alpha معطَّلٌ والفحص يعمل — وهما مستقلّان", () => {
+    /**
+     * ★ حُدِّث في الرقعة الثامنة.
+     *
+     * كان `false` ثابتًا لأن الرقعات السابقة لم تملك ما تأذن به. والثابت
+     * الذي كان يحرسه هذا الاختبار ما يزال قائمًا: **اكتمالُ الجاهزية لا
+     * يفتح النموذج**. فيُقاس الآن بإغلاق مفتاح الإذن صراحةً.
+     */
     expect(build().provider.listModels()[0]!.enabled).toBe(false);
-    expect(YSD_SRC).toContain("enabled: false,");
+    // والمصدر يشتقّه من مفتاح الإذن لا من ثابتٍ مكتوب
+    expect(YSD_SRC).toContain("enabled: isYSDAlphaActivationEnabled(),");
   });
 
   it("★ وسياستا العبور كما هما", () => {

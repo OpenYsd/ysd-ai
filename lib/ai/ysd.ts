@@ -19,6 +19,7 @@ import {
 import { resolveServableDeployment } from "./model-registry-resolver";
 import { getAdminClient, isServiceRoleConfigured } from "@/lib/supabase/admin";
 import { ERROR_MESSAGES, type ChatErrorCode } from "./error-codes";
+import { isYSDAlphaActivationEnabled } from "./ysd-activation";
 
 /**
  * YSD — مزوّد نموذج المنصّة، **موصولٌ بالكامل وخاملٌ بالكامل**.
@@ -219,12 +220,19 @@ export class YSDProvider implements AIProviderAdapter {
         displayNameEn: "YSD Model (Alpha)",
         contextWindow: CONTRACT_PLACEHOLDER_CONTEXT_WINDOW,
         /**
-         * ★ `false` ثابتٌ لا يتغيّر بأي متغيّر بيئة.
+         * ★ مفتاح الإذن وحده — لا التهيئة ولا الجاهزية.
          *
-         * التوصيل لا يعني التفعيل. ورفعُه إلى `true` رقعةٌ مستقلّة تُتخذ
-         * بقرار، لا أثرٌ جانبيّ لفتح عَلَمٍ آخر.
+         * كان `false` ثابتًا لأن الرقعات السابقة لم تكن تملك ما تأذن به.
+         * والآن صار للإذن مفتاحه: `YSD_MODEL_ALPHA_ENABLED=1` وحدها ترفعه.
+         *
+         * ولا فحص هنا ولا قاعدة ولا `await`: هذه الدالة تُستدعى في بناء كل
+         * قائمة نماذج — رحلةٌ واحدة فيها تكلّف كل صفحةٍ في النظام. وجاهزية
+         * وقت التشغيل تُفحص بالزرّ الإداريّ قبل فتح المفتاح، لا في كل نداء.
+         *
+         * ورفعُه هنا **لا يفتح الخدمة** وحده: أهليّة القاعدة ما تزال `false`
+         * في `0036`، و`/api/models` تشترطها صراحةً.
          */
-        enabled: false,
+        enabled: isYSDAlphaActivationEnabled(),
       },
     ];
   }
@@ -237,6 +245,24 @@ export class YSDProvider implements AIProviderAdapter {
    *
    * وكل وصولٍ إلى القاعدة يمرّ بالحلّال وحده — لا استعلام مباشر من هنا.
    */
+  /**
+   * ★ بوّابة الخدمة العامّة — **لا يمرّ منها الفاحص**.
+   *
+   * تُستدعى من `streamChat` و`requestJsonCompletion` قبل أي قاعدة وأي
+   * شبكة. ولا تُستدعى من `healthCheck` عمدًا: المشرف يحتاج أن يُثبت أن
+   * السلسلة تعمل **قبل** أن يفتح المفتاح، فلو خضع الفحص للمفتاح لصار
+   * الشرط دائريًّا — لا يُفتح حتى يُفحص، ولا يُفحص حتى يُفتح.
+   *
+   * وهي هنا لا في السجلّ وحده: السجلّ يمنع **التوجيه**، وهذه تمنع
+   * **الخدمة**. فلو استُدعي المزوّد مباشرةً، أو تجاوز مستدعٍ
+   * `resolveProviderForModel` بخطأ، لا يزال المفتاح قائمًا. وحارسٌ في
+   * طبقةٍ واحدة يسقط بخطأٍ واحد.
+   */
+  private isServingEnabled(modelId: string): boolean {
+    if (modelId !== YSD_ALPHA_MODEL_ID) return false;
+    return isYSDAlphaActivationEnabled();
+  }
+
   private async resolveRuntimeTarget(modelId: string): Promise<RuntimeTargetResolution> {
     /**
      * ★ نموذج واحد مملوك — لا وكالة عامّة.
@@ -315,6 +341,18 @@ export class YSDProvider implements AIProviderAdapter {
   async *streamChat(req: ChatRequest): AsyncGenerator<StreamChunk> {
     // ★ ملغى قبل البدء ⇒ صمتٌ تامّ، بلا قاعدة ولا وقت تشغيل
     if (req.signal?.aborted) return;
+
+    /**
+     * ★ المفتاح مغلق ⇒ تعذّرٌ عامّ، بصفر قاعدة وصفر شبكة.
+     *
+     * ولا يُقال للمستخدم «موقوف بمفتاح إيقاف»: حالةُ تفعيلٍ داخلية تكشف
+     * أن ثمّة نموذجًا يُهيَّأ ولمّا يُفتح — خبرٌ لا يفيده ويكشف خطّتنا.
+     * فهو يقرأ ما يقرؤه في كل تعذّر: أن الخدمة غير متاحة الآن.
+     */
+    if (!this.isServingEnabled(req.modelId)) {
+      yield providerError();
+      return;
+    }
 
     /**
      * السبب المفصَّل لا يعبر من هنا: البثّ يتصرّف كما كان بالضبط — تعذّرٌ
@@ -439,6 +477,9 @@ export class YSDProvider implements AIProviderAdapter {
   }): Promise<{ ok: true; text: string } | { ok: false; reason: "timeout" | "error" }> {
     // عقد المحوّل لا يعرف `aborted` — فالإلغاء يُبلَّغ كتعذّر عامّ
     if (input.signal?.aborted) return { ok: false, reason: "error" };
+
+    // ★ والمفتاح مغلق ⇒ تعذّرٌ عامّ كذلك، قبل السجلّ وقبل وقت التشغيل
+    if (!this.isServingEnabled(YSD_ALPHA_MODEL_ID)) return { ok: false, reason: "error" };
 
     let resolution: RuntimeTargetResolution;
     try {

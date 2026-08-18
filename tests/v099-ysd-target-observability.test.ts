@@ -116,13 +116,24 @@ const collect = async (gen: AsyncGenerator<StreamChunk>) => {
   return out;
 };
 
+/**
+ * ★ بوّابةُ إذنٍ ثانية أُضيفت في الرقعة الثامنة.
+ *
+ * `YSD_PROVIDER_ENABLED` يقول «البنية مهيّأة»، و`YSD_MODEL_ALPHA_ENABLED`
+ * يقول «نأذن بالخدمة». وهذه المجموعة تقيس **مسار الخدمة**، فتُفتح البوّابتان
+ * صراحةً هنا — والإذن نفسه يملكه v101 ويقيسه وحده.
+ */
 const original = process.env.YSD_PROVIDER_ENABLED;
+const originalAlpha = process.env.YSD_MODEL_ALPHA_ENABLED;
 beforeEach(() => {
   process.env.YSD_PROVIDER_ENABLED = "1";
+  process.env.YSD_MODEL_ALPHA_ENABLED = "1";
 });
 afterEach(() => {
   if (original === undefined) delete process.env.YSD_PROVIDER_ENABLED;
   else process.env.YSD_PROVIDER_ENABLED = original;
+  if (originalAlpha === undefined) delete process.env.YSD_MODEL_ALPHA_ENABLED;
+  else process.env.YSD_MODEL_ALPHA_ENABLED = originalAlpha;
 });
 
 /* ═══════════ (١–١٠) ما يحمله المزوّد ═══════════ */
@@ -729,7 +740,15 @@ describe("★ (٢٩–٣٥) النسب لمزوّد YSD وحده", () => {
 /* ═══════════ لا تفعيل ═══════════ */
 
 describe("★ الرقعة لا تفعّل شيئًا", () => {
-  it("★ model-alpha ما يزال معطَّلًا", () => {
+  it("★ model-alpha معطَّلٌ ما لم يُؤذَن صراحةً", () => {
+    /**
+     * ★ حُدِّث في الرقعة الثامنة.
+     *
+     * كان `false` ثابتًا لأن الرقعات السابقة لم تملك ما تأذن به. والثابت
+     * الذي كان يحرسه هذا الاختبار ما يزال قائمًا: **اكتمالُ الجاهزية لا
+     * يفتح النموذج**. فيُقاس الآن بإغلاق مفتاح الإذن صراحةً.
+     */
+    delete process.env.YSD_MODEL_ALPHA_ENABLED;
     const { provider } = build();
     expect(provider.listModels()[0]!.enabled).toBe(false);
   });

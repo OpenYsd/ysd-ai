@@ -125,13 +125,24 @@ const runtimeError = (reason: YSDRuntimeFailureReason) =>
     yield { type: "error", reason } as YSDRuntimeChunk;
   });
 
+/**
+ * ★ بوّابةُ إذنٍ ثانية أُضيفت في الرقعة الثامنة.
+ *
+ * `YSD_PROVIDER_ENABLED` يقول «البنية مهيّأة»، و`YSD_MODEL_ALPHA_ENABLED`
+ * يقول «نأذن بالخدمة». وهذه المجموعة تقيس **مسار الخدمة**، فتُفتح البوّابتان
+ * صراحةً هنا — والإذن نفسه يملكه v101 ويقيسه وحده.
+ */
 const original = process.env.YSD_PROVIDER_ENABLED;
+const originalAlpha = process.env.YSD_MODEL_ALPHA_ENABLED;
 beforeEach(() => {
   process.env.YSD_PROVIDER_ENABLED = "1";
+  process.env.YSD_MODEL_ALPHA_ENABLED = "1";
 });
 afterEach(() => {
   if (original === undefined) delete process.env.YSD_PROVIDER_ENABLED;
   else process.env.YSD_PROVIDER_ENABLED = original;
+  if (originalAlpha === undefined) delete process.env.YSD_MODEL_ALPHA_ENABLED;
+  else process.env.YSD_MODEL_ALPHA_ENABLED = originalAlpha;
 });
 
 /* ═══════════ (١–٦) الجاهزية ═══════════ */
@@ -167,13 +178,21 @@ describe("★ (١–٦) الجاهزية ثلاثة شروط", () => {
     expect(spies.requestRuntimeJsonCompletion).not.toHaveBeenCalled();
   });
 
-  it("★ (٦) والنموذج ما يزال معطَّلًا مهما اكتملت الجاهزية", () => {
+  it("★ (٦) والنموذج معطَّلٌ مهما اكتملت الجاهزية — ما لم يُؤذَن", () => {
+    /**
+     * ★ حُدِّث في الرقعة الثامنة.
+     *
+     * كان `false` ثابتًا لأن الرقعات السابقة لم تملك ما تأذن به. والثابت
+     * الذي كان يحرسه هذا الاختبار ما يزال قائمًا: **اكتمالُ الجاهزية لا
+     * يفتح النموذج**. فيُقاس الآن بإغلاق مفتاح الإذن صراحةً.
+     */
+    delete process.env.YSD_MODEL_ALPHA_ENABLED;
     const { provider } = build();
     expect(provider.isConfigured()).toBe(true);
     const models = provider.listModels();
     expect(models).toHaveLength(1);
     expect(models[0]!.id).toBe(YSD_ALPHA_MODEL_ID);
-    expect(models[0]!.enabled).toBe(false); // ★ توصيلٌ لا تفعيل
+    expect(models[0]!.enabled).toBe(false); // ★ جاهزيةٌ لا إذن
   });
 });
 

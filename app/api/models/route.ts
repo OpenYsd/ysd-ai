@@ -4,6 +4,7 @@ import { getRequestContext } from "@/lib/auth/request-context";
 import { getConfiguredProviders, listModelOptions } from "@/lib/ai/registry";
 import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { peekNineRouterCache } from "@/lib/ai/nine-router";
+import { YSD_ALPHA_MODEL_ID } from "@/lib/ai/ysd";
 
 export const runtime = "nodejs";
 
@@ -72,23 +73,40 @@ export async function GET() {
   const policy = await loadModelPolicy(supabase, ctx.userId);
   const minTierById = new Map(policy.models.map((m) => [m.id, m.min_tier]));
 
-  const models: SafeModel[] = listModelOptions().map((o) => {
-    const p = providersById.get(o.providerId);
-    const minTier = minTierById.get(o.id) ?? "free";
-    return {
-      id: o.id,
-      name: o.nameAr || o.nameEn || o.id,
-      provider: o.provider,
-      capabilities: {
-        streaming: p?.supportsStreaming ?? true,
-        tools: p?.supportsTools ?? false,
-        vision: p?.supportsVision ?? false,
-      },
-      available: o.available,
-      locked: !tierAllows(policy.userTier, minTier),
-      minTier,
-    };
-  });
+  /**
+   * ★ بوّابة القاعدة لنموذج YSD **وحده**.
+   *
+   * مفتاح الإذن يرفع `enabled` في قائمة المزوّد، لكن أهليّة القاعدة قد
+   * تكون ما تزال مغلقة. وحينها يظهر للمستخدم نموذجٌ سيرفضه `/api/chat`
+   * فورًا — وهو أسوأ من إخفائه: نقرةٌ تنتهي بخطأ لا يفهم سببه.
+   *
+   * ولا يُعمَّم هذا الترشيح على بقيّة المزوّدين عمدًا. نماذج 9Router
+   * تُكتشف ديناميكيًّا ولا صفوف لها في `ai_models` أصلًا، فترشيحٌ عامّ
+   * على أهليّة القاعدة كان سيمحوها كلَّها بلا أن يقصد أحد — كسرُ ميزةٍ
+   * قائمة ثمنًا لحراسة نموذجٍ لم يُفتح بعد.
+   */
+  const ysdRow = policy.models.find((m) => m.id === YSD_ALPHA_MODEL_ID);
+  const ysdDbEnabled = ysdRow?.enabled === true;
+
+  const models: SafeModel[] = listModelOptions()
+    .filter((o) => o.id !== YSD_ALPHA_MODEL_ID || ysdDbEnabled)
+    .map((o) => {
+      const p = providersById.get(o.providerId);
+      const minTier = minTierById.get(o.id) ?? "free";
+      return {
+        id: o.id,
+        name: o.nameAr || o.nameEn || o.id,
+        provider: o.provider,
+        capabilities: {
+          streaming: p?.supportsStreaming ?? true,
+          tools: p?.supportsTools ?? false,
+          vision: p?.supportsVision ?? false,
+        },
+        available: o.available,
+        locked: !tierAllows(policy.userTier, minTier),
+        minTier,
+      };
+    });
 
   const peek = providersById.has("nine_router") ? peekNineRouterCache() : null;
   const stale = Boolean(peek && peek.ageMs > STALE_AFTER_MS);
