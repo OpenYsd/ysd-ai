@@ -105,6 +105,23 @@ begin
   if v_runtime = v_model_id then
     return 'invalid_input';
   end if;
+  /**
+   * ★ ولا يكون عنوانًا — والحارس هنا لا في TypeScript وحده.
+   *
+   * الدالة تُنفَّذ بـ`service_role`، ونصٌّ تشغيليّ أو مسارٌ ثانٍ يستدعيها
+   * مباشرةً لا يمرّ بالتحقّق أعلاه. والحراسة تكون عند المورد.
+   *
+   * وهو **دلاليّ لا هشّ**: يُرفض مخطَّطٌ ثم `://`، أو `//مضيف`. ولا يُمنع
+   * `/` ولا `:` بعمومهما — `org/model-name` و`hf:model-name` معرّفان
+   * مشروعان، ومنعُهما يجعل الحارس يُلتَفّ عليه.
+   */
+  if v_runtime ~ '^([A-Za-z][A-Za-z0-9+.-]*://|//)' then
+    return 'invalid_input';
+  end if;
+  -- وحدّ الأساس نفسه المفروض في المساعد — فلا ثغرة في النداء المباشر
+  if v_base is not null and length(v_base) > 256 then
+    return 'invalid_input';
+  end if;
 
   /**
    * ★ يُقفل صفّ النموذج أولًا — وهو مرساة التسلسل كلّه.
@@ -154,8 +171,18 @@ begin
      */
     if v_v_status is distinct from 'approved' then return 'version_conflict'; end if;
     if v_v_artifact is distinct from v_artifact then return 'version_conflict'; end if;
-    -- والأساس: يُقبل غيابه سابقًا وحاضرًا، ويُرفض اختلافه
-    if v_base is not null and v_v_base is distinct from v_base then
+    /**
+     * ★ والأساس يُطابَق مطابقةً تامّة تشمل الغياب.
+     *
+     * كان الشرط يتخطّى الفحص حين يأتي الأساس فارغًا، فيقبل تسجيلًا
+     * يزعم أن النسخة بلا أساس بينما المسجَّل يقول `base-a`. ونجاحٌ
+     * يعقبه اختلافٌ في المعنى أسوأ من رفضٍ صريح: يظنّ المشغّل أنه سجّل
+     * ما أراد، ويبقى السجلّ يقول شيئًا آخر.
+     *
+     * و`is distinct from` تقارن الغياب كقيمة: NULL/NULL يمرّان، وأيّ
+     * اختلافٍ في أحد الطرفين يُرفض.
+     */
+    if v_v_base is distinct from v_base then
       return 'version_conflict';
     end if;
   end if;

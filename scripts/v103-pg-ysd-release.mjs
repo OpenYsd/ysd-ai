@@ -182,6 +182,47 @@ function run() {
   ok(call({ artifact: "" }) === "invalid_input", "(١٢′) ونتاج فارغ");
   ok(call({ runtime: "" }) === "invalid_input", "(١٢″) ومعرّف وقت تشغيل فارغ");
   ok(call({ runtime: MA }) === "invalid_input", "(١٢‴) ★ ومعرّف وقت التشغيل ≠ المعرّف المنطقيّ");
+
+  /**
+   * ★ العنوان يُرفض في القاعدة — لا في TypeScript وحده.
+   *
+   * الدالة تُنفَّذ بـ`service_role`، ونصٌّ تشغيليّ يستدعيها مباشرةً لا يمرّ
+   * بالمساعد. والحراسة تكون عند المورد.
+   */
+  for (const [label, runtime] of [
+    ["https", "https://evil.example/model"],
+    ["http", "http://evil.example/model"],
+    ["بروتوكوليّ نسبيّ", "//evil.example/model"],
+    ["حالة أحرف مختلفة", "HTTPS://EVIL.EXAMPLE/model"],
+    ["مخطَّط آخر", "s3://bucket/model"],
+    ["ملفّ", "file:///etc/passwd"],
+  ]) {
+    ok(call({ runtime }) === "invalid_input", `(١٢⁵) عنوان — ${label}`);
+  }
+
+  /**
+   * ★ والمعرّفات المشروعة تمرّ.
+   *
+   * `org/model-name` معرّفٌ شائع، و`hf:model-name` كذلك. وحارسٌ يمنع `/`
+   * أو `:` بعمومهما يرفض أسماءً صحيحة كل يوم فيُلتَفّ عليه.
+   */
+  for (const [label, runtime] of [
+    ["شرطة مائلة", "org/model-name"],
+    ["نقطتان", "hf:model-name"],
+    ["كلاهما", "registry.internal/ysd/alpha:2026-01"],
+  ]) {
+    const before = one(`select count(*) from public.ai_model_deployments;`);
+    ok(call({ runtime, version: `probe-${label.length}` }) === "ok",
+       `(١٢⁶) ★ معرّف مشروع — ${label}`);
+    // ويُنظَّف أثره كي لا يلوّث ما بعده
+    psql(`delete from public.ai_model_deployments where runtime_model = '${runtime}';
+          delete from public.ai_model_versions where version = 'probe-${label.length}';`,
+         { tuples: false });
+    ok(one(`select count(*) from public.ai_model_deployments;`) === before,
+       `(١٢⁶′) وأُزيل أثره — ${label}`);
+  }
+
+  ok(call({ base: "b".repeat(257) }) === "invalid_input", "(١٢⁷) وأساسٌ أطول من الحدّ");
   ok(one(`select count(*) from public.ai_model_deployments;`) === "0",
      "(١٢⁗) ولا شيء كُتب في كل ما سبق");
 
@@ -254,6 +295,35 @@ function run() {
   ok(
     one(`select artifact_ref from public.ai_model_versions where version='2.0.0';`) === "artifact-2",
     "(٢٥′) والنتاج الأصليّ لم يُكتب فوقه",
+  );
+
+  /**
+   * ★ والأساس يُطابَق مطابقةً تامّة تشمل الغياب.
+   *
+   * الشرط القديم كان يتخطّى الفحص حين يأتي الأساس فارغًا، فيقبل تسجيلًا
+   * يزعم أن النسخة بلا أساس بينما المسجَّل يقول `base-a`.
+   */
+  ok(
+    call({ version: "2.0.0", artifact: "artifact-2", runtime: "ysd-alpha-2026-02", base: null })
+      === "version_conflict",
+    "(٢٥″) ★ مسجَّلٌ بأساس + وارِدٌ بلا أساس ⇒ version_conflict",
+  );
+
+  psql(`insert into public.ai_model_versions (model_id, version, status, artifact_ref, approved_at)
+        values ('${MA}', '5.0.0', 'approved', 'artifact-5', now());`, { tuples: false });
+  ok(
+    call({ version: "5.0.0", artifact: "artifact-5", runtime: "ysd-alpha-2026-05", base: "base-a" })
+      === "version_conflict",
+    "(٢٥‴) ★ ومسجَّلٌ بلا أساس + وارِدٌ بأساس ⇒ version_conflict",
+  );
+  ok(
+    call({ version: "5.0.0", artifact: "artifact-5", runtime: "ysd-alpha-2026-05", base: null })
+      === "ok",
+    "(٢٥⁗) والغياب على الطرفين يمرّ",
+  );
+  ok(
+    one(`select base_model_ref is null from public.ai_model_versions where version='5.0.0';`) === "t",
+    "(٢٥⁵) والأساس ما يزال غائبًا",
   );
 
   psql(`insert into public.ai_model_versions (model_id, version, status, artifact_ref)

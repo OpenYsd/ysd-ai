@@ -562,6 +562,126 @@ describe("★ (١٩–٢٤) العقد الخارجيّ", () => {
   });
 });
 
+
+/* ═══════════ (٣١–٣٣) تصحيحات الرقعة ═══════════ */
+
+describe("★ (٣١) معرّف وقت التشغيل ليس عنوانًا", () => {
+  it("★ ★ العناوين تُرفض بصفر نداء", async () => {
+    /**
+     * الخطر أن يُخزَّن عنوانٌ في حقلٍ يُمرَّر يومًا إلى جهةٍ تبنيه وجهةَ
+     * اتصال. فيُقفل الباب عند الكتابة لا عند القراءة — ومن يقرأ الصفّ
+     * بعد سنة لن يعرف أنه كان يُفترض ألّا يحمل عنوانًا.
+     */
+    const urls = [
+      "https://evil.example/model",
+      "http://evil.example/model",
+      "//evil.example/model",
+      "HTTPS://EVIL.EXAMPLE/model",
+      "ftp://evil.example/model",
+      "file:///etc/passwd",
+      "s3://bucket/model",
+      "custom-scheme+v1://host/model",
+    ];
+    for (const runtimeModel of urls) {
+      const d = deps();
+      expect(reasonOf(await stageWith(true, d, { runtimeModel })), runtimeModel).toBe(
+        "invalid_input",
+      );
+      expect(d.__admin.calls, runtimeModel).toHaveLength(0);
+    }
+  });
+
+  it("★ ★ والمعرّفات المشروعة لا تُرفض لمجرّد `/` أو `:`", async () => {
+    /**
+     * `org/model-name` معرّفٌ شائع في مستودعات النماذج، و`hf:model-name`
+     * كذلك. وحارسٌ يمنع المحرفين بعمومهما يرفض أسماءً صحيحة كل يوم —
+     * فيُلتَفّ عليه، والحارس الذي يُزعج بلا سبب يُحذف.
+     */
+    const fine = [
+      "org/model-name",
+      "hf:model-name",
+      "ysd/alpha:2026-01",
+      "a/b/c",
+      "model:v2",
+      "ysd-alpha-2026-01",
+      "registry.internal/ysd/alpha",
+    ];
+    for (const runtimeModel of fine) {
+      const d = deps();
+      const res = await stageWith(true, d, { runtimeModel });
+      expect(res.ok, runtimeModel).toBe(true);
+      expect(d.__admin.calls[0]![1].p_runtime_model, runtimeModel).toBe(runtimeModel);
+    }
+  });
+
+  it("★ والحارس نفسه في القاعدة — لا في TypeScript وحده", () => {
+    /**
+     * الدالة تُنفَّذ بـ`service_role`، ونصٌّ تشغيليّ يستدعيها مباشرةً لا
+     * يمرّ بالمساعد. والحراسة تكون عند المورد.
+     */
+    const code = MIGRATION.split("\n")
+      .filter((l) => !l.trim().startsWith("--") && !l.trim().startsWith("*"))
+      .join("\n");
+    expect(code).toContain("if v_runtime ~ '^([A-Za-z][A-Za-z0-9+.-]*://|//)' then");
+    expect(code).toContain("return 'invalid_input'");
+  });
+});
+
+describe("★ (٣٢) هوية الأساس تشمل الغياب", () => {
+  it("★ ★ والقيد في القاعدة يقارن الغياب كقيمة", () => {
+    /**
+     * الشرط القديم كان يتخطّى الفحص حين يأتي الأساس فارغًا، فيقبل
+     * تسجيلًا يزعم أن النسخة بلا أساس بينما المسجَّل يقول `base-a`.
+     * ونجاحٌ يعقبه اختلافٌ في المعنى أسوأ من رفضٍ صريح.
+     */
+    const code = MIGRATION.split("\n")
+      .filter((l) => !l.trim().startsWith("--") && !l.trim().startsWith("*"))
+      .join("\n");
+    expect(code).toContain("if v_v_base is distinct from v_base then");
+    // ولا يبقى الشرط القديم الذي يتخطّى الفحص عند الغياب
+    expect(code).not.toContain("if v_base is not null and v_v_base is distinct from v_base");
+  });
+
+  it("★ وحدّ طول الأساس مفروض في القاعدة كذلك", () => {
+    const code = MIGRATION.split("\n")
+      .filter((l) => !l.trim().startsWith("--") && !l.trim().startsWith("*"))
+      .join("\n");
+    expect(code).toContain("if v_base is not null and length(v_base) > 256 then");
+  });
+});
+
+describe("★ (٣٣) النسخة تُطبَّع عند الحدّ", () => {
+  it("★ ★ فمصدر الحقيقة واحد: `parsed.data.version`", () => {
+    /**
+     * كان القصّ يقع داخل المساعد وحده، فتدخل القاعدة `"1.4.2"` ويُسجَّل
+     * في التدقيق `"  1.4.2  "`. وسجلُّ تدقيقٍ يخالف ما وقع فعلًا أسوأ من
+     * غيابه: يُبحَث فيه لاحقًا عن رقمٍ لا يطابق شيئًا في الجداول.
+     */
+    expect(ROUTE_SRC).toContain("version: z.string().trim().min(1).max(64),");
+    // والقيمة نفسها تذهب إلى المساعد وإلى التدقيق
+    expect(ROUTE_SRC).toContain("version: parsed.data.version,");
+    // الشيفرة وحدها تُعدّ: الشرح يذكر الاسم ليقول لِمَ هو مصدر الحقيقة
+    const routeCode = ROUTE_SRC.split("\n")
+      .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+      .join("\n");
+    expect((routeCode.match(/parsed\.data\.version/g) ?? []).length).toBe(2);
+  });
+
+  it("★ ★ والمخطّط يقصّ فعلًا — لا في الشرح وحده", async () => {
+    const { z } = await import("zod");
+    const schema = z.object({ version: z.string().trim().min(1).max(64) });
+    expect(schema.parse({ version: "  1.4.2  " }).version).toBe("1.4.2");
+    // والفراغ وحده يُرفض بعد القصّ
+    expect(schema.safeParse({ version: "   " }).success).toBe(false);
+  });
+
+  it("★ والمساعد يتلقّى القيمة المطبَّعة ويمرّرها كما هي", async () => {
+    const d = deps();
+    await stageWith(true, d, { version: "1.4.2" });
+    expect(d.__admin.calls[0]![1].p_version).toBe("1.4.2");
+  });
+});
+
 /* ═══════════ (٢٥–٣٠) الترحيلة والأمن ═══════════ */
 
 describe("★ (٢٥–٣٠) 0039 وما لا تفعله", () => {

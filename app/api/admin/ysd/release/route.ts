@@ -48,7 +48,14 @@ const RELEASE_FAILURES = {
 } as const;
 
 const releaseSchema = z.object({
-  version: z.string().min(1).max(64),
+  /**
+   * ★ القصّ في المخطّط — فتصير `parsed.data.version` **مصدر الحقيقة**.
+   *
+   * كان القصّ يقع داخل المساعد وحده، فتدخل القاعدة `"1.4.2"` ويُسجَّل
+   * في التدقيق `"  1.4.2  "`. وسجلُّ تدقيقٍ يخالف ما وقع فعلًا أسوأ من
+   * غيابه: يُبحَث فيه لاحقًا عن رقمٍ لا يطابق شيئًا في الجداول.
+   */
+  version: z.string().trim().min(1).max(64),
   baseModelRef: z.string().max(256).nullish(),
   artifactRef: z.string().min(1).max(256),
   runtimeModel: z.string().min(1).max(256),
