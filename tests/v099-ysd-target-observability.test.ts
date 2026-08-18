@@ -18,7 +18,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 
-import { YSDProvider, YSD_ALPHA_MODEL_ID, type YSDProviderDependencies } from "@/lib/ai/ysd";
+import {
+  YSDProvider,
+  YSD_ALPHA_MODEL_ID,
+  YSD_PROVIDER_ID,
+  type YSDProviderDependencies,
+} from "@/lib/ai/ysd";
 import { readYsdTargetProvenance } from "@/lib/admin/health-metrics";
 import type { ChatRequest, StreamChunk } from "@/lib/ai/types";
 import type { ModelDeploymentRecord, ModelVersionRecord } from "@/lib/ai/model-registry";
@@ -31,6 +36,7 @@ const YSD_SRC = readFileSync("lib/ai/ysd.ts", "utf8");
 
 const DEPLOYMENT_ID = "11111111-1111-4111-8111-111111111111";
 const VERSION_ID = "22222222-2222-4222-8222-222222222222";
+const OTHER_VERSION_ID = "33333333-3333-4333-8333-333333333333";
 const KEY = "sk-ysd-runtime-secret";
 const BASE_URL = "https://runtime.internal.example/v1";
 const ALIAS = "ysd-inference-primary";
@@ -474,6 +480,249 @@ describe("★ الترحيلة 0037", () => {
     expect(CODE.toLowerCase()).not.toContain("drop ");
     expect(CODE).not.toMatch(/insert\s+into\s+public\.observability_events/i);
     expect(CODE).not.toContain("ysd/free");
+  });
+});
+
+
+/* ═══════════ (٢٩–٣٥) المصدر: مزوّد YSD وحده ═══════════ */
+
+/**
+ * ★ هذه الكتلة **تُنفَّذ**، لا تُقرأ.
+ *
+ * تُستخرج كتلة `meta` من مصدر المسار وتُحوَّل دالةً حقيقية. فالحرّاس النصّية
+ * تثبت أن الشرط **مكتوب**؛ وهذه تثبت أنه **يعمل** — والفرق بينهما هو الفرق
+ * بين مراجعةٍ وبين برهان.
+ */
+const META_FIELDS = [
+  "actualModelId",
+  "attemptCount",
+  "chainOutcome",
+  "answerMode",
+  "regenerations",
+  "emptyCompletions",
+  "groundingSource",
+  "protectedDetailBlocked",
+  "shortCircuit",
+  "providerCalls",
+  "providerModelVersion",
+  "providerModelVersionId",
+  "providerDeploymentId",
+  "providerDeploymentEnvironment",
+  "providerTargetMetaConflict",
+] as const;
+
+function extractMetaBody(): string {
+  const prefix = '} else if (chunk.type === "meta"';
+  const at = ROUTE.indexOf(prefix);
+  if (at < 0) throw new Error("تعذّر إيجاد فرع meta — حدّث المستخرِج ولا تحذف الحارس");
+  const braceAt = ROUTE.indexOf("{", at + prefix.length);
+  let i = braceAt + 1;
+  let depth = 1;
+  while (i < ROUTE.length && depth > 0) {
+    const ch = ROUTE[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    if (depth === 0) break;
+    i++;
+  }
+  if (depth !== 0) throw new Error("قوس غير متوازن في فرع meta");
+  return ROUTE.slice(braceAt + 1, i);
+}
+
+type MetaState = Record<(typeof META_FIELDS)[number], unknown>;
+
+const runMeta = new Function(
+  "chunk",
+  "state",
+  "send",
+  "requestId",
+  "providerFirstByteMs",
+  "activeProviderId",
+  "YSD_PROVIDER_ID",
+  `let { ${META_FIELDS.join(", ")} } = state;
+${extractMetaBody()}
+return { ${META_FIELDS.join(", ")} };`,
+) as unknown as (
+  chunk: StreamChunk,
+  state: MetaState,
+  send: (m: unknown) => void,
+  requestId: string,
+  providerFirstByteMs: number,
+  activeProviderId: string,
+  ysdId: string,
+) => MetaState;
+
+const blankState = (): MetaState => ({
+  actualModelId: null,
+  attemptCount: 0,
+  chainOutcome: "unknown",
+  answerMode: "general",
+  regenerations: 0,
+  emptyCompletions: 0,
+  groundingSource: "none",
+  protectedDetailBlocked: false,
+  shortCircuit: false,
+  providerCalls: 0,
+  providerModelVersion: null,
+  providerModelVersionId: null,
+  providerDeploymentId: null,
+  providerDeploymentEnvironment: null,
+  providerTargetMetaConflict: false,
+});
+
+/** إطار `meta` كامل النسب — كما يبثّه مزوّد YSD */
+const fullMeta = (over: Partial<StreamChunk> = {}): StreamChunk => ({
+  type: "meta",
+  model: YSD_ALPHA_MODEL_ID,
+  modelVersion: "1.4.2",
+  modelVersionId: VERSION_ID,
+  deploymentId: DEPLOYMENT_ID,
+  deploymentEnvironment: "production",
+  ...over,
+});
+
+/** يشغّل الكتلة الحقيقية ويُعيد الحالة وما أُرسل إلى المتصفّح */
+function feed(providerId: string, ...frames: StreamChunk[]) {
+  const sent: unknown[] = [];
+  let state = blankState();
+  for (const f of frames) {
+    state = runMeta(f, state, (m) => sent.push(m), "rid", -1, providerId, YSD_PROVIDER_ID);
+  }
+  return { state, sent };
+}
+
+const NO_PROVENANCE = {
+  providerModelVersion: null,
+  providerModelVersionId: null,
+  providerDeploymentId: null,
+  providerDeploymentEnvironment: null,
+  providerTargetMetaConflict: false,
+};
+
+const provenanceOf = (s: MetaState) => ({
+  providerModelVersion: s.providerModelVersion,
+  providerModelVersionId: s.providerModelVersionId,
+  providerDeploymentId: s.providerDeploymentId,
+  providerDeploymentEnvironment: s.providerDeploymentEnvironment,
+  providerTargetMetaConflict: s.providerTargetMetaConflict,
+});
+
+describe("★ (٢٩–٣٥) النسب لمزوّد YSD وحده", () => {
+  it("★ (٢٩) ★ مزوّد آخر بنسبٍ كامل الشكل ⇒ يُهمَل بالكامل", () => {
+    /**
+     * الحقول اختيارية في `StreamChunk`، فأيّ مزوّدٍ يقدر أن يملأها — والعقد
+     * يسمح. وحينها يُنسب ردٌّ خارجيّ إلى نسخة YSD: صفٌّ صحيحٌ بنيويًّا لأن
+     * معرّفاته تشير إلى نشرةٍ حقيقية، وكاذبٌ معنًى. والقيد في القاعدة لا
+     * يراه — فالمصدر لا يُعرف إلا هنا.
+     */
+    const { state } = feed("openrouter", fullMeta({ model: "meta-llama/llama-3" }));
+    expect(provenanceOf(state)).toEqual(NO_PROVENANCE);
+  });
+
+  it("★ (٣٠) وكذلك كل مزوّدٍ غير YSD — والمطابقة تامّة لا تقريبية", () => {
+    for (const id of ["openrouter", "groq", "anthropic", "ysd-free", "YSD", "ysd "]) {
+      const { state } = feed(id, fullMeta());
+      expect(provenanceOf(state), id).toEqual(NO_PROVENANCE);
+    }
+  });
+
+  it("★ (٣١) ومجموعتان مختلفتان من مزوّدٍ آخر لا ترفعان عَلَم التعارض", () => {
+    const { state } = feed(
+      "openrouter",
+      fullMeta(),
+      fullMeta({ modelVersionId: OTHER_VERSION_ID, modelVersion: "9.9.9" }),
+    );
+    expect(state.providerTargetMetaConflict).toBe(false);
+    expect(state.providerModelVersion).toBeNull();
+  });
+
+  it("★ (٣٢) ومزوّد YSD بنسبٍ كامل ⇒ يُلتقط كما كان", () => {
+    const { state } = feed(YSD_PROVIDER_ID, fullMeta());
+    expect(provenanceOf(state)).toEqual({
+      providerModelVersion: "1.4.2",
+      providerModelVersionId: VERSION_ID,
+      providerDeploymentId: DEPLOYMENT_ID,
+      providerDeploymentEnvironment: "production",
+      providerTargetMetaConflict: false,
+    });
+  });
+
+  it("★ (٣٣) ونسبه الناقص أو الفاسد يبقى مُهمَلًا كما كان", () => {
+    const partials: Partial<StreamChunk>[] = [
+      { modelVersion: undefined },
+      { modelVersionId: undefined },
+      { deploymentId: undefined },
+      { deploymentEnvironment: undefined },
+      { modelVersion: "   " },
+      { modelVersionId: "" },
+      { deploymentEnvironment: "canary" as StreamChunk["deploymentEnvironment"] },
+    ];
+    for (const over of partials) {
+      const { state } = feed(YSD_PROVIDER_ID, fullMeta(over));
+      expect(provenanceOf(state), JSON.stringify(over)).toEqual(NO_PROVENANCE);
+    }
+  });
+
+  it("★ (٣٣′) وتعارضه الحقيقيّ ما يزال يُرفع عَلَمًا، والأولى تفوز", () => {
+    const { state } = feed(
+      YSD_PROVIDER_ID,
+      fullMeta(),
+      fullMeta({ modelVersionId: OTHER_VERSION_ID, modelVersion: "9.9.9" }),
+    );
+    expect(state.providerModelVersionId).toBe(VERSION_ID);
+    expect(state.providerModelVersion).toBe("1.4.2");
+    expect(state.providerTargetMetaConflict).toBe(true);
+  });
+
+  it("★ (٣٤) ★ وما يعبر إلى المتصفّح هو المعرّف وحده — للمزوّدين جميعًا", () => {
+    for (const id of ["openrouter", YSD_PROVIDER_ID]) {
+      const { sent } = feed(id, fullMeta());
+      expect(sent, id).toEqual([{ type: "meta", model: YSD_ALPHA_MODEL_ID }]);
+      const wire = JSON.stringify(sent);
+      for (const leak of [VERSION_ID, DEPLOYMENT_ID, "1.4.2", "production"]) {
+        expect(wire, `${id}/${leak}`).not.toContain(leak);
+      }
+    }
+  });
+
+  it("★ (٣٥) ولا معرّف ولا رقم نسخة في أي سجلّ نصّيّ", () => {
+    const logs: string[] = [];
+    const err = vi.spyOn(console, "error").mockImplementation((m) => logs.push(String(m)));
+    const log = vi.spyOn(console, "log").mockImplementation((m) => logs.push(String(m)));
+    feed(YSD_PROVIDER_ID, fullMeta(), fullMeta({ modelVersionId: OTHER_VERSION_ID }));
+    feed("openrouter", fullMeta());
+    err.mockRestore();
+    log.mockRestore();
+    for (const line of logs) {
+      for (const leak of [VERSION_ID, DEPLOYMENT_ID, "1.4.2"]) {
+        expect(line, leak).not.toContain(leak);
+      }
+    }
+  });
+
+  it("★ والقيَم المحفوظة لاحقًا مشتقّة من هذه الحالة وحدها", () => {
+    /**
+     * `model_version` والحدث الدائم يُشتقّان من `providerModelVersion*`
+     * حصرًا — فبقاؤها `null` لمزوّدٍ آخر يعني ألّا يُحفظ شيء. والحارسان
+     * أدناه يمنعان مسارًا ثانيًا يتجاوزها.
+     */
+    expect(ROUTE).toContain(
+      "if (providerModelVersion !== null) meta.model_version = providerModelVersion;",
+    );
+    expect(ROUTE).toContain("ysdModelVersionId: providerModelVersionId,");
+    const code = ROUTE.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
+    expect(code).not.toContain("meta.model_version = chunk.");
+    expect(code).not.toContain("ysdModelVersionId: chunk.");
+  });
+
+  it("★ والشرط مكتوبٌ بالثابت لا بنصٍّ سحريّ", () => {
+    expect(ROUTE).toContain("activeProviderId === YSD_PROVIDER_ID &&");
+    expect(ROUTE).toContain('import { YSD_PROVIDER_ID } from "@/lib/ai/ysd";');
+    expect(YSD_PROVIDER_ID).toBe("ysd");
+    // ولا يدخل المسارَ شيءٌ من السجلّ ولا من ناقل وقت التشغيل
+    for (const forbidden of ["model-registry", "ysd-runtime-client", "ysd-runtime-config"]) {
+      expect(ROUTE, forbidden).not.toContain(forbidden);
+    }
   });
 });
 

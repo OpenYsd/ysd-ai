@@ -7,6 +7,12 @@ import { createClient } from "@/lib/supabase/server";
 import { getRequestContext, TIMING_HEADER } from "@/lib/auth/request-context";
 import { chatRequestSchema } from "@/lib/validation/chat";
 import { getFallbackProvider, resolveProviderForModel } from "@/lib/ai/registry";
+/**
+ * ثابت الهوية وحده — و`registry` يستورد هذا الملفّ سلفًا، فلا وحدة جديدة
+ * في الرسم البيانيّ ولا دورة. ولا يدخل المسارَ شيءٌ من السجلّ ولا من
+ * ناقل وقت التشغيل: تلك حدودٌ يحرسها v095–v097.
+ */
+import { YSD_PROVIDER_ID } from "@/lib/ai/ysd";
 import {
   decideProviderRouting,
   recordProviderSuccess,
@@ -1020,6 +1026,14 @@ export async function POST(req: NextRequest) {
 
         for (let pi = 0; pi < sequence.length; pi++) {
           const active = sequence[pi]!;
+          /**
+           * لقطةٌ ثابتة لهوية المزوّد الجاري.
+           *
+           * تُقرأ داخل كتلة `meta` أدناه — وتلك الكتلة **تُنفَّذ فعلًا** في
+           * اختبار `v09` بعد استخراجها من هذا الملفّ، فتُمرَّر إليها هويةً
+           * صريحة بدل الوصول إلى `active` الذي لا وجود له هناك.
+           */
+          const activeProviderId = active.id;
           providerAttempts = pi + 1;
           selectedProvider = active.id;
           if (pi > 0) resetAttemptState();
@@ -1152,6 +1166,18 @@ export async function POST(req: NextRequest) {
                * الكتلة الحقيقية أثمن من اختصارٍ في كتابتها.
                */
               const targetComplete =
+                /**
+                 * ★ النسب لمزوّد YSD **وحده**.
+                 *
+                 * الحقول اختيارية في `StreamChunk`، فأيّ مزوّدٍ آخر يقدر أن
+                 * يملأها — وقد يفعل بلا سوء نيّة، إذ العقد يسمح. وحينها
+                 * يُنسب ردٌّ من مزوّدٍ خارجيّ إلى نسخة YSD، فيدخل التحليلَ
+                 * أداءٌ ليس أداءها. والقيد في القاعدة لا يمنع ذلك: المعرّفات
+                 * تشير إلى نشرةٍ حقيقية، والصفّ صحيحٌ بنيويًّا وكاذبٌ معنًى.
+                 *
+                 * فالمصدر يُتحقَّق منه هنا، حيث يُعرف وحده.
+                 */
+                activeProviderId === YSD_PROVIDER_ID &&
                 typeof targetVersion === "string" &&
                 targetVersion.trim().length > 0 &&
                 typeof targetVersionId === "string" &&

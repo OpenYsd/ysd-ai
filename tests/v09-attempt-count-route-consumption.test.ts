@@ -5,6 +5,7 @@ import { OpenRouterProvider } from "@/lib/ai/openrouter";
 import { _resetCooldowns, markCooldown } from "@/lib/ai/model-cooldown";
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "@/lib/ai/free-models";
 import type { StreamChunk } from "@/lib/ai/types";
+import { YSD_PROVIDER_ID } from "@/lib/ai/ysd";
 
 /**
  * استهلاك المسار للقياسات — الحارس الأساسي لعطل `fallback_count = 0`.
@@ -123,6 +124,8 @@ type MetaFn = (
   send: (m: unknown) => void,
   requestId: string,
   providerFirstByteMs: number,
+  activeProviderId: string,
+  YSD_PROVIDER_ID: string,
 ) => MetaState;
 
 /** يلفّ الكتلة المستخرجة في دالة تُرجع الحالة بعد التطبيق */
@@ -132,6 +135,14 @@ const applyMeta = new Function(
   "send",
   "requestId",
   "providerFirstByteMs",
+  /**
+   * هويّتان حرّتان داخل الكتلة المستخرجة — تُمرَّران وسيطين.
+   *
+   * و`YSD_PROVIDER_ID` يُمرَّر من مصدره الحقيقيّ لا كنصّ مكرّر: لو تغيّرت
+   * قيمته يومًا تبعتها الاختبارات بلا تحرير.
+   */
+  "activeProviderId",
+  "YSD_PROVIDER_ID",
   `let { ${FIELDS.join(", ")} } = state;
 ${META_BODY}
 return { ${FIELDS.join(", ")} };`,
@@ -244,7 +255,7 @@ async function runThroughRoute(): Promise<Observed> {
       if (providerFirstByteMs < 0) providerFirstByteMs = 1;
     } else if (metaMatches(chunk)) {
       // ★ الشرط الحقيقي ثم الجسم الحقيقي — كما في المسار
-      state = applyMeta(chunk, state, send, "rid-test", providerFirstByteMs);
+      state = applyMeta(chunk, state, send, "rid-test", providerFirstByteMs, "openrouter", YSD_PROVIDER_ID);
     } else if (chunk.type === "usage" && chunk.usage) {
       usageFrames++;
     } else if (chunk.type === "error") {
@@ -323,7 +334,7 @@ describe("★ حارس الانحدار: إطار ختامي بلا model", () =
       chainOutcome: "chain_exhausted",
       providerCalls: 3,
     };
-    const out = applyMeta(terminal, freshState(), () => {}, "rid", -1);
+    const out = applyMeta(terminal, freshState(), () => {}, "rid", -1, "openrouter", YSD_PROVIDER_ID);
 
     expect(out.attemptCount).toBe(3);
     expect(out.chainOutcome).toBe("chain_exhausted");
@@ -344,6 +355,8 @@ describe("★ حارس الانحدار: إطار ختامي بلا model", () =
       },
       "rid",
       -1,
+      "openrouter",
+      YSD_PROVIDER_ID,
     );
     // إطار بلا نموذج لا يُرسل meta للعميل ولا يمسّ actual_model
     expect(sent).toEqual([]);
@@ -362,6 +375,8 @@ describe("★ حارس الانحدار: إطار ختامي بلا model", () =
       },
       "rid",
       -1,
+      "openrouter",
+      YSD_PROVIDER_ID,
     );
     expect(out.actualModelId).toBe("m/one");
     expect(sent).toEqual(["m/one"]);
@@ -370,8 +385,8 @@ describe("★ حارس الانحدار: إطار ختامي بلا model", () =
   /** تبديل النموذج بعد أول نص يبقى مرفوضًا — لا يُنسب ردّ واحد لنموذجين */
   it("★ تبديل النموذج بعد أول نص يبقى مرفوضًا", () => {
     let st = freshState();
-    st = applyMeta({ type: "meta", model: "m/one" }, st, () => {}, "rid", -1);
-    st = applyMeta({ type: "meta", model: "m/two" }, st, () => {}, "rid", 5);
+    st = applyMeta({ type: "meta", model: "m/one" }, st, () => {}, "rid", -1, "openrouter", YSD_PROVIDER_ID);
+    st = applyMeta({ type: "meta", model: "m/two" }, st, () => {}, "rid", 5, "openrouter", YSD_PROVIDER_ID);
     expect(st.actualModelId).toBe("m/one");
   });
 });
