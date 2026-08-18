@@ -506,16 +506,27 @@ describe("★ (٣٥–٤٤) ما لم تفعله هذه الرقعة", () => {
     expect(around).not.toMatch(/enabled\s*\)\s*values[^;]*true/i);
   });
 
-  it("★ (٣٦–٣٨) ★ ولا ترحيلة جديدة ولا تحديث يفعّل", async () => {
+  it("★ (٣٦–٣٨) ★ ولا ترحيلةَ تفعّل النموذج — في أي رقم", async () => {
+    /**
+     * ★ حُدِّث في الرقعة التاسعة.
+     *
+     * كان الحارس «لا ترحيلة بعد 0037»، وذلك صحيحٌ لرقعته لا للمشروع:
+     * ترحيلة `0038` لاحقة تحرس المسار ولا تفعّل شيئًا، فكانت تُسقطه بلا
+     * خطأ. والثابت الذي كان يحرسه أقوى وأدوم: **لا ترحيلةَ — أيًّا كان
+     * رقمها — تفتح النموذج أو تمسّ حالة المزوّدين**. فيُقاس ذلك على
+     * المجلد كلّه بدل رقمٍ يتقادم.
+     */
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(files.some((f) => f.startsWith("0038"))).toBe(false);
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(37);
 
     for (const f of files) {
       const sql = readFileSync(`supabase/migrations/${f}`, "utf8").toLowerCase();
       expect(sql, f).not.toContain("update public.ai_models set enabled = true");
       expect(sql, f).not.toContain("update public.ai_providers set enabled");
+      // ولا زرعُ صفٍّ مفعَّل لنموذج YSD
+      if (sql.includes("ysd/model-alpha")) {
+        expect(sql, f).not.toMatch(/'ysd\/model-alpha'[^;]*?,\s*true\s*\)/);
+      }
     }
   });
 

@@ -433,8 +433,13 @@ describe("★ الترحيلة 0037", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0037_ysd_target_observability.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(37);
+    /**
+     * ★ حُدِّث في الرقعة التاسعة: هذا الحارس يملك **رقم 0037 وحده**.
+     * وربطُه بالأعلى كان يجعل كل ترحيلةٍ لاحقة تُسقطه بلا خطأ حقيقيّ.
+     */
+    expect(numbers).toContain(37);
     expect(new Set(numbers).size).toBe(numbers.length);
+    for (let n = 1; n <= 37; n++) expect(numbers, String(n)).toContain(n);
   });
 
   const CODE = MIGRATION.split("\n").filter((l) => !/^\s*(--|\*|\/\*)/.test(l)).join("\n");
