@@ -21,12 +21,17 @@ import { stageYSDDatabaseEligibility } from "@/lib/ai/ysd-rollout";
 import { YSD_ALPHA_MODEL_ID, YSD_PROVIDER_ID } from "@/lib/ai/ysd";
 import type { AIProviderAdapter, ProviderHealth } from "@/lib/ai/types";
 
-const ROLLOUT_SRC = readFileSync("lib/ai/ysd-rollout.ts", "utf8");
-const ADMIN_ROUTE = readFileSync("app/api/admin/models/route.ts", "utf8");
-const MIGRATION = readFileSync(
-  "supabase/migrations/0038_guard_ysd_model_eligibility.sql",
-  "utf8",
-);
+/**
+ * ★ المصادر تُقرأ بنهايات أسطر موحّدة.
+ *
+ * شجرةُ عملٍ على Windows تُخرج CRLF، فحارسٌ يقصّ على `"\n  }\n"` لا يجد
+ * شيئًا ويسقط بلا خطأ حقيقيّ. والمقيس هنا **بنية المصدر** لا شكل سطوره.
+ */
+const readSrc = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
+
+const ROLLOUT_SRC = readSrc("lib/ai/ysd-rollout.ts");
+const ADMIN_ROUTE = readSrc("app/api/admin/models/route.ts");
+const MIGRATION = readSrc("supabase/migrations/0038_guard_ysd_model_eligibility.sql");
 
 const RUNTIME_MODEL = "ysd-alpha-2026-01";
 const BASE_URL = "https://runtime.internal.example/v1";
@@ -425,13 +430,19 @@ describe("★ (٣٠–٣٩) ما لا يخرج ولا يُلمس", () => {
     expect(code).not.toContain("is_owner()");
   });
 
-  it("★ ملفّ ترحيلةٍ واحد جديد، وهو الأحدث ترقيمًا", async () => {
+  it("★ ترحيلة الرقعة موجودة، وترقيمها متّصل", async () => {
+    /**
+     * ★ حُدِّث في الرقعة العاشرة: يملك هذا الحارس **رقم 0038 وحده**، لا
+     * «الأعلى في المجلد». وربطُه بالأعلى يجعل كل ترحيلةٍ لاحقة تُسقطه بلا
+     * خطأ حقيقيّ — وحارسٌ يصرخ لغير سببه لا يُسمَع طويلًا.
+     */
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0038_guard_ysd_model_eligibility.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(38);
+    expect(numbers).toContain(38);
     expect(new Set(numbers).size).toBe(numbers.length);
+    for (let n = 1; n <= 38; n++) expect(numbers, String(n)).toContain(n);
   });
 
   it("★ ولا تُمسّ 0036 ولا 0037", async () => {
