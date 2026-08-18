@@ -51,22 +51,31 @@ export async function POST(req: NextRequest) {
   const result = await checkYSDPreActivationSmoke(ctx.isOwner);
 
   /**
-   * التدقيق يسجّل **أن العملية وقعت** ونتيجتها — لا مضمونها.
+   * ★ التدقيق يسجّل **أن العملية وقعت** ونتيجتها — لا مضمونها.
    *
-   * ولا يغيّر فشلُه نتيجةَ الاختبار: العملية وقعت فعلًا في وقت التشغيل،
-   * وإخفاؤها لأن سطرًا لم يُكتب يجعل الجواب أسوأ لا أدقّ.
+   * ولفُّه مقصود: العملية وقعت فعلًا في وقت التشغيل قبل أن يُكتب السطر.
+   * فلو رمى التدقيق وصار الردّ `500` لَقرأ المشغّل «فشل الاختبار» بينما
+   * التوليد نجح — جوابٌ يخالف الواقع، ويُعاد النداء فيُستهلك استدلالٌ
+   * ثانٍ لأجل عطلٍ في التسجيل لا في المفحوص.
+   *
+   * ولا يُبلَّغ عن العطل هنا بشيء: نصُّ الاستثناء قد يحمل شكل الجدول،
+   * و`writeAudit` نفسها تُبلغ برمزٍ عند الفشل المتوقَّع.
    */
   if (result.ok || result.reason !== "owner_required") {
-    await writeAudit(
-      ctx,
-      {
-        action: "model.ysd_smoke_test",
-        targetType: "model",
-        targetId: YSD_ALPHA_MODEL_ID,
-        after: { passed: result.passed, publicServing: false, latencyMs: result.latencyMs },
-      },
-      req,
-    );
+    try {
+      await writeAudit(
+        ctx,
+        {
+          action: "model.ysd_smoke_test",
+          targetType: "model",
+          targetId: YSD_ALPHA_MODEL_ID,
+          after: { passed: result.passed, publicServing: false, latencyMs: result.latencyMs },
+        },
+        req,
+      );
+    } catch {
+      // النتيجة تخصّ وقت التشغيل، لا سجلَّ التدقيق
+    }
   }
 
   if (!result.ok) {

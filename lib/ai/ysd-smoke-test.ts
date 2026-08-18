@@ -141,7 +141,21 @@ export async function checkYSDPreActivationSmoke(
 
   // ── الهدف: من إعداد الخادم ثم من السجلّ — لا استعلام مباشر ──
 
-  const configResult = d.readRuntimeConfig();
+  /**
+   * ★ القراءة تُلَفّ — والتمييز بين الحالتين مقصود.
+   *
+   * `{ok:false}` جوابٌ متوقَّع يقول «الإعداد ناقص»، فهو `target_unavailable`
+   * يدلّ المشغّل على البيئة. أما الاستثناء فيقول «شيءٌ في برنامجنا انكسر»،
+   * وإلباسُه ثوبَ نقصِ إعدادٍ يرسل المشغّل يفتّش متغيّراتٍ سليمة.
+   *
+   * ونصُّ الاستثناء لا يعبر: قد يحمل عنوانًا أو مفتاحًا.
+   */
+  let configResult;
+  try {
+    configResult = d.readRuntimeConfig();
+  } catch {
+    return fail("internal_error");
+  }
   if (!configResult.ok) return fail("target_unavailable");
   const config = configResult.config;
 

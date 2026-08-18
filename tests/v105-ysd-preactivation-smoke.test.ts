@@ -18,7 +18,7 @@
  * ولا شبكة ولا قاعدة هنا: كل شيء بالحقن.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 
 import { checkYSDPreActivationSmoke } from "@/lib/ai/ysd-smoke-test";
@@ -86,6 +86,7 @@ function scenario(
     readiness?: unknown;
     readinessThrows?: boolean;
     config?: unknown;
+    configThrows?: boolean;
     adminClient?: unknown;
     adminThrows?: boolean;
     resolution?: unknown;
@@ -106,6 +107,7 @@ function scenario(
 
   const readRuntimeConfig = vi.fn(() => {
     order.push("config");
+    if (over.configThrows) throw new Error(`config broke: ${BASE_URL} key=${KEY}`);
     return (over.config ?? { ok: true, config: runtimeConfig }) as {
       ok: true;
       config: typeof runtimeConfig;
@@ -235,6 +237,31 @@ describe("★ (٤–٩) الهدف من الخادم والسجلّ", () => {
     const s = scenario({ config: { ok: false, reason: "missing_base_url" } });
     expect(reasonOf(await s.run())).toBe("target_unavailable");
     expect(s.deps.requestRuntimeJsonCompletion).not.toHaveBeenCalled();
+  });
+
+  it("★ (٤′) ★★ وقراءةٌ ترمي ⇒ internal_error لا target_unavailable", async () => {
+    /**
+     * ★ التمييز مقصود.
+     *
+     * `{ok:false}` جوابٌ متوقَّع يقول «الإعداد ناقص»، فيدلّ المشغّل على
+     * البيئة. أما الاستثناء فيقول «شيءٌ في برنامجنا انكسر»، وإلباسُه ثوبَ
+     * نقصِ إعدادٍ يرسله يفتّش متغيّراتٍ سليمة.
+     */
+    const s = scenario({ configThrows: true });
+    const res = await s.run();
+    expect(reasonOf(res)).toBe("internal_error");
+
+    // ولا سرَّ ولا عنوان من نصّ الاستثناء
+    const dump = JSON.stringify(res);
+    for (const leak of [BASE_URL, KEY, "config broke"]) {
+      expect(dump, leak).not.toContain(leak);
+    }
+
+    // وصفر ما بعده
+    expect(s.deps.getAdminClient).not.toHaveBeenCalled();
+    expect(s.deps.resolveDeployment).not.toHaveBeenCalled();
+    expect(s.deps.requestRuntimeJsonCompletion).not.toHaveBeenCalled();
+    expect(s.order).toEqual(["readiness", "config"]);
   });
 
   it("★ (٥) وعميل الخدمة null ⇒ target_unavailable", async () => {
@@ -671,6 +698,136 @@ describe("★ المسار: POST للمالك بلا جسم", () => {
       ROUTE_SRC.indexOf("const HEADERS"),
     );
     for (const r of reasons) expect(table, r).toContain(`${r}:`);
+  });
+});
+
+
+/* ═══════════ التدقيق لا يغيّر النتيجة ═══════════ */
+
+/**
+ * ★ هذه المجموعة **تشغّل المعالج** لا تقرأ مصدره.
+ *
+ * لأن المقيس سلوكُ استثناءٍ عابر: هل يتحوّل ردٌّ ناجح إلى `500` لأن سطر
+ * تدقيقٍ لم يُكتب؟ وذلك لا يُرى في نصّ الملفّ — يُرى بتشغيله.
+ */
+describe("★ المسار: عطلُ التدقيق لا يمسّ الحكم", () => {
+  const OWNER_CTX = { supabase: {}, userId: "owner-1", role: "owner", isOwner: true };
+
+  /** يُحمّل المعالج بمحاكاةٍ محقونة، ويُعيد الردّ المفكوك */
+  async function callRoute(over: {
+    smoke?: unknown;
+    auditThrows?: boolean;
+    ctx?: unknown;
+  }) {
+    vi.resetModules();
+    const writeAudit = vi.fn(async () => {
+      if (over.auditThrows) throw new Error(`audit table missing: ${KEY} / ${MARKER}`);
+    });
+
+    vi.doMock("@/lib/admin/guard", () => ({
+      getAdminContext: vi.fn(async () => (over.ctx === undefined ? OWNER_CTX : over.ctx)),
+      forbidden: () => new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }),
+      writeAudit,
+    }));
+    vi.doMock("@/lib/ai/ysd-smoke-test", () => ({
+      checkYSDPreActivationSmoke: vi.fn(
+        async () =>
+          over.smoke ?? { ok: true, passed: true, publiclyEnabled: false, latencyMs: 120 },
+      ),
+    }));
+
+    const { POST } = await import("@/app/api/admin/ysd/smoke/route");
+    const req = new Request("http://localhost/api/admin/ysd/smoke", { method: "POST" });
+    const res = await POST(req as never);
+    return { res, body: await res.json(), writeAudit };
+  }
+
+  afterEach(() => {
+    vi.doUnmock("@/lib/admin/guard");
+    vi.doUnmock("@/lib/ai/ysd-smoke-test");
+    vi.resetModules();
+  });
+
+  it("★ ★ نجاحٌ + تدقيقٌ يرمي ⇒ يبقى 200 وpassed", async () => {
+    /**
+     * العملية وقعت فعلًا في وقت التشغيل قبل أن يُكتب السطر. فلو صار الردّ
+     * `500` لَقرأ المشغّل «فشل الاختبار» بينما التوليد نجح — ويُعاد النداء
+     * فيُستهلك استدلالٌ ثانٍ لأجل عطلٍ في التسجيل لا في المفحوص.
+     */
+    const { res, body, writeAudit } = await callRoute({ auditThrows: true });
+    expect(writeAudit).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(200);
+    expect(body).toEqual({
+      ok: true,
+      passed: true,
+      publiclyEnabled: false,
+      latencyMs: 120,
+      nextAction: "enable_public_serving",
+    });
+  });
+
+  it("★ ★ وفشلٌ + تدقيقٌ يرمي ⇒ الرمز والحالة الأصليان", async () => {
+    const cases: Array<[string, number, string]> = [
+      ["unexpected_output", 409, "ysd_smoke_output_mismatch"],
+      ["timeout", 504, "ysd_smoke_timeout"],
+      ["generation_failed", 503, "ysd_generation_failed"],
+      ["not_ready", 409, "ysd_not_ready"],
+    ];
+    for (const [reason, status, code] of cases) {
+      const { res, body } = await callRoute({
+        auditThrows: true,
+        smoke: { ok: false, passed: false, reason, latencyMs: 44 },
+      });
+      expect(res.status, reason).toBe(status);
+      expect(body.code, reason).toBe(code);
+      expect(body.passed, reason).toBe(false);
+      expect(body.publiclyEnabled, reason).toBe(false);
+      expect(res.status, reason).not.toBe(500);
+    }
+  });
+
+  it("★ ★ ولا نصُّ الاستثناء ولا العلامة في الجسم", async () => {
+    for (const smoke of [
+      undefined,
+      { ok: false, passed: false, reason: "unexpected_output", latencyMs: 7 },
+    ]) {
+      const { body } = await callRoute({ auditThrows: true, smoke });
+      const dump = JSON.stringify(body);
+      for (const leak of [KEY, MARKER, "audit table missing"]) {
+        expect(dump, leak).not.toContain(leak);
+      }
+    }
+  });
+
+  it("★ والتدقيق يُستدعى للنجاح وللفشل — لا لغير المالك", async () => {
+    const pass = await callRoute({});
+    expect(pass.writeAudit).toHaveBeenCalledTimes(1);
+
+    const failed = await callRoute({
+      smoke: { ok: false, passed: false, reason: "timeout", latencyMs: 3 },
+    });
+    expect(failed.writeAudit).toHaveBeenCalledTimes(1);
+
+    const denied = await callRoute({
+      smoke: { ok: false, passed: false, reason: "owner_required", latencyMs: 0 },
+    });
+    expect(denied.writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("★ وسياقٌ غائب ⇒ 403 بلا تدقيقٍ ولا اختبار", async () => {
+    const { res, writeAudit } = await callRoute({ ctx: null });
+    expect(res.status).toBe(403);
+    expect(writeAudit).not.toHaveBeenCalled();
+  });
+
+  it("★ والترويسة تمنع التخزين في كل حال", async () => {
+    for (const smoke of [
+      undefined,
+      { ok: false, passed: false, reason: "generation_failed", latencyMs: 1 },
+    ]) {
+      const { res } = await callRoute({ auditThrows: true, smoke });
+      expect(res.headers.get("Cache-Control")).toBe("no-store, no-cache, must-revalidate");
+    }
   });
 });
 
