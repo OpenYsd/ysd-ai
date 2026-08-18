@@ -650,9 +650,19 @@ describe("★ حدود الناقل", () => {
     expect(SRC).toContain("clearTimeout(timer)");
     expect(SRC).toContain('removeEventListener("abort"');
     expect(SRC).toContain("reader.cancel()");
-    // مؤقّت واحد لكل مسار — لا مؤقّت يفلت من التنظيف
-    expect((SRC.match(/setTimeout\(/g) ?? []).length).toBe(2);
-    expect((SRC.match(/clearTimeout\(/g) ?? []).length).toBe(2);
+    /**
+     * ★ الثابت هو **التوازن** لا الرقم.
+     *
+     * كان الحارس مربوطًا بعدد المسارات (اثنان)، فصار يصرخ لكل مسارٍ جديد
+     * وإن نظّف نفسه. والمقصود منه دائمًا: لا مؤقّت يفلت. والثلاثة اليوم:
+     * البثّ، وإكمال JSON، ومِسبار الجاهزية.
+     */
+    const timers = (SRC.match(/setTimeout\(/g) ?? []).length;
+    const cleared = (SRC.match(/clearTimeout\(/g) ?? []).length;
+    expect(timers).toBe(cleared);
+    expect(timers).toBe(3);
+    // ولكلٍّ منها `finally` يضمن التنظيف مهما كان المخرج
+    expect((SRC.match(/\} finally \{/g) ?? []).length).toBe(3);
   });
 
   it("★ موصولٌ بمزوّد YSD وحده — لا بالمسار ولا بالسجلّ", () => {

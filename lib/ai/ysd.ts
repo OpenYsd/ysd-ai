@@ -1,12 +1,20 @@
 import "server-only";
 
-import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk } from "./types";
+import type {
+  AIProviderAdapter,
+  ChatRequest,
+  ModelInfo,
+  ProviderHealth,
+  StreamChunk,
+} from "./types";
 import type { ModelDeploymentRecord, ModelVersionRecord } from "./model-registry";
 import { readYSDRuntimeConfig, type YSDRuntimeConfig } from "./ysd-runtime-config";
 import {
+  checkYSDRuntimeReadiness,
   requestYSDRuntimeJsonCompletion,
   streamYSDRuntimeChat,
   type YSDRuntimeFailureReason,
+  type YSDRuntimeReadinessResult,
 } from "./ysd-runtime-client";
 import { resolveServableDeployment } from "./model-registry-resolver";
 import { getAdminClient, isServiceRoleConfigured } from "@/lib/supabase/admin";
@@ -67,6 +75,8 @@ export interface YSDProviderDependencies {
   resolveDeployment: typeof resolveServableDeployment;
   streamRuntimeChat: typeof streamYSDRuntimeChat;
   requestRuntimeJsonCompletion: typeof requestYSDRuntimeJsonCompletion;
+  /** مِسبار الجاهزية — يُحقن كي يُختبر الفاحص كاملًا بلا شبكة */
+  checkRuntimeReadiness: typeof checkYSDRuntimeReadiness;
 }
 
 /**
@@ -92,6 +102,7 @@ const DEFAULTS: YSDProviderDependencies = {
   resolveDeployment: resolveServableDeployment,
   streamRuntimeChat: streamYSDRuntimeChat,
   requestRuntimeJsonCompletion: requestYSDRuntimeJsonCompletion,
+  checkRuntimeReadiness: checkYSDRuntimeReadiness,
 };
 
 /** الهدف المحلول — داخليّ بحت، لا يخرج منه شيء إلى المستخدم */
@@ -100,6 +111,32 @@ interface RuntimeTarget {
   deployment: ModelDeploymentRecord;
   version: ModelVersionRecord;
 }
+
+/**
+ * ★ لماذا صار «لا هدف» أربعةَ أسبابٍ لا واحدًا.
+ *
+ * `null` كان كافيًا للبثّ: المستخدم يرى تعذّرًا عامًّا في الحالتين، ولا
+ * يعنيه أهو السجلّ أم النشرة. أما المشرف الذي يضغط «اختبار الاتصال» فيسأل
+ * سؤالًا مختلفًا: **ما الذي أُصلحه؟** و«غير متصل» جوابٌ لا يدلّه على شيء.
+ *
+ *   `not_configured`        ⇐ إعدادٌ ناقص — أصلحه في البيئة، ولم تُلمس القاعدة.
+ *   `registry_unavailable`  ⇐ القاعدة لم تُجب — العطل خارج بيانات النماذج.
+ *   `no_servable_deployment`⇐ القاعدة أجابت ولا نشرة صالحة — أصلحه في السجلّ.
+ *   `unsupported_model`     ⇐ معرّفٌ ليس لنا — خطأ برمجيّ لا تشغيليّ.
+ *
+ * والأربعة **مغلقة**: لا يخرج سبب الحلّال الخام من هذا الحاجز، فلا يتسرّب
+ * إلى واجهةٍ إدارية شكلُ الجداول ولا مفرداتها.
+ */
+type RuntimeTargetResolution =
+  | { ok: true; target: RuntimeTarget }
+  | {
+      ok: false;
+      reason:
+        | "unsupported_model"
+        | "not_configured"
+        | "registry_unavailable"
+        | "no_servable_deployment";
+    };
 
 /**
  * ★ تحويل سبب وقت التشغيل إلى رمز خطأ عامّ.
@@ -200,30 +237,34 @@ export class YSDProvider implements AIProviderAdapter {
    *
    * وكل وصولٍ إلى القاعدة يمرّ بالحلّال وحده — لا استعلام مباشر من هنا.
    */
-  private async resolveRuntimeTarget(modelId: string): Promise<RuntimeTarget | null> {
+  private async resolveRuntimeTarget(modelId: string): Promise<RuntimeTargetResolution> {
     /**
      * ★ نموذج واحد مملوك — لا وكالة عامّة.
      *
      * بلا هذا الشرط يصير المزوّد بابًا لأي معرّفٍ في القاعدة: يكفي صفٌّ
      * مكتوبٌ بخطأ ليُوجَّه إليه طلب تحت اسم YSD.
      */
-    if (modelId !== YSD_ALPHA_MODEL_ID) return null;
+    if (modelId !== YSD_ALPHA_MODEL_ID) return { ok: false, reason: "unsupported_model" };
 
-    if (process.env.YSD_PROVIDER_ENABLED !== "1") return null;
+    if (process.env.YSD_PROVIDER_ENABLED !== "1") {
+      return { ok: false, reason: "not_configured" };
+    }
 
     const configResult = this.deps.readRuntimeConfig();
-    if (!configResult.ok) return null;
+    if (!configResult.ok) return { ok: false, reason: "not_configured" };
 
-    if (this.deps.hasRegistryAccess() !== true) return null;
+    if (this.deps.hasRegistryAccess() !== true) {
+      return { ok: false, reason: "not_configured" };
+    }
 
     let client;
     try {
       client = this.deps.getAdminClient();
     } catch {
       // عطلٌ غير متوقّع في إنشاء العميل — يُبتلع رمزًا لا نصًّا
-      return null;
+      return { ok: false, reason: "registry_unavailable" };
     }
-    if (!client) return null;
+    if (!client) return { ok: false, reason: "registry_unavailable" };
 
     let resolution;
     try {
@@ -233,14 +274,32 @@ export class YSDProvider implements AIProviderAdapter {
         configResult.config.deploymentEnvironment,
       );
     } catch {
-      return null;
+      return { ok: false, reason: "registry_unavailable" };
     }
-    if (!resolution.ok) return null;
+
+    if (!resolution.ok) {
+      /**
+       * ★ `invalid_input` يُصنَّف عطلَ سجلٍّ لا نقصَ نشرة — عمدًا.
+       *
+       * المعرّف والبيئة يأتيان من هنا: الأول ثابتٌ في الكود، والثانية من
+       * إعدادٍ تحقّقنا منه قبل سطرين. فرفضُ الحلّال لهما يعني خللًا في
+       * برنامجنا لا في بيانات السجلّ. و«لا نشرة صالحة» كان سيرسل المشرف
+       * يفتّش جداولَ لا عيب فيها.
+       */
+      const reason =
+        resolution.reason === "registry_error" || resolution.reason === "invalid_input"
+          ? ("registry_unavailable" as const)
+          : ("no_servable_deployment" as const);
+      return { ok: false, reason };
+    }
 
     return {
-      config: configResult.config,
-      deployment: resolution.deployment,
-      version: resolution.version,
+      ok: true,
+      target: {
+        config: configResult.config,
+        deployment: resolution.deployment,
+        version: resolution.version,
+      },
     };
   }
 
@@ -257,17 +316,22 @@ export class YSDProvider implements AIProviderAdapter {
     // ★ ملغى قبل البدء ⇒ صمتٌ تامّ، بلا قاعدة ولا وقت تشغيل
     if (req.signal?.aborted) return;
 
-    let target: RuntimeTarget | null;
+    /**
+     * السبب المفصَّل لا يعبر من هنا: البثّ يتصرّف كما كان بالضبط — تعذّرٌ
+     * عامّ واحد لكل صور الفشل. والتمييز يخدم الفاحص الإداريّ وحده.
+     */
+    let resolution: RuntimeTargetResolution;
     try {
-      target = await this.resolveRuntimeTarget(req.modelId);
+      resolution = await this.resolveRuntimeTarget(req.modelId);
     } catch {
       yield providerError();
       return;
     }
-    if (!target) {
+    if (!resolution.ok) {
       yield providerError();
       return;
     }
+    const target = resolution.target;
 
     // ★ وقد ينصرف المستخدم أثناء استعلام السجلّ — فلا يبدأ توليدٌ لا يقرأه
     if (req.signal?.aborted) return;
@@ -376,13 +440,14 @@ export class YSDProvider implements AIProviderAdapter {
     // عقد المحوّل لا يعرف `aborted` — فالإلغاء يُبلَّغ كتعذّر عامّ
     if (input.signal?.aborted) return { ok: false, reason: "error" };
 
-    let target: RuntimeTarget | null;
+    let resolution: RuntimeTargetResolution;
     try {
-      target = await this.resolveRuntimeTarget(YSD_ALPHA_MODEL_ID);
+      resolution = await this.resolveRuntimeTarget(YSD_ALPHA_MODEL_ID);
     } catch {
       return { ok: false, reason: "error" };
     }
-    if (!target) return { ok: false, reason: "error" };
+    if (!resolution.ok) return { ok: false, reason: "error" };
+    const target = resolution.target;
 
     if (input.signal?.aborted) return { ok: false, reason: "error" };
 
@@ -398,6 +463,106 @@ export class YSDProvider implements AIProviderAdapter {
       return { ok: false, reason: result.reason === "timeout" ? "timeout" : "error" };
     } catch {
       return { ok: false, reason: "error" };
+    }
+  }
+
+  /**
+   * ★ فاحص اتصالٍ حقيقيّ — «متصل» تعني أن الرد ممكنٌ الآن.
+   *
+   * ── ما كان الزرّ يقوله قبل هذه الرقعة ──
+   *
+   * `AIProviderAdapter.healthCheck` اختياريّ، ومزوّدٌ بلا فاحصٍ يُعرض
+   * `unsupported`. فكان YSD يظهر هكذا: صادقًا لكنه صامت. والبديل الأسهل —
+   * أن يقول «متصل» لأن العنوان والمفتاح موجودان — أسوأ من الصمت بمراحل:
+   * مفتاحٌ صحيح على وقت تشغيلٍ لا يحمل نموذجنا يردّ `200` على قائمة
+   * نماذجه، فيطمئنّ المشرف، ويُفعَّل النموذج، ويفشل عند أول مستخدم.
+   *
+   * ── فالسلسلة تُقطع كاملة ──
+   *
+   *   السجلّ يُقرأ  ⇐  نشرةٌ نشطة لنسخةٍ معتمدة  ⇐  وقت تشغيلٍ يُجيب
+   *   ⇐  **والنموذج المطلوب محمَّلٌ فيه بالاسم نفسه**.
+   *
+   * وأي حلقةٍ تنكسر تُعطي حالةً تدلّ المشرف على مكان العطل — بلا معرّفات
+   * ولا عناوين ولا مفردات جداول.
+   *
+   * ولا يستهلك شيئًا: `GET /models` قراءةٌ لا توليد.
+   */
+  async healthCheck(signal?: AbortSignal): Promise<ProviderHealth> {
+    const t0 = Date.now();
+    const since = () => Date.now() - t0;
+
+    // ★ ملغى قبل البدء ⇒ بلا قاعدة وبلا شبكة
+    if (signal?.aborted) return { status: "unreachable", latencyMs: since() };
+
+    let resolution: RuntimeTargetResolution;
+    try {
+      resolution = await this.resolveRuntimeTarget(YSD_ALPHA_MODEL_ID);
+    } catch {
+      return { status: "unreachable", latencyMs: since() };
+    }
+
+    if (!resolution.ok) {
+      switch (resolution.reason) {
+        case "not_configured":
+          // إعدادٌ ناقص — ولم تُلمس قاعدة ولا شبكة للوصول إلى هنا
+          return { status: "not_configured", latencyMs: since() };
+        case "no_servable_deployment":
+        case "unsupported_model":
+          /**
+           * `no_models` لا `unreachable`: الوصول تمّ، والجواب كان «لا شيء
+           * صالحٌ للخدمة». وذلك عطلُ سجلٍّ يُصلحه المشرف في الجداول، لا
+           * عطلُ اتصال يفتّش عنه في الشبكة.
+           */
+          return { status: "no_models", modelCount: 0, latencyMs: since() };
+        default:
+          return { status: "unreachable", latencyMs: since() };
+      }
+    }
+
+    const target = resolution.target;
+
+    let readiness: YSDRuntimeReadinessResult;
+    try {
+      readiness = await this.deps.checkRuntimeReadiness(
+        target.config,
+        target.deployment,
+        target.version,
+        YSD_ALPHA_MODEL_ID,
+        signal,
+      );
+    } catch {
+      return { status: "unreachable", latencyMs: since() };
+    }
+
+    /**
+     * ★ الزمن المُبلَّغ زمنُ الفحص كلّه من `t0` — لا زمن الرحلة الأخيرة.
+     *
+     * المشرف ينتظر السلسلة كاملة: استعلام السجلّ ثم نداء وقت التشغيل.
+     * فإبلاغُه بزمن النداء وحده يُخفي عنه أبطأ نصفٍ في الطريق.
+     */
+    if (readiness.ok) {
+      return { status: "connected", modelCount: readiness.modelCount, latencyMs: since() };
+    }
+
+    switch (readiness.reason) {
+      case "unauthorized":
+        return { status: "unauthorized", latencyMs: since() };
+      case "model_not_loaded":
+        /**
+         * ★ الحالة التي وُجد هذا الفحص لأجلها.
+         *
+         * وقت التشغيل حيّ، والمفتاح مقبول، والقائمة صالحة — وليس فيها
+         * نموذجنا. و`connected` هنا كذبةٌ مكتملة الأركان.
+         */
+        return {
+          status: "no_models",
+          modelCount: readiness.modelCount ?? 0,
+          latencyMs: since(),
+        };
+      default:
+        // timeout · network_error · runtime_unavailable · invalid_response
+        // · invalid_target · aborted — كلها «لم نصل»، بلا تفصيلٍ للمشرف
+        return { status: "unreachable", latencyMs: since() };
     }
   }
 }

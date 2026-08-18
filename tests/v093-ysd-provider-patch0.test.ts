@@ -310,14 +310,24 @@ describe("★ (٧–٩) ما لا تحويه الرقعة", () => {
     }
   });
 
-  it("★ ولا healthCheck يدّعي اتصالًا", () => {
+  it("★ وhealthCheck لا يدّعي اتصالًا بلا مِسبار", () => {
     /**
-     * الفحص على الكائن لا على النصّ: الشرح يذكر `healthCheck` ليُفهم سبب
-     * غيابه، وحارسٌ يقرأ التعليق كشيفرة يمنع التوثيق لا الانحدار.
+     * ★ حُدِّث في الرقعة السابعة.
+     *
+     * كان «لا فاحص أصلًا» — وهو الصواب حين لم يكن ثمّة ما يُفحص: مزوّدٌ
+     * خاملٌ بلا وقت تشغيل لا يملك ما يقوله. والآن صار الفاحص حقيقيًّا،
+     * فانتقل الحارس إلى ما كان يحرسه من البداية: ألّا يُقال «متصل» بلا دليل.
      */
     const p = new YSDProvider();
-    expect("healthCheck" in p).toBe(false);
-    expect(typeof (p as { healthCheck?: unknown }).healthCheck).toBe("undefined");
+    expect(typeof p.healthCheck).toBe("function");
+    const src = readFileSync("lib/ai/ysd.ts", "utf8");
+    const at = src.indexOf("async healthCheck(");
+    expect(at).toBeGreaterThan(0);
+    const body = src.slice(at);
+    expect(body).toContain("this.deps.checkRuntimeReadiness(");
+    expect(body.indexOf('status: "connected"')).toBeGreaterThan(
+      body.indexOf("this.deps.checkRuntimeReadiness("),
+    );
   });
 
   it("★ ولا discoverModels — القائمة ثابتة", () => {

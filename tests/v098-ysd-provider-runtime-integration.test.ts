@@ -596,7 +596,25 @@ describe("★ (٤٣–٥٣) حدود الملفّ", () => {
     expect(registry).toContain("new YSDProvider(),");
   });
 
-  it("★ ولا healthCheck يدّعي اتصالًا", () => {
-    expect("healthCheck" in build().provider).toBe(false);
+  it("★ وhealthCheck لا يدّعي اتصالًا بلا مِسبار", () => {
+    /**
+     * ★ حُدِّث في الرقعة السابعة.
+     *
+     * كان الحارس «لا فاحص أصلًا» — وذلك صحيحٌ حين لم يكن ثمّة ما يُفحص.
+     * والآن صار الفاحص موجودًا، فانتقل الحارس إلى ما كان يحرسه حقًّا: ألّا
+     * يُقال «متصل» بلا دليل. والدليل يملكه v100 كاملًا؛ وهذا يُثبت أدنى
+     * شرطٍ فيه — أن الادّعاء لا يقع بلا نداء وقت تشغيل.
+     */
+    const provider = build().provider;
+    expect(typeof provider.healthCheck).toBe("function");
+    const src = readFileSync("lib/ai/ysd.ts", "utf8");
+    const at = src.indexOf("async healthCheck(");
+    expect(at).toBeGreaterThan(0);
+    const body = src.slice(at);
+    expect(body).toContain("this.deps.checkRuntimeReadiness(");
+    // و«متصل» لا تُذكر إلا بعد نتيجة المِسبار
+    expect(body.indexOf('status: "connected"')).toBeGreaterThan(
+      body.indexOf("this.deps.checkRuntimeReadiness("),
+    );
   });
 });

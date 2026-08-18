@@ -95,6 +95,15 @@ function isTrustedTarget(
 const completionsUrl = (config: YSDRuntimeConfig): string =>
   `${config.baseUrl}/chat/completions`;
 
+/**
+ * ★ عنوان قائمة النماذج — من `config.baseUrl` **وحده**.
+ *
+ * ولا يدخله شيء من القاعدة: لا `endpointAlias` ولا `runtimeModel` ولا معرّف
+ * نشرة. فالاسم المستعار يُطابَق في بوابة الثقة ولا يُبنى منه عنوان، وهذا
+ * هو حدّ SSRF نفسه الذي يحرس الإكمال — لا استثناء له لأن الطلب «للفحص».
+ */
+const modelsUrl = (config: YSDRuntimeConfig): string => `${config.baseUrl}/models`;
+
 const authHeaders = (config: YSDRuntimeConfig): Record<string, string> => ({
   "Content-Type": "application/json",
   Authorization: `Bearer ${config.apiKey}`,
@@ -509,5 +518,188 @@ export async function requestYSDRuntimeJsonCompletion(
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", onCallerAbort);
+  }
+}
+
+
+/* ═════════════════ مِسبار الجاهزية ═════════════════ */
+
+/**
+ * ★ رموز مغلقة للفحص — وليست رموز البثّ.
+ *
+ * تختلف عن `YSDRuntimeFailureReason` في طرفين: لا `rate_limit` ولا
+ * `stream_error` (لا يقعان في `GET /models`)، وفيها `model_not_loaded`
+ * الذي لا معنى له إلا هنا — وقت تشغيلٍ يعمل ولا يحمل النموذج المطلوب.
+ *
+ * ولا يخرج منها جسمُ ردٍّ ولا استثناءٌ خام ولا عنوان ولا معرّف نموذج ولا مفتاح.
+ */
+export type YSDRuntimeReadinessReason =
+  | "invalid_target"
+  | "aborted"
+  | "unauthorized"
+  | "timeout"
+  | "network_error"
+  | "runtime_unavailable"
+  | "invalid_response"
+  | "model_not_loaded";
+
+export type YSDRuntimeReadinessResult =
+  | { ok: true; modelCount: number; latencyMs: number }
+  | {
+      ok: false;
+      reason: YSDRuntimeReadinessReason;
+      /** يُملأ حين وصلنا إلى قائمةٍ صالحة ولم نجد النموذج فيها */
+      modelCount?: number;
+      latencyMs: number;
+    };
+
+/**
+ * سقف الفحص خمس ثوانٍ — لا ثلاثون.
+ *
+ * الفحص يخدم زرًّا إداريًّا ينتظر أمامه إنسان. ووقتُ تشغيلٍ لا يردّ على
+ * `GET /models` خلال خمس ثوانٍ ليس «بطيئًا» بل غير جاهز: القائمة تُقرأ من
+ * الذاكرة، لا تُولَّد.
+ */
+export const YSD_RUNTIME_READINESS_TIMEOUT_MS = 5_000;
+
+/**
+ * ★ يقرأ قائمة النماذج ويعدّ الصالح منها — ولا يعيد أيًّا منها.
+ *
+ * `data` مصفوفةُ كائنات في العقد المتوافق مع OpenAI. وما ليس كذلك يُتجاهَل
+ * عنصرًا عنصرًا: وقتُ تشغيلٍ يضيف حقولًا (`owned_by`، `created`، …) أو يدسّ
+ * عنصرًا مشوّهًا لا ينبغي أن يُسقط الفحص كلَّه.
+ *
+ * أما `data` نفسها إن لم تكن مصفوفة فذلك اختلافُ عقدٍ لا شذوذُ عنصر — وحينها
+ * لا ندري ما نقرأ، فنقولها: `invalid_response`.
+ */
+function readModelIds(body: unknown): string[] | null {
+  if (typeof body !== "object" || body === null) return null;
+  const data = (body as { data?: unknown }).data;
+  if (!Array.isArray(data)) return null;
+
+  const ids: string[] = [];
+  for (const entry of data) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const id = (entry as { id?: unknown }).id;
+    if (typeof id !== "string" || id.length === 0) continue;
+    ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * ★ فحص جاهزية حقيقيّ — سلسلةٌ كاملة لا عَلَمٌ واحد.
+ *
+ * السجلّ ⇐ هدفٌ متّسق ⇐ وقت تشغيل يُجيب ⇐ **والنموذج المطلوب محمَّلٌ فيه**.
+ *
+ * وآخر حلقةٍ هي التي تفصل «متصل» عن ادّعاء: عنوانٌ ومفتاحٌ صحيحان يُنتجان
+ * `200` من وقت تشغيلٍ لا يحمل نموذجنا إطلاقًا. فيقرأ المشرف «متصل»،
+ * ويُفعَّل النموذج، ويفشل عند أول مستخدم. والفحص الذي يطمئن كذبًا أسوأ من
+ * غياب الفحص: غيابه يُبقي الشكّ، وكذبُه يُزيله.
+ *
+ * ولا يرسل طلب توليد: `GET /models` قراءةٌ لا تستهلك رموزًا ولا تكلّف شيئًا.
+ */
+export async function checkYSDRuntimeReadiness(
+  config: YSDRuntimeConfig,
+  deployment: ModelDeploymentRecord,
+  version: ModelVersionRecord,
+  logicalModelId: string,
+  signal?: AbortSignal,
+  fetchImpl: FetchImpl = fetch,
+): Promise<YSDRuntimeReadinessResult> {
+  const t0 = Date.now();
+  const since = () => Date.now() - t0;
+
+  // ★ البوابة نفسها التي تحرس التوليد — فشلُها يعني صفر اتصال
+  if (!isTrustedTarget(config, deployment, version, logicalModelId)) {
+    return { ok: false, reason: "invalid_target", latencyMs: since() };
+  }
+
+  // ★ ملغى قبل البدء ⇒ بلا مؤقّت وبلا مستمع وبلا اتصال
+  if (signal?.aborted) return { ok: false, reason: "aborted", latencyMs: since() };
+
+  const control = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    control.abort();
+  }, YSD_RUNTIME_READINESS_TIMEOUT_MS);
+  const onCallerAbort = () => control.abort();
+  signal?.addEventListener("abort", onCallerAbort);
+
+  try {
+    let res: Response;
+    try {
+      res = await fetchImpl(modelsUrl(config), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${config.apiKey}`,
+          Accept: "application/json",
+        },
+        signal: control.signal,
+      });
+    } catch {
+      // الترتيب مقصود: إلغاء المستدعي قرارٌ لا عطل، والمهلة عطلٌ فعليّ
+      if (signal?.aborted) return { ok: false, reason: "aborted", latencyMs: since() };
+      return {
+        ok: false,
+        reason: timedOut ? "timeout" : "network_error",
+        latencyMs: since(),
+      };
+    }
+
+    /**
+     * ★ لا يُقرأ جسمُ ردٍّ لحالة خطأ — ولذلك تصير البقيّة `runtime_unavailable`.
+     *
+     * `invalid_response` ادّعاءُ معرفةٍ لا نملكها: لم نقرأ شيئًا لنحكم على
+     * شكله. أما ما نعرفه يقينًا فهو أن وقت التشغيل لم يقدّم قائمته — وذلك
+     * «غير متاح» بأي رمزٍ جاء. ويشمل ذلك `429`: ضغطٌ على وقت التشغيل يعني
+     * أنه غير جاهزٍ الآن، لا أن الإعداد خاطئ.
+     */
+    if (!res.ok) {
+      const status = res.status;
+      const reason: YSDRuntimeReadinessReason =
+        status === 401 || status === 403
+          ? "unauthorized"
+          : status === 408 || status === 504
+            ? "timeout"
+            : "runtime_unavailable";
+      return { ok: false, reason, latencyMs: since() };
+    }
+
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      return { ok: false, reason: "invalid_response", latencyMs: since() };
+    }
+
+    const ids = readModelIds(body);
+    if (ids === null) {
+      return { ok: false, reason: "invalid_response", latencyMs: since() };
+    }
+
+    /**
+     * ★ تطابقٌ تامّ — والمصدر هو السجلّ لا وقت التشغيل.
+     *
+     * لا بادئة ولا تجاهل حالة أحرف ولا قصّ مسافات: كلها تُوسّع الهوية،
+     * و`ysd-alpha-v2` ليس `ysd-alpha-v2-quantized`. ومطابقةٌ متساهلة هنا
+     * تعني «متصل» لنموذجٍ آخر — وهو بالضبط الكذب الذي جاء هذا الفحص ليمنعه.
+     */
+    const loaded = ids.some((id) => id === deployment.runtimeModel);
+    if (!loaded) {
+      return {
+        ok: false,
+        reason: "model_not_loaded",
+        modelCount: ids.length,
+        latencyMs: since(),
+      };
+    }
+
+    // ولا يخرج معرّفٌ واحد — عددٌ فقط
+    return { ok: true, modelCount: ids.length, latencyMs: since() };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onCallerAbort);
   }
 }
