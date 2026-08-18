@@ -35,6 +35,12 @@ interface MetaState {
   protectedDetailBlocked: boolean;
   shortCircuit: boolean;
   providerCalls: number;
+  /** نسب هدف YSD (v0.9.3) — تكتبها الكتلة نفسها، فتُعلَن كي لا تتسرّب عامّةً */
+  providerModelVersion: string | null;
+  providerModelVersionId: string | null;
+  providerDeploymentId: string | null;
+  providerDeploymentEnvironment: string | null;
+  providerTargetMetaConflict: boolean;
 }
 
 const FIELDS = [
@@ -48,6 +54,11 @@ const FIELDS = [
   "protectedDetailBlocked",
   "shortCircuit",
   "providerCalls",
+  "providerModelVersion",
+  "providerModelVersionId",
+  "providerDeploymentId",
+  "providerDeploymentEnvironment",
+  "providerTargetMetaConflict",
 ] as const;
 
 /**
@@ -137,6 +148,11 @@ const freshState = (): MetaState => ({
   protectedDetailBlocked: false,
   shortCircuit: false,
   providerCalls: 0,
+  providerModelVersion: null,
+  providerModelVersionId: null,
+  providerDeploymentId: null,
+  providerDeploymentEnvironment: null,
+  providerTargetMetaConflict: false,
 });
 
 /** كما يحسبه المسار حرفيًا */

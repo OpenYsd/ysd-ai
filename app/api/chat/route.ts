@@ -776,6 +776,18 @@ export async function POST(req: NextRequest) {
    * تشخيص الأدلة — أرقام ورموز فقط، يُكتب في metadata بعد اكتمال المعالجة.
    * `null` يعني أن المسار لم يعمل أصلًا (لا مصادر، أو ردّ ناقص، أو إجهاض).
    */
+  /**
+   * ── نسب هدف YSD (v0.9.3) — داخليّ بحت ──
+   *
+   * يُلتقط من إطار `meta` ولا يُرسَل إلى المتصفّح. `providerModelVersion`
+   * وحدها تُحفظ مع الرسالة؛ والمعرّفات تذهب إلى الرصد الإداريّ.
+   */
+  let providerModelVersion: string | null = null;
+  let providerModelVersionId: string | null = null;
+  let providerDeploymentId: string | null = null;
+  let providerDeploymentEnvironment: "development" | "staging" | "production" | null = null;
+  /** رمزٌ فقط — يُسجَّل حين تصل مجموعتان مختلفتان في محاولة واحدة */
+  let providerTargetMetaConflict = false;
   let evidenceDiagnostics: Record<string, unknown> | null = null;
   /** التخطيط المحسوب مرة واحدة — يُبثّ ويُخزَّن من الكائن نفسه */
   let evidenceLayout: EvidenceLayout | null = null;
@@ -991,6 +1003,11 @@ export async function POST(req: NextRequest) {
           attemptCount = 0;
           chainOutcome = "unknown";
           providerCalls = -1;
+          providerModelVersion = null;
+          providerModelVersionId = null;
+          providerDeploymentId = null;
+          providerDeploymentEnvironment = null;
+          providerTargetMetaConflict = false;
           regenerations = 0;
           emptyCompletions = 0;
           completionStatus = null;
@@ -1102,8 +1119,70 @@ export async function POST(req: NextRequest) {
                 } else {
                   actualModelId = chunk.model;
                 }
-                // معرّف النموذج فقط — لا مفاتيح ولا محتوى حساس
+                /**
+                 * ★ حدّ العميل: **المعرّف وحده** يعبر.
+                 *
+                 * نسب الهدف (النسخة والنشرة والبيئة) يُلتقط أدناه ويبقى
+                 * في الخادم. فالمستخدم لا يعنيه أيّ نشرةٍ خدمته، ومعرّفها
+                 * تفصيلٌ تشغيليّ يكشف بنية النظام بلا فائدة له.
+                 */
                 send({ type: "meta", model: chunk.model });
+              }
+
+              /**
+               * ★ نسب الهدف — **المجموعة كاملةً أو لا شيء**.
+               *
+               * نصفُ نسبٍ أسوأ من غيابه: يوحي بأننا نعرف المصدر ونحن لا
+               * نعرفه، فيُبنى عليه تحليلٌ كاذب. والقاعدة ترفض النصف بقيد،
+               * لكن الرفض هناك يُسقط كتابة الحدث كلّه — فتضيع كل مقاييس
+               * الطلب لأجل حقلٍ اختياريّ.
+               *
+               * ولا يُسقط الردَّ أبدًا: رصدٌ ناقص أهون من محادثة فاشلة.
+               */
+              const targetVersion = chunk.modelVersion;
+              const targetVersionId = chunk.modelVersionId;
+              const targetDeploymentId = chunk.deploymentId;
+              const targetEnv = chunk.deploymentEnvironment;
+              /**
+               * التضييق عبر ثوابت محلّية — لا توكيدات `!`.
+               *
+               * وليس هذا تجميلًا: اختبار `v09` **ينفّذ** هذه الكتلة نفسها
+               * كـJavaScript خام بعد استخراجها من هذا الملفّ. فأي بناءٍ
+               * خاصّ بـTypeScript هنا يكسر تنفيذها — والحارس الذي يقرأ
+               * الكتلة الحقيقية أثمن من اختصارٍ في كتابتها.
+               */
+              const targetComplete =
+                typeof targetVersion === "string" &&
+                targetVersion.trim().length > 0 &&
+                typeof targetVersionId === "string" &&
+                targetVersionId.trim().length > 0 &&
+                typeof targetDeploymentId === "string" &&
+                targetDeploymentId.trim().length > 0 &&
+                (targetEnv === "development" ||
+                  targetEnv === "staging" ||
+                  targetEnv === "production");
+
+              if (targetComplete) {
+                if (providerModelVersionId === null) {
+                  providerModelVersion = targetVersion;
+                  providerModelVersionId = targetVersionId;
+                  providerDeploymentId = targetDeploymentId;
+                  providerDeploymentEnvironment = targetEnv;
+                } else if (
+                  /**
+                   * ★ الأولى تفوز — ولا تُطبع القيم.
+                   *
+                   * مجموعتان مختلفتان في محاولة واحدة تعنيان خللًا في
+                   * المزوّد. والاستبدال يجعل النسب يتبع آخر إطار وصل،
+                   * فيصير غير حتميّ. فيُثبَّت الأول ويُرفع عَلَمٌ للتشخيص.
+                   */
+                  providerModelVersionId !== targetVersionId ||
+                  providerDeploymentId !== targetDeploymentId ||
+                  providerDeploymentEnvironment !== targetEnv ||
+                  providerModelVersion !== targetVersion
+                ) {
+                  providerTargetMetaConflict = true;
+                }
               }
 
               if (typeof chunk.attemptCount === "number") attemptCount = chunk.attemptCount;
@@ -1349,6 +1428,15 @@ export async function POST(req: NextRequest) {
            */
           // المزوّد الذي أجاب فعلًا — لا الذي بدأ الطلب (احتياط v0.9.0)
           meta.provider = selectedProvider;
+          /**
+           * ★ نسخة النموذج وحدها تُحفظ مع الرسالة (v0.9.3).
+           *
+           * «أيّ نسخةٍ كتبت هذا؟» سؤالٌ مفيد لقارئ المحادثة بعد شهور.
+           * أما معرّفا النشرة والبيئة فتفصيلٌ تشغيليّ داخليّ: يتغيّران مع
+           * كل ترقية، ولا يقولان للقارئ شيئًا، ويكشفان بنية النظام في
+           * حقلٍ يصل المتصفّح.
+           */
+          if (providerModelVersion !== null) meta.model_version = providerModelVersion;
           savedMeta = meta;
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
@@ -1762,6 +1850,9 @@ export async function POST(req: NextRequest) {
             `empty_completion_count=${emptyCompletions} status_ms=${statusMs} ` +
             `grounding_source=${groundingSource} protected_detail_blocked=${protectedDetailBlocked} ` +
             `protected_short_circuit=${shortCircuit} provider_calls=${providerCalls} ` +
+            // نسب الهدف: منطقيّان فقط — لا معرّف ولا نسخة في السجلّ
+            `ysd_target_attributed=${providerModelVersionId !== null} ` +
+            `provider_target_meta_conflict=${providerTargetMetaConflict} ` +
             // عدد إطارات usage مقابل صفّ واحد يُكتب — الإشارة التي كشفت
             // المحاسبة المضاعفة. رقم فقط، بلا أي محتوى.
             `usage_frames=${usageFrameCount} usage_rows=${pendingUsage ? 1 : 0} ` +
@@ -1787,6 +1878,15 @@ export async function POST(req: NextRequest) {
         });
         // التخزين الدائم عبر عميل الخدمة — لا يُنتظر كي لا يؤخّر إغلاق البثّ
         void persistEvent({
+          /**
+           * ★ المعرّفات تذهب هنا وحدها — رصدٌ إداريّ لا يصله عميل.
+           *
+           * والمُحقِّق في `health-metrics` يُسقطها إلى `null` إن نقصت أو
+           * فسدت، فلا يفشل الحدث كلّه لأجلها.
+           */
+          ysdModelVersionId: providerModelVersionId,
+          ysdDeploymentId: providerDeploymentId,
+          ysdDeploymentEnvironment: providerDeploymentEnvironment,
           mode: answerMode,
           errorCode: lastErrorCode,
           sessionRefreshResult: null,

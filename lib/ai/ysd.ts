@@ -272,7 +272,34 @@ export class YSDProvider implements AIProviderAdapter {
     // ★ وقد ينصرف المستخدم أثناء استعلام السجلّ — فلا يبدأ توليدٌ لا يقرأه
     if (req.signal?.aborted) return;
 
-    yield { type: "meta", model: req.modelId };
+    /**
+     * ★ نسبُ الهدف — يخرج مع `meta` ولا يتجاوزها.
+     *
+     * `model` هو المعرّف المنطقيّ الذي طلبه المستخدم. والثلاثة الباقية
+     * تقول **أيّ نسخةٍ وأيّ نشرةٍ** خدمتاه — سؤالٌ لا يُجاب بعد شهر إن لم
+     * يُلتقط الآن، لأن النشرة تتغيّر مع كل ترقية.
+     *
+     * ولا يخرج معها شيء من أهداف الاتصال: لا معرّف نتاج ولا مرجع أساس
+     * ولا اسم مستعار ولا عنوان ولا مفتاح.
+     */
+    yield {
+      type: "meta",
+      model: req.modelId,
+      modelVersion: target.version.version,
+      modelVersionId: target.version.id,
+      deploymentId: target.deployment.id,
+      deploymentEnvironment: target.deployment.environment,
+    };
+
+    /**
+     * ★ تتبّع النهاية — الناقل قد ينتهي بلا إطارٍ طرفيّ.
+     *
+     * مولّدٌ ينتهي صامتًا يترك المسار بلا `done` ولا `error`، فيبدو الرد
+     * مكتملًا وهو مبتور — أو يُعلَّق منتظرًا ما لن يأتي. والصمت أسوأ من
+     * العطل هنا لأنه لا يُرى.
+     */
+    let sawText = false;
+    let sawTerminal = false;
 
     try {
       for await (const chunk of this.deps.streamRuntimeChat(
@@ -282,10 +309,12 @@ export class YSDProvider implements AIProviderAdapter {
         req,
       )) {
         if (chunk.type === "text") {
+          sawText = true;
           yield { type: "text", text: chunk.text };
         } else if (chunk.type === "usage") {
           yield { type: "usage", usage: chunk.usage };
         } else if (chunk.type === "done") {
+          sawTerminal = true;
           yield {
             type: "done",
             ...(chunk.completion ? { completion: chunk.completion } : {}),
@@ -295,6 +324,7 @@ export class YSDProvider implements AIProviderAdapter {
         } else {
           // ★ إلغاء المستدعي ليس عطلًا يُعرض — ينتهي البثّ صامتًا
           if (chunk.reason === "aborted") return;
+          sawTerminal = true;
           yield providerError(errorCodeFor(chunk.reason));
           return;
         }
@@ -302,7 +332,28 @@ export class YSDProvider implements AIProviderAdapter {
     } catch {
       // استثناء غير متوقّع من الناقل — رمزٌ عامّ بلا أثر منه
       yield providerError();
+      return;
     }
+
+    /**
+     * وصلنا هنا ⇒ انتهى المولّد طبيعيًّا بلا إطارٍ طرفيّ.
+     *
+     * والإلغاء يُفحص أولًا: انصرافُ المستخدم لا يستحق إطارًا مصطنعًا.
+     * ثم يُفرَّق بين ردٍّ خرج بعضه — فهو **ناقص** موسوم — وردٍّ لم يخرج
+     * منه شيء، فذاك تعذّرٌ لا نقص.
+     */
+    if (sawTerminal) return;
+    if (req.signal?.aborted) return;
+
+    if (sawText) {
+      yield {
+        type: "done",
+        completion: "incomplete_provider",
+        completionReason: "runtime_stream_ended",
+      };
+      return;
+    }
+    yield providerError();
   }
 
   /**

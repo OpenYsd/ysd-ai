@@ -265,7 +265,8 @@ describe("★ (B) .env.example", () => {
   it("★ ولا قيمة حقيقية فيه", () => {
     const runtimeBlock = ENV_EXAMPLE.slice(ENV_EXAMPLE.indexOf("YSD Model Runtime"));
     // لا مفتاح ولا مضيف حقيقيّ: القيم بعد `=` فارغة إلا الأعلام
-    for (const line of runtimeBlock.split("\n")) {
+    // `\r` يُقصّ: نهاية السطر ليست قيمة — وشجرة عملٍ بـCRLF كانت تُسقط الحارس
+    for (const line of runtimeBlock.split(/\r?\n/)) {
       if (!line.includes("=") || line.trim().startsWith("#")) continue;
       const [k, v] = line.split("=");
       if (k?.endsWith("_ENABLED")) {

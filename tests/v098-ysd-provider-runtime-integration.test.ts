@@ -320,8 +320,11 @@ describe("★ (١٥–١٩) ما يُمرَّر وما لا يخرج", () => {
     const { provider } = build();
     const chunks = await collect(provider.streamChat(chatRequest()));
     const meta = chunks.find((c) => c.type === "meta");
-    expect(meta).toEqual({ type: "meta", model: YSD_ALPHA_MODEL_ID });
+    expect(meta?.model).toBe(YSD_ALPHA_MODEL_ID);
+    expect(meta?.model).not.toBe(RUNTIME_MODEL);
     expect(RUNTIME_MODEL).not.toBe(YSD_ALPHA_MODEL_ID); // الاختبار ليس خاويًا
+    // ★ ونسبُ الهدف يخرج معها (v0.9.3) — انظر v099 لتفصيله
+    expect(meta?.modelVersion).toBe("1.0.0");
   });
 
   it("★ (١٩) ولا تفصيل تشغيليّ في أي إطار", async () => {
@@ -333,7 +336,14 @@ describe("★ (١٥–١٩) ما يُمرَّر وما لا يخرج", () => {
       }),
     });
     const serialized = JSON.stringify(await collect(provider.streamChat(chatRequest())));
-    for (const secret of [RUNTIME_MODEL, ARTIFACT, ALIAS, BASE_URL, KEY, "d-1", "v-1"]) {
+    /**
+     * ★ أهداف الاتصال والأسرار لا تخرج أبدًا.
+     *
+     * ومعرّفا النشرة والنسخة (`d-1` · `v-1`) يخرجان مع `meta` منذ v0.9.3
+     * — لكنهما **لا يعبران إلى المتصفّح**: المسار يلتقطهما ويُبقيهما للرصد
+     * الإداريّ. وحدّ العميل محروسٌ في v099 على `route.ts` نفسه.
+     */
+    for (const secret of [RUNTIME_MODEL, ARTIFACT, ALIAS, BASE_URL, KEY]) {
       expect(serialized, secret).not.toContain(secret);
     }
   });
@@ -419,8 +429,10 @@ describe("★ (٢٠–٣٢) تحويل إطارات وقت التشغيل", () =
     const { provider } = build({ streamRuntimeChat: runtimeError("aborted") });
     const chunks = await collect(provider.streamChat(chatRequest()));
     expect(chunks.some((c) => c.type === "error")).toBe(false);
-    // meta وحده خرج قبل الإلغاء
-    expect(chunks).toEqual([{ type: "meta", model: YSD_ALPHA_MODEL_ID }]);
+    // meta وحده خرج قبل الإلغاء — ولا إطار طرفيّ مصطنع بعده
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.type).toBe("meta");
+    expect(chunks[0]!.model).toBe(YSD_ALPHA_MODEL_ID);
   });
 
   it("★ (٣٢) استثناء غير متوقّع من الناقل ⇒ خطأ عامّ بلا أثر", async () => {

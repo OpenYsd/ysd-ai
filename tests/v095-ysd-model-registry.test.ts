@@ -37,9 +37,16 @@ describe("★ (١) حدود الترحيلة", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain(MIGRATION_FILE);
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(36);
-    // ولا تكرار في الترقيم
+    /**
+     * ★ حُدِّث في الرقعة السادسة: هذا الحارس يملك **رقم 0036 وحده**، لا
+     * «أعلى رقم في المجلد». فربطُه بالأعلى يجعل كل ترحيلةٍ لاحقة تُسقطه
+     * بلا خطأ حقيقيّ — حارسٌ يصرخ لأسبابٍ ليست خطأه لا يُسمَع طويلًا.
+     * و«0037 هي الأحدث» يملكه v099.
+     */
+    expect(numbers).toContain(36);
+    // ولا تكرار في الترقيم، ولا فجوة قبل 0036
     expect(new Set(numbers).size).toBe(numbers.length);
+    for (let n = 1; n <= 36; n++) expect(numbers, String(n)).toContain(n);
   });
 
   it("★ (٩) ولا تلمس ysd/free بتعديل ولا حذف ولا نقل ملكية", () => {

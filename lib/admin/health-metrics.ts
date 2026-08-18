@@ -141,6 +141,58 @@ export interface DurableEvent {
   providerCalls: number;
   fallbackCount: number;
   protectedShortCircuit: boolean;
+
+  /**
+   * ── نسب هدف YSD (v0.9.3) — اختياريّ بالكامل ──
+   *
+   * مستدعٍ لا يمرّرها لا يتغيّر سلوكه بحرف: تُكتب `null` كما كانت الأعمدة
+   * قبل وجودها. وهي معرّفات فقط — لا مستخدم ولا محادثة ولا محتوى.
+   */
+  ysdModelVersionId?: string | null;
+  ysdDeploymentId?: string | null;
+  ysdDeploymentEnvironment?: "development" | "staging" | "production" | null;
+}
+
+/** شكل UUID القياسيّ — تحقّق محافظ بلا اعتماد على مكتبة */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const YSD_ENVIRONMENTS = new Set(["development", "staging", "production"]);
+
+/** نسبٌ مقبول — الثلاثة معًا وبأشكال صحيحة */
+export interface YsdTargetProvenance {
+  modelVersionId: string;
+  deploymentId: string;
+  environment: "development" | "staging" | "production";
+}
+
+/**
+ * ★ يقبل المجموعة **كاملةً أو لا شيء** — دالة نقيّة.
+ *
+ * القيد في القاعدة يرفض النصف، لكن الرفض هناك يعني **فشل كتابة الحدث
+ * كلّه**: فتضيع كل مقاييس الطلب لأن حقلًا اختياريًّا وصل ناقصًا. والرصد
+ * لا يجوز أن يُسقط نفسه بذلك.
+ *
+ * فيُحسم هنا قبل الكتابة: مجموعةٌ صالحة تُكتب، وما دونها يسقط إلى `null`
+ * صامتًا. والقيد يبقى حارسًا أخيرًا لا مرشّحًا أوّل.
+ */
+export function readYsdTargetProvenance(e: {
+  ysdModelVersionId?: string | null;
+  ysdDeploymentId?: string | null;
+  ysdDeploymentEnvironment?: string | null;
+}): YsdTargetProvenance | null {
+  const versionId = e.ysdModelVersionId;
+  const deploymentId = e.ysdDeploymentId;
+  const environment = e.ysdDeploymentEnvironment;
+
+  if (typeof versionId !== "string" || !UUID_RE.test(versionId)) return null;
+  if (typeof deploymentId !== "string" || !UUID_RE.test(deploymentId)) return null;
+  if (typeof environment !== "string" || !YSD_ENVIRONMENTS.has(environment)) return null;
+
+  return {
+    modelVersionId: versionId,
+    deploymentId,
+    environment: environment as YsdTargetProvenance["environment"],
+  };
 }
 
 interface InsertClient {
@@ -159,6 +211,7 @@ interface InsertClient {
 export async function persistEvent(e: DurableEvent): Promise<void> {
   const supabase = getAdminClient() as InsertClient | null;
   if (!supabase) return; // observability_persistence=disabled — سُجّل مرة واحدة
+  const target = readYsdTargetProvenance(e);
   try {
     const { error } = await supabase.from("observability_events").insert({
       mode: e.mode,
@@ -174,6 +227,15 @@ export async function persistEvent(e: DurableEvent): Promise<void> {
       provider_calls: e.providerCalls,
       fallback_count: e.fallbackCount,
       protected_short_circuit: e.protectedShortCircuit,
+      /**
+       * الثلاثة معًا أو ثلاثتها `null` — لا نصف نسب.
+       *
+       * ولا يُسجَّل أيٌّ منها في السجلّ النصّيّ: معرّفات تشغيلية تكشف بنية
+       * النظام، ولا تفيد قارئ السجلّ بشيء.
+       */
+      ysd_model_version_id: target?.modelVersionId ?? null,
+      ysd_deployment_id: target?.deploymentId ?? null,
+      ysd_deployment_environment: target?.environment ?? null,
     });
     if (error && error.code !== UNDEFINED_TABLE) {
       console.error(`[observability] insert failed code=${error.code ?? "?"}`);
