@@ -241,6 +241,27 @@ describe("★ (٤) البيانات الوصفية العامّة", () => {
     expect(String(tw.description ?? "").length).toBeGreaterThan(40);
   });
 
+  it("★ ★ ★ ولا تُضاعَف لاحقةُ العنوان في الصفحات", () => {
+    /**
+     * ★ رُصد حيًّا بعد 6B: «الدعم والمساعدة — YSD AI — YSD AI».
+     *
+     * القالب في التخطيط الجذريّ يضيف اللاحقة، فكتابتُها في الصفحة أيضًا
+     * تُضاعفها في تبويب المتصفّح.
+     */
+    for (const f of [
+      "app/(auth)/privacy/page.tsx",
+      "app/(auth)/terms/page.tsx",
+      "app/(auth)/support/page.tsx",
+    ]) {
+      const src = readSrc(f);
+      const m = /export const metadata = \{ title: "([^"]+)" \}/.exec(src);
+      expect(m, f).not.toBeNull();
+      expect(m![1], f).not.toContain("YSD AI");
+    }
+    const title = metadata.title as { template: string };
+    expect(title.template).toBe("%s — YSD AI");
+  });
+
   it("★ ★ ★ والمرجع القانونيّ للجذر لا لمسارات التطبيق", () => {
     /**
      * ★ `canonical: "/"` في التخطيط الجذريّ.

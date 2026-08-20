@@ -1,7 +1,11 @@
 import { SupportView } from "@/components/support/support-view";
 import { readSupportContact, normalizeSupportTopic } from "@/lib/public-support";
 
-export const metadata = { title: "الدعم والمساعدة — YSD AI" };
+/**
+ * العنوان بلا لاحقة — `title.template` في التخطيط الجذريّ يضيف «— YSD AI».
+ * وكتابتُها هنا أيضًا تُنتج «… — YSD AI — YSD AI» في تبويب المتصفّح.
+ */
+export const metadata = { title: "الدعم والمساعدة" };
 
 /**
  * `/support` — عامّة بلا جلسة (مسجَّلة في `PUBLIC_PATHS` بالوسيط).

@@ -1,6 +1,10 @@
 import Link from "next/link";
 
-export const metadata = { title: "شروط الاستخدام — YSD AI" };
+/**
+ * العنوان بلا لاحقة — `title.template` في التخطيط الجذريّ يضيف «— YSD AI».
+ * وكتابتُها هنا أيضًا تُنتج «… — YSD AI — YSD AI» في تبويب المتصفّح.
+ */
+export const metadata = { title: "شروط الاستخدام" };
 
 export default function TermsPage() {
   return (
