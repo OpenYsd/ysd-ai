@@ -313,6 +313,43 @@ const dict = {
     en: "The release state changed. Refresh the page.",
   },
   datasetsFailed: { ar: "تعذّرت العملية. حاول مرة أخرى.", en: "Operation failed. Please try again." },
+
+  /* ── أثر التدريب الخاصّ (v0.9.7، المرحلة 3B) ── */
+  artifactCreate: { ar: "إنشاء أثر التدريب", en: "Create training artifact" },
+  artifactConfirmTitle: { ar: "إنشاء أثر التدريب؟", en: "Create training artifact?" },
+  artifactConfirmBody: {
+    ar: "سيتم إنشاء ملف تدريب خاص من الإصدار المجمّد بعد إعادة التحقق من جميع عيناته. لن يبدأ أي تدريب.",
+    en: "A private training file will be created from the frozen release after all its samples are revalidated. No training will start.",
+  },
+  /**
+   * ★ ونصٌّ يقول ما ليس بعد.
+   *
+   * «أثر جاهز» تُقرأ على أنها «صار يُستعمل». وما يقع أن ملفًّا كُتب ووُضع
+   * في تخزينٍ خاصّ لا يصل إليه متصفّح — ولا يُقرأ إلا بعد فحصٍ جديد.
+   */
+  artifactMeaning: {
+    ar: "الأثر ملف خاص بالخادم. لا تنزيل، ولا رابط، ولا تدريب — وصلاحيته تُفحص من جديد قبل أي استخدام.",
+    en: "The artifact is a server-only file. No download, no link, no training — and its validity is rechecked before any use.",
+  },
+  artifactReady: { ar: "أثر جاهز", en: "Artifact ready" },
+  artifactSamples: { ar: "عيّنات", en: "samples" },
+  artifactSize: { ar: "الحجم", en: "Size" },
+  artifactConfirmAction: { ar: "إنشاء", en: "Create" },
+  artifactCancel: { ar: "إلغاء", en: "Cancel" },
+  artifactClose: { ar: "إغلاق", en: "Close" },
+  artifactSuccess: {
+    ar: "تم إنشاء الأثر. لم يبدأ أي تدريب ولم يُصدَّر شيء إلى خارج الخادم.",
+    en: "The artifact was created. No training started and nothing left the server.",
+  },
+  artifactExists: {
+    ar: "لهذا الإصدار أثر قائم بالفعل. لا يُستبدل.",
+    en: "This release already has an artifact. It is not replaced.",
+  },
+  artifactInvalid: {
+    ar: "لم تعد بعض العيّنات صالحة، فلم يُنشأ الأثر.",
+    en: "Some samples are no longer valid, so the artifact was not created.",
+  },
+  artifactFailed: { ar: "تعذّر إنشاء الأثر. حاول مرة أخرى.", en: "Could not create the artifact. Please try again." },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

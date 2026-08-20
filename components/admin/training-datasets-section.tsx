@@ -16,7 +16,7 @@
  * تقول لقارئٍ شيئًا لا يقوله عدد العيّنات.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 
 export interface DatasetRelease {
@@ -26,7 +26,18 @@ export interface DatasetRelease {
   sampleCount: number;
   createdAt: string;
   frozenAt: string | null;
+  /**
+   * ★ وصفٌ آمن للأثر — ولا مسار تخزين ولا بصمة ولا رابط.
+   *
+   * فالمسار يقول أين يقع كلامُ الناس، والبصمة لا تقول لقارئٍ شيئًا.
+   * وما يحتاجه المشرف أن يعرف أنّ أثرًا قائم، وكم فيه، وكم يزن.
+   */
+  artifactStatus?: string | null;
+  artifactSampleCount?: number | null;
+  artifactByteSize?: number | null;
 }
+
+type Dialog = { phase: "closed" } | { phase: "confirm"; id: string };
 
 type Action =
   | { phase: "idle" }
@@ -35,6 +46,7 @@ type Action =
   | { phase: "created"; version: string; sampleCount: number }
   | { phase: "frozen"; version: string; sampleCount: number }
   | { phase: "none" }
+  | { phase: "artifact"; version: string; sampleCount: number; byteSize: number }
   | { phase: "failed"; reason: string };
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -48,6 +60,9 @@ const counts = (v: unknown): Record<string, number> => {
   return out;
 };
 
+/** الحجم بالكيلوبايت — رقمٌ يفهمه قارئ، ولا بصمة ولا مسار */
+const kb = (bytes: number) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
 const stamp = (iso: string | null) =>
   iso === null ? "—" : new Date(iso).toISOString().slice(0, 16).replace("T", " ");
 
@@ -55,6 +70,8 @@ export function TrainingDatasetsSection({ releases }: { releases: DatasetRelease
   const { t } = useI18n();
   const [action, setAction] = useState<Action>({ phase: "idle" });
   const [frozen, setFrozen] = useState<Record<string, true>>({});
+  const [madeArtifact, setMadeArtifact] = useState<Record<string, true>>({});
+  const [dialog, setDialog] = useState<Dialog>({ phase: "closed" });
 
   const busy = action.phase === "busy";
 
@@ -114,6 +131,40 @@ export function TrainingDatasetsSection({ releases }: { releases: DatasetRelease
         phase: "frozen",
         version: str(body?.version),
         sampleCount: num(body?.sampleCount),
+      });
+    } catch {
+      setAction({ phase: "failed", reason: "network" });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (dialog.phase === "closed") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setDialog({ phase: "closed" });
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [dialog.phase]);
+
+  const createArtifact = useCallback(async (id: string) => {
+    setDialog({ phase: "closed" });
+    setAction({ phase: "busy" });
+    try {
+      const res = await fetch(`/api/admin/training-datasets/${id}/artifact`, { method: "POST" });
+      const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!res.ok) {
+        setAction({ phase: "failed", reason: str(body?.reason) || "unknown" });
+        return;
+      }
+      /** ★ ولا حالة نجاحٍ قبل أن يؤكّدها الخادم */
+      setMadeArtifact((m) => ({ ...m, [id]: true }));
+      setAction({
+        phase: "artifact",
+        version: str(body?.version),
+        sampleCount: num(body?.sampleCount),
+        byteSize: num(body?.byteSize),
       });
     } catch {
       setAction({ phase: "failed", reason: "network" });
@@ -186,13 +237,25 @@ export function TrainingDatasetsSection({ releases }: { releases: DatasetRelease
           {t("datasetsFrozen_ok")} <span className="tabular-nums">{action.version}</span>
         </p>
       )}
+      {action.phase === "artifact" && (
+        <p role="status" className="px-4 pt-3 text-[12px] text-emerald-400">
+          {t("artifactSuccess")} <span className="tabular-nums">{action.version}</span>
+        </p>
+      )}
       {action.phase === "failed" && (
         <p role="alert" className="px-4 pt-3 text-[12px] text-red-400">
-          {action.reason === "revalidation_failed"
-            ? t("datasetsRevalidationFailed")
-            : action.reason === "conflict" || action.reason === "not_draft"
-              ? t("datasetsConflict")
-              : t("datasetsFailed")}
+          {action.reason === "revalidation_failed" || action.reason === "release_invalid"
+            ? action.reason === "release_invalid"
+              ? t("artifactInvalid")
+              : t("datasetsRevalidationFailed")
+            : action.reason === "already_exists" || action.reason === "storage_conflict"
+              ? t("artifactExists")
+              : action.reason === "conflict" || action.reason === "not_draft"
+                ? t("datasetsConflict")
+                : action.reason === "not_frozen" || action.reason === "manifest_mismatch"
+                  || action.reason === "upload_failed"
+                  ? t("artifactFailed")
+                  : t("datasetsFailed")}
         </p>
       )}
 
@@ -211,6 +274,14 @@ export function TrainingDatasetsSection({ releases }: { releases: DatasetRelease
                   </span>
                   <span>· {t("datasetsCreated")}: {stamp(r.createdAt)}</span>
                   {r.frozenAt && <span>· {t("datasetsFrozen")}: {stamp(r.frozenAt)}</span>}
+                  {(madeArtifact[r.id] || r.artifactStatus === "ready") && (
+                    <span className="text-emerald-400" data-artifact-ready={r.id}>
+                      · {t("artifactReady")}
+                      {typeof r.artifactByteSize === "number" && (
+                        <> · {t("artifactSize")}: {kb(r.artifactByteSize)}</>
+                      )}
+                    </span>
+                  )}
                 </div>
               </div>
               {/**
@@ -232,9 +303,86 @@ export function TrainingDatasetsSection({ releases }: { releases: DatasetRelease
                   {t("datasetsFreeze")}
                 </button>
               )}
+
+              {/**
+                * ★ ولا زرَّ أثرٍ إلا لمجمَّدٍ لا أثر له.
+                *
+                * المسوَّدة لا أثر لها، والمُبطَل كذلك، والذي له أثرٌ لا
+                * يُستبدل. والخادم يردّ الثلاثة على كل حال.
+                */}
+              {(r.status === "frozen" || frozen[r.id]) &&
+                !madeArtifact[r.id] &&
+                r.artifactStatus !== "ready" && (
+                  <button
+                    type="button"
+                    data-artifact-create={r.id}
+                    disabled={busy}
+                    onClick={() => setDialog({ phase: "confirm", id: r.id })}
+                    className="shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] text-ink-strong bg-raised
+                               border border-line hover:border-primary/40 transition-colors
+                               focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+                  >
+                    {t("artifactCreate")}
+                  </button>
+                )}
             </li>
           ))}
         </ul>
+      )}
+
+      {dialog.phase === "confirm" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label={t("artifactCancel")}
+            tabIndex={-1}
+            onClick={() => setDialog({ phase: "closed" })}
+            className="absolute inset-0 bg-night/60 backdrop-blur-[2px] cursor-default"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="artifact-confirm-title"
+            className="relative w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-2xl"
+          >
+            <h2 id="artifact-confirm-title" className="text-[14px] font-medium text-ink-strong">
+              {t("artifactConfirmTitle")}
+            </h2>
+            <p className="text-[12.5px] text-ink-dim mt-3 leading-relaxed">
+              {t("artifactConfirmBody")}
+            </p>
+            {/**
+              * ★ وما هو الأثر يُقال قبل القرار لا بعده.
+              *
+              * فمن يقرأ «إنشاء أثر تدريب» بلا شرحٍ يظنّ أن تدريبًا يبدأ.
+              */}
+            <p className="text-[12px] text-ink-faint mt-2.5 leading-relaxed">
+              {t("artifactMeaning")}
+            </p>
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <button
+                type="button"
+                data-artifact-cancel=""
+                onClick={() => setDialog({ phase: "closed" })}
+                className="rounded-lg px-3 py-1.5 text-[12.5px] text-ink-dim hover:text-ink hover:bg-raised
+                           transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                {t("artifactCancel")}
+              </button>
+              <button
+                type="button"
+                data-artifact-confirm=""
+                disabled={busy}
+                onClick={() => void createArtifact(dialog.id)}
+                className="rounded-lg px-3 py-1.5 text-[12.5px] text-ink-strong bg-raised border border-line
+                           hover:border-primary/40 transition-colors focus:outline-none
+                           focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+              >
+                {t("artifactConfirmAction")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

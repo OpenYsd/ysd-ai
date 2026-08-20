@@ -26,6 +26,9 @@ export const dynamic = "force-dynamic";
 const LIST_COLUMNS = "id, created_at, status, privacy_status, quality_status, source";
 /** ★ ولا `manifest_hash` ولا `manifest` ولا `created_by` — لا تُفيد قارئًا */
 const RELEASE_COLUMNS = "id, version, status, sample_count, created_at, frozen_at";
+/** ★ ولا `storage_path` ولا `artifact_sha256`: الأوّل يقول أين يقع كلام
+ *  الناس، والثاني لا يقول لقارئٍ شيئًا. */
+const ARTIFACT_COLUMNS = "dataset_release_id, status, sample_count, byte_size";
 const PAGE_SIZE = 50;
 
 export default async function AdminTrainingPage() {
@@ -70,6 +73,27 @@ export default async function AdminTrainingPage() {
         createdAt: String(r.created_at),
         frozenAt: r.frozen_at === null || r.frozen_at === undefined ? null : String(r.frozen_at),
       }));
+
+      const { data: arts } = await db
+        .from("training_dataset_artifacts")
+        .select(ARTIFACT_COLUMNS)
+        .neq("status", "purged")
+        .limit(PAGE_SIZE);
+      const byRelease = new Map<string, Record<string, unknown>>();
+      for (const a of (arts ?? []) as Record<string, unknown>[]) {
+        byRelease.set(String(a.dataset_release_id), a);
+      }
+      releases = releases.map((r) => {
+        const a = byRelease.get(r.id);
+        if (!a) return r;
+        return {
+          ...r,
+          artifactStatus: String(a.status),
+          artifactSampleCount: Number(a.sample_count ?? 0),
+          artifactByteSize: a.byte_size === null || a.byte_size === undefined
+            ? null : Number(a.byte_size),
+        };
+      });
     }
   } catch {
     /* لوحةٌ فارغة خيرٌ من صفحةٍ ساقطة — والأعداد تبقى أصفارًا */

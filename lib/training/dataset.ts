@@ -247,6 +247,54 @@ export async function createDatasetDraft(
   };
 }
 
+/**
+ * ★ يُعيد التحقّق من عناصر إصدار — **موضعٌ واحد لا ثلاثة**.
+ *
+ * كانت هذه الحلقة مكتوبةً مرتَين حرفًا بحرف — في التجميد وفي التحقّق —
+ * وكان بناء الأثر سيجعلها ثلاثًا. وثلاث نسخ من حارس تعني أن أوّل تشديدٍ
+ * يُضاف إلى إحداها يترك الأخريين مفتوحَين — ومن يقرأ واحدةً يظنّ أنّ الثلاث
+ * سواء.
+ *
+ * ولا تنسخ منطق الخصوصية ولا الجودة ولا الإذن: كلّ عيّنة تمرّ من
+ * `revalidateTrainingCandidate` — حارس المرحلة 2B نفسه.
+ */
+export async function loadValidatedDatasetSamples(
+  items: readonly { candidate_id: string; sample_order: number }[],
+  revalidate: DatasetDependencies["revalidate"] = revalidateTrainingCandidate,
+): Promise<{ entries: EligibleEntry[]; invalid: SkipCounts }> {
+  const d = { revalidate };
+  const entries: EligibleEntry[] = [];
+  const invalid: SkipCounts = {};
+
+  for (const item of items) {
+    const check = await d.revalidate(item.candidate_id, { requirePending: false });
+    if (!check.ok) {
+      invalid[check.reason] = (invalid[check.reason] ?? 0) + 1;
+      continue;
+    }
+    if (!check.approvable) {
+      for (const b of check.blockers) {
+        const key = b === "privacy_finding" ? "privacy_blocked" : "quality_blocked";
+        invalid[key] = (invalid[key] ?? 0) + 1;
+      }
+      continue;
+    }
+    if (check.candidate.status !== "approved") {
+      invalid.not_approved = (invalid.not_approved ?? 0) + 1;
+      continue;
+    }
+    entries.push({
+      candidateId: item.candidate_id,
+      sample: {
+        userText: check.preview.userText,
+        assistantText: check.preview.assistantText,
+      },
+    });
+  }
+
+  return { entries, invalid };
+}
+
 export interface FreezeResult {
   releaseId: string;
   version: string;
@@ -282,42 +330,16 @@ export async function freezeDatasetRelease(
   }
   if (!db) return { ok: false, reason: "database_error" };
 
-  const release = await readRelease(db, releaseId);
+  const release = await readDatasetRelease(db, releaseId);
   if (release === "error") return { ok: false, reason: "database_error" };
   if (release === null) return { ok: false, reason: "not_found" };
   if (release.status !== "draft") return { ok: false, reason: "not_draft" };
 
-  const items = await readItems(db, releaseId);
+  const items = await readDatasetItems(db, releaseId);
   if (items === "error") return { ok: false, reason: "database_error" };
   if (items.length === 0) return { ok: false, reason: "empty" };
 
-  const entries: EligibleEntry[] = [];
-  const invalid: SkipCounts = {};
-  for (const item of items) {
-    const check = await d.revalidate(item.candidate_id, { requirePending: false });
-    if (!check.ok) {
-      invalid[check.reason] = (invalid[check.reason] ?? 0) + 1;
-      continue;
-    }
-    if (!check.approvable) {
-      for (const b of check.blockers) {
-        const key = b === "privacy_finding" ? "privacy_blocked" : "quality_blocked";
-        invalid[key] = (invalid[key] ?? 0) + 1;
-      }
-      continue;
-    }
-    if (check.candidate.status !== "approved") {
-      invalid.not_approved = (invalid.not_approved ?? 0) + 1;
-      continue;
-    }
-    entries.push({
-      candidateId: item.candidate_id,
-      sample: {
-        userText: check.preview.userText,
-        assistantText: check.preview.assistantText,
-      },
-    });
-  }
+  const { entries, invalid } = await loadValidatedDatasetSamples(items, d.revalidate);
 
   if (Object.keys(invalid).length > 0) {
     return { ok: false, reason: "revalidation_failed", invalid };
@@ -398,42 +420,16 @@ export async function validateDatasetRelease(
   }
   if (!db) return { ok: false, reason: "database_error" };
 
-  const release = await readRelease(db, releaseId);
+  const release = await readDatasetRelease(db, releaseId);
   if (release === "error") return { ok: false, reason: "database_error" };
   if (release === null) return { ok: false, reason: "not_found" };
   if (release.status === "invalidated") return { ok: false, reason: "invalidated" };
   if (release.status !== "frozen") return { ok: false, reason: "not_frozen" };
 
-  const items = await readItems(db, releaseId);
+  const items = await readDatasetItems(db, releaseId);
   if (items === "error") return { ok: false, reason: "database_error" };
 
-  const invalid: SkipCounts = {};
-  const entries: EligibleEntry[] = [];
-  for (const item of items) {
-    const check = await d.revalidate(item.candidate_id, { requirePending: false });
-    if (!check.ok) {
-      invalid[check.reason] = (invalid[check.reason] ?? 0) + 1;
-      continue;
-    }
-    if (!check.approvable) {
-      for (const b of check.blockers) {
-        const key = b === "privacy_finding" ? "privacy_blocked" : "quality_blocked";
-        invalid[key] = (invalid[key] ?? 0) + 1;
-      }
-      continue;
-    }
-    if (check.candidate.status !== "approved") {
-      invalid.not_approved = (invalid.not_approved ?? 0) + 1;
-      continue;
-    }
-    entries.push({
-      candidateId: item.candidate_id,
-      sample: {
-        userText: check.preview.userText,
-        assistantText: check.preview.assistantText,
-      },
-    });
-  }
+  const { entries, invalid } = await loadValidatedDatasetSamples(items, d.revalidate);
 
   /** عنصرٌ اختفى — بمحو صاحبه لكلامه — والبيان يشهد أنه كان */
   if (items.length !== release.sample_count) {
@@ -458,7 +454,7 @@ export async function validateDatasetRelease(
   };
 }
 
-interface ReleaseRow {
+export interface ReleaseRow {
   id: string;
   version: string;
   status: string;
@@ -467,7 +463,7 @@ interface ReleaseRow {
   manifest_hash: string | null;
 }
 
-async function readRelease(
+export async function readDatasetRelease(
   db: SupabaseClient,
   releaseId: string,
 ): Promise<ReleaseRow | null | "error"> {
@@ -487,7 +483,7 @@ async function readRelease(
   }
 }
 
-async function readItems(
+export async function readDatasetItems(
   db: SupabaseClient,
   releaseId: string,
 ): Promise<{ candidate_id: string; sample_order: number }[] | "error"> {

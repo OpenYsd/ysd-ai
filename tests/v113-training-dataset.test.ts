@@ -662,8 +662,20 @@ describe("★ (٧) الباب الواحد — عقدٌ لِمَا لم يُبن
   it("★ ★ كل بناءٍ وتجميدٍ وتحقّقٍ يمرّ من حارس المرحلة 2B", () => {
     const src = stripComments(DATASET_SRC);
     expect(src).toMatch(/import \{ revalidateTrainingCandidate \} from "\.\/revalidate"/);
-    /** ثلاثة مواضع: الجمع، والتجميد، والتحقّق */
-    expect((src.match(/d\.revalidate\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    /**
+     * ★ والقياس على أن **كل** بانٍ للعيّنات يمرّ من الحارس — لا على عدد
+     * مواضع النداء.
+     *
+     * فعدُّ المواضع يعاقب على التجريد: استخراجُ الحلقة المكرّرة إلى
+     * `loadValidatedDatasetSamples` قلّلها من ثلاثٍ إلى اثنتين، وهو تحسينٌ
+     * لا خرق. والثابت أن لا سطرَ يبني `entries` إلا بعد `check` من الحارس.
+     */
+    for (const m of src.match(/entries\.push\(\{[\s\S]{0,200}?\}\);/g) ?? []) {
+      expect(m).toMatch(/check\.preview/);
+    }
+    expect(src).toMatch(/async function loadValidatedDatasetSamples/);
+    /** والحلقة موضعٌ واحد: `entries.push` مرّتان لا أكثر — الجمع واللودر */
+    expect((src.match(/entries\.push\(/g) ?? []).length).toBe(2);
   });
 
   it("★ ★ والعقد مكتوبٌ حيث يقرؤه من يبني المدرِّب", () => {
@@ -851,11 +863,16 @@ describe("★ (١٠) 0043 — صلاحيةٌ وأداءٌ لا سلوك", () => 
     expect(stripSql(HARDENING)).not.toMatch(/jsonl|dataset_export|fine_?tune|LoRA|weights|gpu/i);
   });
 
-  it("★ وهي التالية في الترقيم", () => {
+  it("★ و0043 قائمةٌ في الترقيم", () => {
+    /**
+     * ★ وملكيّة «أحدث رقم» لأحدث حزمة — لا لهذه.
+     *
+     * فحارسٌ يملكه يسقط مع كل ترحيلةٍ تُضاف بعده وهو لا يحرس شيئًا يخصّها.
+     * ويبقى هنا ما يخصّ 0043: أنها موجودة، وأن الترقيم لا يتكرّر.
+     */
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0043_ysd_training_dataset_hardening.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(43);
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 });

@@ -95,6 +95,15 @@ create schema if not exists auth;
 create or replace function auth.uid() returns uuid language sql stable as $fn$
   select nullif(current_setting('ysd.actor', true), '')::uuid $fn$;
 
+create schema if not exists storage;
+create table storage.buckets (
+  id text primary key,
+  name text not null,
+  public boolean not null default false,
+  file_size_limit bigint,
+  allowed_mime_types text[]
+);
+
 create type public.message_role as enum ('user', 'assistant', 'system');
 
 create table public.profiles (id uuid primary key, role text not null default 'user');
@@ -138,13 +147,14 @@ insert into public.training_candidates
 
 function run() {
   startContainer();
-  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042 → 0043…");
+  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042 → 0043 → 0044…");
   psql(BASE, { tuples: false });
   psql(mig("0040_ysd_training_bank.sql"), { tuples: false });
   psql(mig("0041_ysd_training_bank_hardening.sql"), { tuples: false });
   psql(mig("0042_ysd_training_dataset_releases.sql"), { tuples: false });
   psql(mig("0043_ysd_training_dataset_hardening.sql"), { tuples: false });
-  console.log("  ✅ الترحيلات الأربع طُبّقت");
+  psql(mig("0044_ysd_training_dataset_artifacts.sql"), { tuples: false });
+  console.log("  ✅ الترحيلات الخمس طُبّقت");
 
   // ── (١) لا زرع ──
   console.log("\n① الترحيلة لا تُدخل صفًّا");
@@ -158,9 +168,12 @@ function run() {
   ok(again.ok, "(٢) 0042 قابلة لإعادة التشغيل");
   const again43 = attempt(mig("0043_ysd_training_dataset_hardening.sql"));
   ok(again43.ok, "(٢′) وكذلك 0043");
+  const again44 = attempt(mig("0044_ysd_training_dataset_artifacts.sql"));
+  ok(again44.ok, "(٢‴) وكذلك 0044");
   const chain = attempt(
     mig("0040_ysd_training_bank.sql") + mig("0041_ysd_training_bank_hardening.sql") +
-    mig("0042_ysd_training_dataset_releases.sql") + mig("0043_ysd_training_dataset_hardening.sql"));
+    mig("0042_ysd_training_dataset_releases.sql") + mig("0043_ysd_training_dataset_hardening.sql") +
+    mig("0044_ysd_training_dataset_artifacts.sql"));
   ok(chain.ok, "(٢″) ★ والأربع معًا تُعاد بلا إخفاق");
 
   psql(approvedCandidate(UA, AA, H1), { tuples: false });
@@ -480,6 +493,121 @@ function run() {
    * ولا يُحذف الدور: الحاوية تُهدم بعد قليل، وحذفُه يلزمه سحبُ كل ما
    * مُنح له أوّلًا — عملٌ لا يقيس شيئًا ويُسقط الجولة إن تعثّر.
    */
+
+  // ── (١٣) أثر التدريب (0044) ──
+  console.log("\n⓭ ★ أثر التدريب (0044)");
+
+  /** ★ الدلو خاصّ ولا سياسة له — وغيابها هو الحراسة */
+  ok(one(`select public::int from storage.buckets where id='ysd-training-artifacts';`) === "0",
+    "(٤٨) ★ الدلو خاصّ — `public=false`");
+  ok(one(`select count(*) from storage.buckets where id='ysd-training-artifacts';`) === "1",
+    "(٤٩) وموجود");
+  ok(one(`select count(*) from storage.buckets
+          where id='ysd-training-artifacts' and file_size_limit is not null;`) === "1",
+    "(٥٠) وبسقف حجم");
+
+  /** ولا سياسة storage تذكره — والترحيلة لا تكتب واحدة */
+  ok(!mig("0044_ysd_training_dataset_artifacts.sql").match(/create policy[^;]*storage\.objects/i),
+    "(٥١) ★ ولا سياسة `storage.objects` له — `service_role` وحده");
+
+  /** ★ والوصف: RLS بلا سياسة كتابة، وامتيازات مسحوبة */
+  ok(one(`select relrowsecurity::int from pg_class
+          where relname='training_dataset_artifacts';`) === "1",
+    "(٥٢) RLS مفعّلة");
+  for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
+    ok(one(`select count(*) from pg_policies
+            where tablename='training_dataset_artifacts' and cmd='${cmd}';`) === "0",
+      "(٥٣/" + cmd + ") ★ ولا سياسة " + cmd);
+  }
+  for (const role of ["anon", "authenticated"]) {
+    for (const priv of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+      ok(one(`select coalesce(has_table_privilege('${role}',
+              'public.training_dataset_artifacts', '${priv}'), false)::int;`) === "0",
+        "(٥٤/" + role + "/" + priv + ") لا امتياز");
+    }
+  }
+
+  /** ★ ولا عمود نصّ ولا هوّية مستخدم */
+  ok(one(`select count(*) from information_schema.columns
+          where table_name='training_dataset_artifacts'
+            and column_name in ('raw_content','user_content','assistant_content',
+                                'raw_jsonl','content','sample_text','user_id','conversation_id');`) === "0",
+    "(٥٥) ★ ولا نصّ ولا هوّية في الوصف");
+
+  // إصدارٌ مجمَّد للاختبار
+  const RA = one(`insert into public.training_dataset_releases default values returning id;`);
+  psql(`insert into public.training_dataset_items
+    (dataset_release_id, candidate_id, sample_order, sample_hash)
+    values ('${RA}', '${C1}', 0, '${SH}');
+    update public.training_dataset_releases
+      set status='frozen', frozen_at=now(), manifest_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', sample_count=1
+      where id='${RA}';`, { tuples: false });
+
+  const artifact = (over) => {
+    const a = { release: RA, fmt: "ysd-chat-v1", status: "pending", sha: "null",
+      size: "null", count: 1, manifest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      path: `releases/${RA}/ysd-chat-v1.jsonl`, ready: "null", purged: "null", ...over };
+    return `insert into public.training_dataset_artifacts
+      (dataset_release_id, format_version, status, artifact_sha256, byte_size,
+       sample_count, release_manifest_hash, storage_path, ready_at, purged_at)
+      values ('${a.release}', '${a.fmt}', '${a.status}', ${a.sha}, ${a.size},
+              ${a.count}, '${a.manifest}', '${a.path}', ${a.ready}, ${a.purged});`;
+  };
+
+  /** ★ الجاهز يلزمه بصمةٌ وحجمٌ ووقت */
+  const readyNaked = attempt(artifact({ status: "ready" }));
+  ok(!readyNaked.ok, "(٥٦) ★ `ready` بلا بصمة يُردّ");
+  const readyNoSize = attempt(artifact({ status: "ready", sha: `'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'`, ready: "now()" }));
+  ok(!readyNoSize.ok, "(٥٧) وبلا حجم يُردّ");
+  const purgedNaked = attempt(artifact({ status: "purged" }));
+  ok(!purgedNaked.ok, "(٥٨) والممحوّ يلزمه طابع");
+
+  const artTrained = attempt(artifact({ status: "trained" }));
+  ok(!artTrained.ok, "(٥٩) ★ ولا حالة `trained`");
+  const artDeployed = attempt(artifact({ status: "deployed" }));
+  ok(!artDeployed.ok, "(٥٩′) ولا `deployed`");
+
+  /** ★ والمسار مقيَّد الشكل */
+  for (const bad of ["../etc/passwd", "users/ali@x.com/a.jsonl",
+                     `releases/${RA}/سؤال.jsonl`, `releases/${RA}/a.txt`]) {
+    const r = attempt(artifact({ path: bad }));
+    ok(!r.ok, "(٦٠) ★ مسارٌ خارج الشكل يُردّ: " + bad.slice(0, 18));
+  }
+
+  const badSha = attempt(artifact({ status: "pending", sha: "'ليست بصمة'" }));
+  ok(!badSha.ok, "(٦١) وبصمةٌ غير صالحة تُردّ");
+  const zeroSamples = attempt(artifact({ count: 0 }));
+  ok(!zeroSamples.ok, "(٦٢) وأثرٌ بلا عيّنات يُردّ");
+
+  /** ★ أثرٌ فعّالٌ واحد لكل إصدارٍ وصيغة */
+  psql(artifact({ status: "ready", sha: `'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'`, size: 128, ready: "now()" }), { tuples: false });
+  const second = attempt(artifact({}));
+  ok(!second.ok && /unique|duplicate/i.test(second.out),
+    "(٦٣) ★ ولا أثرَين فعّالَين لإصدارٍ واحد");
+
+  /** والممحوّ لا يمنع بديلًا */
+  psql(`update public.training_dataset_artifacts
+    set status='purged', purged_at=now() where dataset_release_id='${RA}';`, { tuples: false });
+  const afterPurge = attempt(artifact({}));
+  ok(afterPurge.ok, "(٦٤) ★ وبعد المحو يُبنى بديل");
+
+  /** ★ وحذف الإصدار يخرج وصفه معه */
+  const artBefore = one(`select count(*) from public.training_dataset_artifacts
+                      where dataset_release_id='${RA}';`);
+  psql(`delete from public.training_dataset_releases where id='${RA}';`, { tuples: false });
+  ok(artBefore !== "0" &&
+     one(`select count(*) from public.training_dataset_artifacts
+         where dataset_release_id='${RA}';`) === "0",
+    "(٦٥) ★ وحذف الإصدار يمحو وصف أثره");
+
+  /** والفهارس */
+  for (const name of ["training_dataset_artifacts_active_unique",
+                      "training_dataset_artifacts_release_idx",
+                      "training_dataset_artifacts_created_by_idx"]) {
+    ok(one(`select count(*) from pg_indexes
+            where tablename='training_dataset_artifacts' and indexname='${name}';`) === "1",
+      "(٦٦/" + name.slice(-14) + ") موجود");
+  }
 
   console.log(`\n═══ النتيجة: ${passed}/${passed + failed} ${failed === 0 ? "✅" : "❌"}   الإخفاقات: ${failed}`);
 }
