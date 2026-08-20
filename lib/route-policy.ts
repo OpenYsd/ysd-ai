@@ -62,8 +62,33 @@ export const PROTECTED_PREFIXES: readonly string[] = [
   "/browser",
 ];
 
-/** بادئة عامّة — `startsWith` كما كان الوسيط يفعل حرفًا بحرف */
+/**
+ * ★ مسارات عامّة تُطابَق **تطابقًا تامًّا** (v0.9.13، المرحلة 6B).
+ *
+ * الجذر `/` صار صفحة تعريفٍ عامّة. ولا يجوز إدخاله في `PUBLIC_PATHS` أعلاه:
+ * تلك تُطابَق بـ`startsWith`، و«كلُّ مسارٍ يبدأ بـ`/`» يعني المسارات كلَّها —
+ * فينفتح `/chat` و`/admin` بسطرٍ واحد. والتطابق التامّ يفتح الجذر وحده.
+ */
+export const PUBLIC_EXACT_PATHS: readonly string[] = ["/"];
+
+/**
+ * الصفحات العامّة ذات المعنى — لخريطة الموقع.
+ *
+ * وهي **ليست** كل ما هو عامّ: `/suspended` و`/maintenance` و`/reset-password`
+ * حالاتُ نظامٍ لا وجهاتُ زيارة، وفهرستُها تُقدّم للباحث صفحةً لا تعني له
+ * شيئًا. والدعوةُ `/invite/[code]` رمزٌ خاصّ لا يُنشر.
+ */
+export const SITEMAP_PATHS: readonly string[] = [
+  "/",
+  "/beta",
+  "/privacy",
+  "/terms",
+  "/support",
+];
+
+/** بادئة عامّة — `startsWith` كما كان الوسيط يفعل حرفًا بحرف، مع الجذر تطابقًا */
 export function isPublicPath(path: string): boolean {
+  if (PUBLIC_EXACT_PATHS.includes(path)) return true;
   return PUBLIC_PATHS.some((p) => path.startsWith(p));
 }
 

@@ -788,6 +788,124 @@ const dict = {
   },
   supportBack: { ar: "العودة إلى YSD AI", en: "Back to YSD AI" },
 
+  /* ═══════════ المرحلة 6B — صفحة التعريف العامّة ═══════════ */
+
+  navFeatures: { ar: "المزايا", en: "Features" },
+  navPrivacy: { ar: "الخصوصية", en: "Privacy" },
+  navTerms: { ar: "الشروط", en: "Terms" },
+  navSupport: { ar: "الدعم", en: "Support" },
+  navOpenMenu: { ar: "فتح القائمة", en: "Open menu" },
+  navCloseMenu: { ar: "إغلاق القائمة", en: "Close menu" },
+  navSwitchLanguage: { ar: "التبديل إلى الإنجليزية", en: "Switch to Arabic" },
+
+  heroLine1: { ar: "فكّر أعمق.", en: "Think Deeper." },
+  heroLine2: { ar: "وابنِ أفضل.", en: "Build Better." },
+  heroSub: {
+    ar: "YSD AI مساحة عمل ذكية: تحادث، وتتعلّم، وتعمل على ملفاتك، وتنظّم مشاريعك وأفكارك — بالعربية أولًا ومعها الإنجليزية.",
+    en: "YSD AI is an intelligent workspace: chat, learn, work with your files, and organize your projects and ideas — Arabic-first, with English.",
+  },
+  heroStart: { ar: "ابدأ الآن", en: "Get Started" },
+  heroSignIn: { ar: "تسجيل الدخول", en: "Sign In" },
+  heroOpenApp: { ar: "افتح YSD", en: "Open YSD" },
+  /**
+   * ★ يُقال إن الباب مغلقٌ بدعوة — قبل الضغط لا بعده.
+   *
+   * التسجيل اليوم بالدعوة فقط. وزرٌّ يقول «ابدأ الآن» ثم يُوصل إلى نموذجٍ
+   * يرفض من لا كود له يجعل أوّل لقاءٍ بالمنتج رفضًا.
+   */
+  heroBetaNote: {
+    ar: "YSD AI في نسخة تجريبية خاصة — الانضمام بكود دعوة.",
+    en: "YSD AI is in private beta — joining requires an invite code.",
+  },
+
+  featuresTitle: { ar: "ما الذي يمكنك فعله", en: "What you can do" },
+  featureChatTitle: { ar: "محادثة ذكية", en: "Smart Chat" },
+  featureChatBody: {
+    ar: "اسأل، واشرح، وصحّح كودًا. الردود تصل أولًا بأول، وتدعم Markdown والجداول وكتل الكود. وقد تخطئ أحيانًا — فتحقّق ممّا يهمّ.",
+    en: "Ask, explain, and fix code. Answers stream as they are written, with Markdown, tables and code blocks. It can be wrong sometimes — verify what matters.",
+  },
+  featureFilesTitle: { ar: "اعمل على ملفاتك", en: "Work with Files" },
+  featureFilesBody: {
+    ar: "ارفع PDF أو DOCX أو نصًّا أو صورة، ثم اسأل عنها. يسترجع YSD الأجزاء المرتبطة بسؤالك ويعرض المصدر الذي بنى عليه إجابته.",
+    en: "Upload a PDF, DOCX, text file or image, then ask about it. YSD retrieves the relevant parts and shows the source it drew on.",
+  },
+  featureProjectsTitle: { ar: "نظّم مشاريعك", en: "Organize Projects" },
+  featureProjectsBody: {
+    ar: "اجمع محادثاتك وملفاتك في مشروع واحد، وأضف تعليمات خاصة به ونموذجًا افتراضيًا له — فيبقى سياق العمل في مكانه.",
+    en: "Group conversations and files into one project, with its own instructions and default model — so the context of your work stays in place.",
+  },
+  featureDataTitle: { ar: "بياناتك بقرارك", en: "Your Data, Your Choice" },
+  featureDataBody: {
+    ar: "محادثاتك ليست بيانات تدريب تلقائيًا. والمساهمة في التحسين اختيارية، وتحتاج منك مشاركة محادثة بعينها صراحةً.",
+    en: "Your chats are not automatically training data. Contributing to improvement is optional, and requires you to explicitly share a specific conversation.",
+  },
+
+  whyTitle: { ar: "لماذا YSD", en: "Why YSD" },
+  whyLearnTitle: { ar: "تعلّم أسرع", en: "Learn Faster" },
+  whyLearnBody: {
+    ar: "اسأل بالعربية وافهم بها. الشرح والتلخيص والتفكيك خطوةً خطوة، بلغتك.",
+    en: "Ask in your language and understand in it — explanations, summaries and step-by-step breakdowns.",
+  },
+  whyCreateTitle: { ar: "أنشئ بثقة", en: "Create with Confidence" },
+  whyCreateBody: {
+    ar: "حين تسأل عن ملفاتك، يعرض YSD المقطع الذي بنى عليه إجابته — فترى مصدر ما تقرأ.",
+    en: "When you ask about your files, YSD shows the passage it drew on — so you can see the source of what you read.",
+  },
+  whyControlTitle: { ar: "تبقى أنت المتحكّم", en: "Stay in Control" },
+  whyControlBody: {
+    ar: "احذف محادثاتك وملفاتك متى شئت، وتحكّم في المساهمة، واسحب إذنك في أي وقت.",
+    en: "Delete your chats and files whenever you like, control contribution, and withdraw your consent at any time.",
+  },
+
+  privacyTitle: { ar: "بياناتك بقرارك", en: "Your data, your choice" },
+  privacyPoint1: {
+    ar: "محادثاتك ليست بيانات تدريب تلقائيًا.",
+    en: "Your chats are not automatically training data.",
+  },
+  privacyPoint2: {
+    ar: "المساهمة في تحسين YSD اختيارية ومعطّلة افتراضيًا.",
+    en: "Contributing to improving YSD is optional and off by default.",
+  },
+  privacyPoint3: {
+    ar: "لا تُشارَك محادثة إلا باختيارك لها بعينها.",
+    en: "No conversation is shared unless you pick that one yourself.",
+  },
+  privacyPoint4: {
+    ar: "ملفاتك تُخزَّن في تخزين خاص لا يصل إليه غيرك.",
+    en: "Your files are kept in private storage no one else can reach.",
+  },
+  privacyReadMore: { ar: "اقرأ سياسة الخصوصية", en: "Read the Privacy Policy" },
+
+  /**
+   * ★ الصياغة الدقيقة لـYSD Alpha — والدقّة هنا ليست تواضعًا.
+   *
+   * ما تملكه YSD حقيقةً كثير: المنصّة، وطبقة التشغيل، وسجلّ النماذج، وتوجيه
+   * المزوّدين، والاسترجاع والاستشهاد، وطبقة الأمن والحدود. وما لا تملكه —
+   * اليوم — نموذجٌ أساسيّ دُرِّب من الصفر.
+   *
+   * وقولُ «نموذجنا» يمنح انطباعًا يكذّبه أوّل سؤالٍ تقنيّ، ويجعل كل ادّعاءٍ
+   * آخر في الصفحة موضعَ شكّ.
+   */
+  alphaTitle: { ar: "YSD Alpha", en: "YSD Alpha" },
+  alphaBody: {
+    ar: "بيئة ذكاء اصطناعي تجريبية من YSD، تعتمد على تقنيات نماذج مفتوحة الأوزان مُختارة بعناية، مع طبقات YSD الخاصة بالتشغيل والتوجيه والاسترجاع والأمان وتجربة المنتج.",
+    en: "An experimental YSD AI runtime built around carefully selected open-weight model technology, with YSD's own orchestration, retrieval, safety and product layers.",
+  },
+
+  footerLine: {
+    ar: "مساحة عمل ذكية — عربية أولًا.",
+    en: "An intelligent workspace — Arabic-first.",
+  },
+  footerRights: { ar: "جميع الحقوق محفوظة.", en: "All rights reserved." },
+
+  previewNewChat: { ar: "محادثة جديدة", en: "New chat" },
+  previewUser: { ar: "لخّص لي هذا التقرير", en: "Summarize this report for me" },
+  previewAssistant: {
+    ar: "إليك أهم ثلاث نقاط من التقرير، مع المصدر لكل نقطة.",
+    en: "Here are the three key points from the report, each with its source.",
+  },
+  previewSource: { ar: "المصدر · صفحة ٤", en: "Source · page 4" },
+
   suggestions: {
     ar: [
       { title: "ساعدني في البرمجة", desc: "اكتب، اشرح، أو صحّح كودًا" },

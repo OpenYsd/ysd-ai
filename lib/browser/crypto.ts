@@ -1,5 +1,6 @@
 import "server-only";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { publicOrigin } from "@/lib/http/origin";
 
 export function base64url(input: Buffer | Uint8Array | string): string {
   const buf = typeof input === "string" ? Buffer.from(input, "utf8") : Buffer.from(input);
@@ -40,7 +41,13 @@ export function browserTokenSecret(): string | null {
   return value && value.length >= 32 ? value : null;
 }
 
+/**
+ * أصلُ التطبيق — يُفوَّض إلى `lib/http/origin` (المرحلة 6B).
+ *
+ * كان محسوبًا هنا بنفس السلسلة حرفًا بحرف، وصار للأصل مستعملٌ ثانٍ
+ * (البيانات الوصفية وخريطة الموقع). وحسابان متطابقان اليوم يفترقان يوم
+ * يُعدَّل أحدهما — ويبقى الآخر يبني روابط إلى نطاقٍ قديم بلا أن يُنبّه أحد.
+ */
 export function appOrigin(): string {
-  return (process.env.APP_ORIGIN || process.env.NEXT_PUBLIC_APP_ORIGIN || "https://ysd-ai-production.up.railway.app")
-    .replace(/\/+$/, "");
+  return publicOrigin();
 }

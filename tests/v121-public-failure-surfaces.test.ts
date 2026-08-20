@@ -339,9 +339,10 @@ describe("★ (٣) وجهة الدعم — مصدرٌ واحد، ولا اختر
      */
     const body = stripComments(SUPPORT_LIB);
     expect(body).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
-    expect(readSupportContact(undefined).configured).toBe(false);
-    expect(readSupportContact(undefined).email).toBeNull();
-    expect(readSupportContact(undefined).mailto).toBeNull();
+    /** قيمةٌ صريحة لا `undefined`: الأخيرة تقرأ البيئة فيصير الاختبار رهينتها */
+    expect(readSupportContact("").configured).toBe(false);
+    expect(readSupportContact("").email).toBeNull();
+    expect(readSupportContact("").mailto).toBeNull();
   });
 
   it("★ ★ ★ والمرفوض يُعامَل كغير مضبوط", () => {
@@ -599,10 +600,13 @@ describe("★ (٥) السطح المحميّ يبقى محميًّا", () => {
 
     expect(pages.length).toBeGreaterThan(20);
 
-    const uncovered = pages.filter(
-      (p) => p !== "/" && !isPublicPath(p) && !isProtectedPath(p),
-    );
+    /**
+     * ولا استثناء للجذر بعد المرحلة 6B: `/` صار صفحة تعريفٍ عامّة، فيغطّيه
+     * `PUBLIC_EXACT_PATHS`. وكل صفحةٍ في الشجرة بلا استثناء.
+     */
+    const uncovered = pages.filter((p) => !isPublicPath(p) && !isProtectedPath(p));
     expect(uncovered).toEqual([]);
+    expect(isPublicPath("/")).toBe(true);
   });
 
   it("★ ★ ★ والوسيط يشغّل هذه القاعدة نفسها — لا نسخةً ثانية", () => {

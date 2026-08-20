@@ -49,7 +49,15 @@ function mountSettings(locale: Locale) {
   );
 }
 
-const UNCONFIGURED = readSupportContact(undefined);
+/**
+ * ★ «غير مضبوط» يُبنى بقيمةٍ صريحة لا بـ`undefined`.
+ *
+ * تمريرُ `undefined` يُفعّل المعامل الافتراضي، وهو يقرأ
+ * `process.env.NEXT_PUBLIC_YSD_SUPPORT_EMAIL`. فكان الاختبار يمرّ لأن
+ * البيئة المحلّية فارغة — لا لأن الحالة صحيحة. ومن ضبط المتغيّر في صدفته
+ * كان يراه يسقط بلا سبب ظاهر.
+ */
+const UNCONFIGURED = readSupportContact("");
 const CONFIGURED = readSupportContact("hello@example.com");
 
 /* ═══════════ (١) صفحة الدعم ═══════════ */
