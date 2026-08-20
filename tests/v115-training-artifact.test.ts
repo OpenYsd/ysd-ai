@@ -555,16 +555,33 @@ describe("★ (٥) المحو — فعليٌّ من التخزين، وأثرٌ 
 /* ═══════════ (٦) سحب الإذن ═══════════ */
 
 describe("★ (٦) سحبُ الإذن — والسلامة لا تنتظر كنسة", () => {
+  /**
+   * ★ الحارس يتبع التسلسل حيث هو (المرحلة 6E).
+   *
+   * انتقل إلى `lib/account/revoke-training` حين احتاجه مسارٌ ثانٍ (حذف
+   * البيانات) — والبديل كان نسخةً ثانية تفترق يوم يُعدَّل أحدهما، وأحدهما
+   * يترك إذنًا قائمًا بعد أن ظنّ صاحبه أنه محا كل شيء.
+   *
+   * والثابت المحروس هو هو: الكنسة تقع، **وبعد** سحب الإذن لا قبله.
+   */
+  const REVOKE_OWNER = readSrc("lib/account/revoke-training.ts");
+
   it("★ ★ الإطفاء يستدعي كنسة الآثار", () => {
-    const src = stripComments(CONSENT_ROUTE);
-    expect(src).toMatch(/purgeArtifactsForUser\(ctx\.userId\)/);
+    const src = stripComments(REVOKE_OWNER);
+    expect(src).toMatch(/purgeArtifactsForUser\(userId\)/);
     /** وبعد سحب الموافقة في القاعدة — لا قبله */
     expect(src.indexOf("setTrainingConsent")).toBeLessThan(src.indexOf("purgeArtifactsForUser"));
+    /** والمسار يفوّض إليه — فلا تسلسلَ ثانٍ */
+    const route = stripComments(CONSENT_ROUTE);
+    expect(route).toMatch(/revokeTrainingForUser\(supabase, ctx\.userId\)/);
+    expect(route).not.toMatch(/purgeArtifactsForUser|revokeUserCandidates/);
   });
 
   it("★ ★ وتعثّرُها لا يُسقط الطلب ولا يغيّر جوابه", () => {
     const src = stripComments(CONSENT_ROUTE);
-    expect(src).toMatch(/try \{[\s\S]{0,120}purgeArtifactsForUser[\s\S]{0,80}\} catch \{/);
+    expect(stripComments(REVOKE_OWNER)).toMatch(
+      /try \{[\s\S]{0,120}purgeArtifactsForUser[\s\S]{0,80}\} catch \{/,
+    );
   });
 
   it("★ ★ والكنسة تجد آثار إصدارات مرشّحيه", async () => {

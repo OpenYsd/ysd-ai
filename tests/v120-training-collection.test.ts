@@ -427,7 +427,15 @@ describe("★ (٦) ★ عقد الخصوصية — كما هو", () => {
 describe("★ (٧) الحدود — لا ترحيلة ولا تدريب", () => {
   it("★ ★ ولا ترحيلةَ جديدة — الأعداد كلّها قائمة", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(45);
+    /**
+     * ★ الثابت: لا تكرار في الترقيم، والترحيلات المعنيّة قائمة.
+     *
+     * وكان الحارس يملك «أحدث رقم» — فيسقط مع كل ترحيلٍ جديد لا لأن شيئًا
+     * انكسر بل لأن المشروع تقدّم. وملكيةُ الأحدث تنتقل إلى أحدث مجموعة.
+     */
+    const nums = files.map((f) => Number(f.slice(0, 4)));
+    expect(nums).toContain(45);
+    expect(new Set(nums).size).toBe(nums.length);
   });
 
   it("★ ★ ولا عتادَ ولا مزوّدَ ولا تدريب", () => {

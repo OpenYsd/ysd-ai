@@ -8,8 +8,7 @@ import {
   readTrainingConsent,
   setTrainingConsent,
 } from "@/lib/training/consent";
-import { revokeUserCandidates } from "@/lib/training/candidate";
-import { purgeArtifactsForUser } from "@/lib/training/artifact";
+import { revokeTrainingForUser } from "@/lib/account/revoke-training";
 
 export const runtime = "nodejs";
 
@@ -79,28 +78,19 @@ export async function PATCH(req: Request) {
    */
   let revoked = 0;
   if (!parsed.data.enabled) {
-    const sweep = await revokeUserCandidates(ctx.userId);
-    if (sweep.ok) revoked = sweep.revoked;
-
     /**
-     * ★ وآثارُ التدريب التي تحمل كلامه تُمحى — والسلامة لا تنتظرها.
+     * ★ التسلسل نفسه الذي يستعمله حذفُ البيانات (المرحلة 6E).
      *
-     * فالأثر يصير غير صالحٍ للتدريب في اللحظة نفسها بلا أن يُمحى ملفّ:
-     * حارسُ التدريب يُعيد التحقّق من كل عيّنة، فيجد إذنًا مسحوبًا ويردّ.
-     * وذلك ثابتٌ بالبناء لا بنجاح كنسة — ولو عُلّق الأمان على نجاح
-     * `delete` لَكان وعدًا بما لا نملك.
+     * كان مكتوبًا هنا وحده. وحين احتاجه مسارٌ ثانٍ صار البديل نسخةً ثانية
+     * تفترق يوم يُعدَّل أحدهما — وأحدهما يترك إذنًا قائمًا بعد أن ظنّ صاحبه
+     * أنه محا كل شيء. راجع `lib/account/revoke-training` لشرح الترتيب،
+     * ولماذا لا يُعلَّق الأمان على نجاح محو الأثر.
      *
-     * وهذه تُخرج البايتات من الوجود، وهو واجبٌ آخر: أن يبقى نصُّ من سحب
-     * إذنه مكتوبًا في ملفٍّ — ولو كان لا يُقرأ — خُلفٌ لوعدٍ بمعناه.
-     *
-     * وتعثّرُها لا يُغيّر جواب المستخدم: إذنُه سُحب، والأثر لا يُستعمل،
-     * والملفّ يُعاد محوه بمحاولةٍ لاحقة.
+     * وتعثّرُ الكنسة لا يُغيّر جواب الطلب: الإذن سُحب فعلًا في القاعدة،
+     * وإخفاء ذلك يجعل المستخدم يظنّ أن سحبه لم يقع.
      */
-    try {
-      await purgeArtifactsForUser(ctx.userId);
-    } catch {
-      /* المحو محاولةٌ حسنة — والسلامة قائمةٌ دونه */
-    }
+    const sweep = await revokeTrainingForUser(supabase, ctx.userId);
+    revoked = sweep.revokedCandidates;
   }
 
   return json(

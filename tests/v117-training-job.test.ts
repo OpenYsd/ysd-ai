@@ -948,7 +948,14 @@ describe("★ (٩) الحدود — لا تدريب", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0045_ysd_training_jobs.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(45);
+    /**
+     * ★ الثابت: لا تكرار في الترقيم، والترحيلات المعنيّة قائمة.
+     *
+     * وكان الحارس يملك «أحدث رقم» — فيسقط مع كل ترحيلٍ جديد لا لأن شيئًا
+     * انكسر بل لأن المشروع تقدّم. وملكيةُ الأحدث تنتقل إلى أحدث مجموعة.
+     */
+    expect(numbers).toContain(45);
+    expect(new Set(numbers).size).toBe(numbers.length);
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 

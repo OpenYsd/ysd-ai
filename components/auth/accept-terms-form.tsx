@@ -1,18 +1,35 @@
 "use client";
 
 /**
- * نموذج قبول الشروط — الخطوة الأخيرة قبل دخول التطبيق لمستخدمي Google.
+ * نموذج قبول الشروط — البوّابة قبل دخول التطبيق.
  *
  * لا يمكن تخطّيه: تخطيط التطبيق يعيد التحويل إلى هنا ما دامت صفوف الموافقة
- * غائبة، فحتى من كتب /chat في شريط العنوان يعود. والقبول يُسجَّل خادميًا
- * بنسخة الوثيقة من الإعدادات لا من العميل.
+ * غائبة أو بنسخةٍ قديمة، فحتى من كتب /chat في شريط العنوان يعود. والقبول
+ * يُسجَّل خادميًا بنسخة الوثيقة من الإعدادات لا من العميل.
+ *
+ * ── ما تغيّر في المرحلة 6E ──
+ *
+ * صار يُعرَض لكل مستخدم لا لمستخدمي Google وحدهم: ارتفع إصدار الحزمة
+ * القانونية لأن سياسة الخصوصية صارت تُفصح عن المساهمة الاختيارية في تحسين
+ * YSD — ومن وافق على نصّ يوليو وافق على وثيقةٍ لا تذكرها.
+ *
+ * ونصُّه صار بلغتين: شاشةٌ تطلب موافقةً على وثيقةٍ ثم تكتب بلغةٍ لا يقرؤها
+ * صاحبها تطلب توقيعًا على ما لا يُفهم.
+ *
+ * ── وقبولُ الشروط ليس إذنًا بالتدريب ──
+ *
+ * لا يُرسل هذا النموذج شيئًا إلا إلى `/api/consent`، وذلك المسار يكتب في
+ * `user_consents` وحدها. ولا يمسّ `training_consents` ولا يُنشئ مرشّحًا ولا
+ * يُعيد إذنًا سُحب. نظامان منفصلان، ويحرس الفصلَ اختبار.
  */
 
 import { useState } from "react";
 import Link from "next/link";
+import { useI18n } from "@/lib/i18n";
 import { AuthButton, AuthError } from "@/components/auth/fields";
 
 export function AcceptTermsForm({ version }: { version: string }) {
+  const { t } = useI18n();
   const [agree, setAgree] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +41,7 @@ export function AcceptTermsForm({ version }: { version: string }) {
     try {
       const r = await fetch("/api/consent", { method: "POST" });
       if (!r.ok) {
-        setError("تعذّر حفظ الموافقة. حاول مرة أخرى.");
+        setError(t("acceptTermsFailed"));
         setLoading(false);
         return;
       }
@@ -32,7 +49,7 @@ export function AcceptTermsForm({ version }: { version: string }) {
       // طلبًا جديدًا يراها بدل تنقّل عميل يعتمد على ذاكرة الموجّه
       window.location.assign("/chat");
     } catch {
-      setError("تعذّر حفظ الموافقة. حاول مرة أخرى.");
+      setError(t("acceptTermsFailed"));
       setLoading(false);
     }
   };
@@ -40,10 +57,24 @@ export function AcceptTermsForm({ version }: { version: string }) {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-semibold text-ink-strong">خطوة أخيرة</h1>
+        <h1 className="text-lg font-semibold text-ink-strong">{t("acceptTermsTitle")}</h1>
         <p className="mt-1.5 text-[13px] text-ink-dim leading-relaxed">
-          قبل استخدام YSD AI، يلزم قبول شروط الاستخدام وسياسة الخصوصية.
+          {t("acceptTermsIntro")}
         </p>
+      </div>
+
+      {/*
+        ★ ملخّصٌ إعلاميّ — والوثيقتان هما النصّ المُلزِم.
+
+        فسطرٌ ودود لا يُغني عن قراءة ما يُوقَّع عليه، وقولُ ذلك صراحةً أصدق
+        من تركِ القارئ يظنّ أن الملخّص هو العقد.
+      */}
+      <div
+        data-what-changed=""
+        className="rounded-xl border border-primary/25 bg-primary/[0.07] px-4 py-3"
+      >
+        <p className="text-[12.5px] leading-relaxed text-ink">{t("acceptTermsWhatChanged")}</p>
+        <p className="mt-1.5 text-[11.5px] text-ink-faint">{t("acceptTermsAuthoritative")}</p>
       </div>
 
       <label className="flex items-start gap-2 text-[12.5px] text-ink-dim leading-relaxed cursor-pointer">
@@ -54,15 +85,20 @@ export function AcceptTermsForm({ version }: { version: string }) {
           className="mt-0.5"
         />
         <span>
-          أوافق على{" "}
+          {t("acceptTermsAgreePrefix")}{" "}
           <Link href="/terms" target="_blank" className="text-primary-glow hover:underline">
-            شروط الاستخدام
+            {t("termsLink")}
           </Link>
           {" · "}
           <Link href="/privacy" target="_blank" className="text-primary-glow hover:underline">
-            سياسة الخصوصية
+            {t("privacyLink")}
           </Link>
-          {version && <span className="text-ink-faint"> — {version}</span>}
+          {version && (
+            <span data-legal-version={version} className="text-ink-faint">
+              {" "}
+              — {version}
+            </span>
+          )}
         </span>
       </label>
 
@@ -70,15 +106,16 @@ export function AcceptTermsForm({ version }: { version: string }) {
 
       {/* type=button صراحةً: AuthButton افتراضه submit، ولا نموذج هنا */}
       <AuthButton type="button" disabled={!agree || loading} onClick={onAccept}>
-        {loading ? "جارٍ الحفظ…" : "أوافق ومتابعة"}
+        {loading ? t("acceptTermsSaving") : t("acceptTermsButton")}
       </AuthButton>
 
       <form action="/auth/signout" method="post" className="pt-1 text-center">
         <button
           type="submit"
-          className="text-[12.5px] text-ink-faint hover:text-ink transition-colors"
+          className="text-[12.5px] text-ink-faint hover:text-ink transition-colors
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-glow rounded"
         >
-          تسجيل الخروج
+          {t("logout")}
         </button>
       </form>
     </div>

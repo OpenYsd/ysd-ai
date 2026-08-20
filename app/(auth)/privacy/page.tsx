@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LEGAL_BUNDLE_VERSION } from "@/lib/legal";
 
 /**
  * العنوان بلا لاحقة — `title.template` في التخطيط الجذريّ يضيف «— YSD AI».
@@ -21,11 +22,18 @@ export const metadata = { title: "سياسة الخصوصية" };
  * أحد؛ وتغييرُه في القاعدة يُعيد سؤال كل مستخدم قائم. وأيّهما قرارُ مالكِ
  * المنتج لا قرارُ رقعةٍ في الشيفرة — فتُركت كما هي، وأُضيف تاريخ القسم وحده.
  */
+/**
+ * ★ النسخة من `lib/legal` لا نصًّا مكتوبًا (المرحلة 6E).
+ *
+ * كانت مكتوبةً هنا وفي الوثيقة الأخرى وفي الترحيل — ثلاثةُ مواضع يسهل
+ * أن يُبدَّل أحدها ويبقى الباقي يعرض تاريخًا مضى. و`tests/v128` يطابق
+ * هذا الثابت بقيمة الترحيل، فالانحراف يسقط بدل أن يمرّ.
+ */
 export default function PrivacyPage() {
   return (
     <article className="prose-invert max-w-none text-[13px] text-ink leading-relaxed space-y-3">
       <h1 className="text-lg font-semibold text-ink-strong">سياسة الخصوصية</h1>
-      <p className="text-ink-faint text-[11px]">النسخة: 2026-07-15</p>
+      <p className="text-ink-faint text-[11px]">النسخة: {LEGAL_BUNDLE_VERSION}</p>
       <p>
         تحترم YSD AI خصوصيتك. توضّح هذه السياسة البيانات التي نجمعها وكيفية استخدامها خلال
         النسخة التجريبية الخاصة.

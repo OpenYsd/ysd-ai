@@ -37,6 +37,7 @@ import {
   isProtectedPath,
   isPublicPath,
 } from "@/lib/route-policy";
+import { LEGAL_BUNDLE_VERSION, LEGAL_VERSION_MIGRATION } from "@/lib/legal";
 import {
   FAILURE_COPY,
   failureDir,
@@ -499,9 +500,16 @@ describe("★ (٤) الخصوصية — ما يضمنه النصّ", () => {
      * `platform_settings.terms_version` = "2026-07-15" (ترحيل 0011). وتغييرُ
      * الرقم هنا وحده يجعل الصفحة تدّعي نسخةً لم يوافق عليها أحد.
      */
-    expect(PRIVACY).toMatch(/النسخة: 2026-07-15/);
-    const migration = readSrc("supabase/migrations/0011_private_beta.sql");
-    expect(migration).toMatch(/'terms_version', '"2026-07-15"'/);
+    /**
+     * ★ رُفع الإصدار في المرحلة 6E — والوثيقة تقرؤه من `lib/legal` لا نصًّا.
+     *
+     * والثابت المحروس هو هو: ما تعرضه الوثيقة يطابق ما تفرضه القاعدة. وقد
+     * انتقل الفرضُ من بذرة `0011` إلى ترحيل `0046`.
+     */
+    expect(PRIVACY).toMatch(/النسخة: \{LEGAL_BUNDLE_VERSION\}/);
+    const bump = readSrc(`supabase/migrations/${LEGAL_VERSION_MIGRATION}`);
+    expect(bump).toContain(`'"${LEGAL_BUNDLE_VERSION}"'::jsonb`);
+    expect(bump).toContain("key = 'terms_version'");
   });
 });
 

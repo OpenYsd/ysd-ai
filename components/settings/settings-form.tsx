@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/components/theme";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { TrainingConsentToggle } from "./training-consent-toggle";
+import { DataControls } from "./data-controls";
 
 interface ModelOption {
   id: string;
@@ -139,6 +140,12 @@ export function SettingsForm({
             * فيُقرأ بعد ما يخصّ الشكل ولا يُدفن تحته.
             */}
           <TrainingConsentToggle />
+
+          {/*
+            ضوابط البيانات بجوار إذن المساهمة عمدًا: كلاهما قرارٌ عن
+            بياناتك، وتفريقُهما بين صفحتين يجعل أحدهما يُنسى.
+          */}
+          <DataControls />
         </div>
       </div>
     </>

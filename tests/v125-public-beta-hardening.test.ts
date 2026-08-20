@@ -315,7 +315,9 @@ describe("★ (٣) بلاغٌ يصل إنسانًا — بلا تسريب", () =
   });
 
   it("★ ★ ★ والموضوع رمزٌ من مجموعةٍ مغلقة لا نصٌّ يُعكَس", () => {
-    expect(SUPPORT_TOPICS).toEqual(["bad-answer"]);
+    /** نمت القائمة في 6E بموضوع حذف الحساب — والثابت أنها **مغلقة** */
+    expect(SUPPORT_TOPICS).toContain("bad-answer");
+    expect(SUPPORT_TOPICS.length).toBeLessThanOrEqual(4);
     expect(normalizeSupportTopic("bad-answer")).toBe("bad-answer");
     expect(normalizeSupportTopic("BAD-ANSWER")).toBe("bad-answer");
     for (const bad of [

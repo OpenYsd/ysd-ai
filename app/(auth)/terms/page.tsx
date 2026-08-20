@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LEGAL_BUNDLE_VERSION } from "@/lib/legal";
 
 /**
  * العنوان بلا لاحقة — `title.template` في التخطيط الجذريّ يضيف «— YSD AI».
@@ -6,11 +7,18 @@ import Link from "next/link";
  */
 export const metadata = { title: "شروط الاستخدام" };
 
+/**
+ * ★ النسخة من `lib/legal` لا نصًّا مكتوبًا (المرحلة 6E).
+ *
+ * كانت مكتوبةً هنا وفي الوثيقة الأخرى وفي الترحيل — ثلاثةُ مواضع يسهل
+ * أن يُبدَّل أحدها ويبقى الباقي يعرض تاريخًا مضى. و`tests/v128` يطابق
+ * هذا الثابت بقيمة الترحيل، فالانحراف يسقط بدل أن يمرّ.
+ */
 export default function TermsPage() {
   return (
     <article className="prose-invert max-w-none text-[13px] text-ink leading-relaxed space-y-3">
       <h1 className="text-lg font-semibold text-ink-strong">شروط الاستخدام</h1>
-      <p className="text-ink-faint text-[11px]">النسخة: 2026-07-15</p>
+      <p className="text-ink-faint text-[11px]">النسخة: {LEGAL_BUNDLE_VERSION}</p>
       <p>
         باستخدامك منصة YSD AI (النسخة التجريبية الخاصة) فإنك توافق على هذه الشروط. المنصة
         مقدَّمة «كما هي» خلال فترة التجربة، وقد تتغير الميزات أو تتوقف مؤقتًا.

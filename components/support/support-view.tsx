@@ -39,16 +39,20 @@ export function SupportView({
       {/*
         سياقُ البلاغ — نصٌّ من القاموس اختاره الرمز، لا شيءٌ وصل في الرابط.
       */}
-      {topic === "bad-answer" && (
+      {topic !== null && (
         <div
-          data-support-topic="bad-answer"
+          data-support-topic={topic}
           className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-3"
         >
           <p className="text-[13px] font-medium text-primary-glow">
-            {t("supportTopicBadAnswer")}
+            {topic === "bad-answer"
+              ? t("supportTopicBadAnswer")
+              : t("supportTopicAccountDeletion")}
           </p>
           <p className="mt-1 text-[12.5px] leading-relaxed text-ink-dim">
-            {t("supportTopicBadAnswerHint")}
+            {topic === "bad-answer"
+              ? t("supportTopicBadAnswerHint")
+              : t("supportTopicAccountDeletionHint")}
           </p>
         </div>
       )}

@@ -789,6 +789,114 @@ const dict = {
   },
   supportBack: { ar: "العودة إلى YSD AI", en: "Back to YSD AI" },
 
+  /* ═══════════ المرحلة 6E — ضوابط البيانات وإصدار الوثائق ═══════════ */
+
+  /**
+   * ★ التسمية دقيقة عمدًا.
+   *
+   * «حذف بياناتي» لا «حذف الحساب» — لأن `auth.users` **لا يُحذف** بهذا
+   * الإجراء. وتسميةٌ أوسع من الفعل تجعل صاحبها يظنّ أنه انصرف وقد بقي.
+   */
+  dataControlsTitle: { ar: "البيانات والخصوصية", en: "Data & privacy" },
+  deleteMyData: { ar: "حذف بياناتي", en: "Delete my data" },
+  deleteMyDataIntro: {
+    ar: "يحذف هذا الإجراء بيانات التطبيق الخاصة بك من YSD.",
+    en: "This deletes your YSD application data.",
+  },
+  deleteWhatGoesTitle: { ar: "ما يُحذف", en: "What is deleted" },
+  deleteItemConversations: { ar: "المحادثات والرسائل", en: "Conversations and messages" },
+  deleteItemProjects: { ar: "المشاريع", en: "Projects" },
+  deleteItemFiles: { ar: "الملفات المرفوعة ونسخها في التخزين", en: "Uploaded files and their stored copies" },
+  deleteItemRag: { ar: "المقاطع المستخرجة من ملفاتك المستعملة في البحث", en: "Passages extracted from your files for retrieval" },
+  deleteItemTraining: {
+    ar: "يُسحب إذن المساهمة في تحسين YSD، وتُلغى مساهماتك المعلّقة",
+    en: "Your consent to help improve YSD is withdrawn, and pending contributions are revoked",
+  },
+  deleteWhatStaysTitle: { ar: "ما يبقى", en: "What remains" },
+  deleteStaysAccount: {
+    ar: "حساب تسجيل الدخول نفسه لا يُحذف بهذا الإجراء.",
+    en: "Your sign-in account itself is not deleted by this action.",
+  },
+  deleteStaysUsage: {
+    ar: "عدّادات الاستهلاك تبقى — عليها تُبنى حدود باقتك.",
+    en: "Usage counters remain — your plan limits are enforced from them.",
+  },
+  /**
+   * ★ ولا وعدَ بما لا نملك.
+   *
+   * «مُحيت من كل نسخة احتياطية إلى الأبد» ادّعاءٌ لا يملكه أحدٌ هنا. والصادق
+   * أن المحو لا رجعةَ فيه **من داخل YSD** — وهو ما نملكه فعلًا.
+   */
+  deleteIrreversible: {
+    ar: "لا يمكن التراجع عن حذف هذه البيانات من داخل YSD.",
+    en: "This data deletion cannot be undone from within YSD.",
+  },
+  deleteTypeToConfirm: {
+    ar: "لتأكيد الحذف، اكتب العبارة التالية:",
+    en: "To confirm, type the following phrase:",
+  },
+  /** العبارة تتبع لغة الواجهة — فلا يُطالَب أحدٌ بكتابة لغةٍ لا يقرؤها */
+  deleteConfirmPhrase: { ar: "حذف بياناتي", en: "DELETE MY DATA" },
+  deleteConfirmPlaceholder: { ar: "اكتب العبارة هنا", en: "Type the phrase here" },
+  deleteConfirmMismatch: {
+    ar: "العبارة غير مطابقة.",
+    en: "The phrase does not match.",
+  },
+  deleteInProgress: { ar: "جارٍ الحذف…", en: "Deleting…" },
+  deleteDone: {
+    ar: "حُذفت بياناتك. سيُعاد تحميل التطبيق.",
+    en: "Your data was deleted. The app will reload.",
+  },
+  deleteFailed: {
+    ar: "تعذر حذف جميع البيانات. لم نعتبر العملية مكتملة. حاول مرة أخرى أو تواصل مع الدعم.",
+    en: "Some data could not be deleted. We did not treat this as complete. Try again or contact support.",
+  },
+  requestAccountDeletion: {
+    ar: "طلب حذف الحساب بالكامل",
+    en: "Request full account deletion",
+  },
+  requestAccountDeletionHint: {
+    ar: "حذف حساب تسجيل الدخول يتم عبر طلب إلى الدعم.",
+    en: "Deleting the sign-in account itself is done through a support request.",
+  },
+
+  supportTopicAccountDeletion: {
+    ar: "طلب حذف الحساب بالكامل",
+    en: "Requesting full account deletion",
+  },
+  supportTopicAccountDeletionHint: {
+    ar: "اذكر أنك تطلب حذف الحساب، وأرسل الطلب من البريد المرتبط بحسابك. ولا تُرسل كلمة مرورك.",
+    en: "Say that you are requesting account deletion, and send it from the email linked to your account. Never send your password.",
+  },
+
+  /* ── شاشة إعادة القبول ── */
+  acceptTermsTitle: { ar: "خطوة أخيرة", en: "One last step" },
+  acceptTermsIntro: {
+    ar: "قبل استخدام YSD AI، يلزم قبول شروط الاستخدام وسياسة الخصوصية.",
+    en: "Before using YSD AI, you need to accept the Terms of Use and the Privacy Policy.",
+  },
+  acceptTermsAgreePrefix: { ar: "أوافق على", en: "I agree to the" },
+  /**
+   * ★ ملخّصٌ إعلاميّ — والوثيقتان هما النصّ المُلزِم.
+   *
+   * فسطرٌ ودود لا يُغني عن قراءة ما يُوقَّع عليه، وقولُ ذلك صراحةً أصدق من
+   * تركِ القارئ يظنّ أن الملخّص هو العقد.
+   */
+  acceptTermsWhatChanged: {
+    ar: "تم تحديث سياسة الخصوصية لتوضيح المساهمة الاختيارية في تحسين YSD وضوابط استخدام بياناتك.",
+    en: "The Privacy Policy was updated to explain the optional contribution to improving YSD and the controls over how your data is used.",
+  },
+  acceptTermsAuthoritative: {
+    ar: "هذا ملخّص إعلامي — النصّ الكامل للوثيقتين هو المُلزِم.",
+    en: "This is an informational summary — the full documents are the authoritative text.",
+  },
+  acceptTermsButton: { ar: "أوافق ومتابعة", en: "Agree and continue" },
+  acceptTermsSaving: { ar: "جارٍ الحفظ…", en: "Saving…" },
+  acceptTermsFailed: {
+    ar: "تعذّر حفظ الموافقة. حاول مرة أخرى.",
+    en: "Couldn't save your acceptance. Try again.",
+  },
+
   /* ═══════════ المرحلة 6D — الإتاحة وأخطاء المحادثة ═══════════ */
 
   /**

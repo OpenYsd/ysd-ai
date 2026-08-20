@@ -96,7 +96,7 @@ export function isSupportConfigured(
  * لا نصّ رسالة، ولا معرّف رسالة أو محادثة أو مستخدم، ولا اسم نموذج. ما
  * يُوضع في عنوانٍ يُسجَّل في وكلاء وسجلّاتِ خوادم لا نملكها.
  */
-export const SUPPORT_TOPICS = ["bad-answer"] as const;
+export const SUPPORT_TOPICS = ["bad-answer", "account-deletion"] as const;
 
 export type SupportTopic = (typeof SUPPORT_TOPICS)[number];
 
