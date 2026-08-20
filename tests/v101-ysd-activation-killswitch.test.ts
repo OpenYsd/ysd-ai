@@ -293,7 +293,13 @@ describe("★ (١٣–١٩) البوّابة داخل الخدمة نفسها", 
     const chunks = await collect(provider.streamChat(chatRequest()));
     expect(deps.resolveDeployment).toHaveBeenCalledTimes(1);
     expect(deps.streamRuntimeChat).toHaveBeenCalledTimes(1);
-    expect(chunks.map((c) => c.type)).toEqual(["meta", "text", "done"]);
+    /**
+     * ★ حُدِّث بعد رقعة قياس المحاولات: أُضيف إطار `meta` ثانٍ يحمل
+     * العدّادين وحدهما. والترتيب المحروس هو ترتيب ما **يراه المستخدم**:
+     * نصٌّ ثم طرفيّ واحد.
+     */
+    expect(chunks.map((c) => c.type)).toEqual(["meta", "meta", "text", "done"]);
+    expect(chunks.filter((c) => c.type === "done")).toHaveLength(1);
     // ونسب الهدف من الرقعة السادسة كما هو
     const meta = chunks[0]!;
     expect(meta.model).toBe(YSD_ALPHA_MODEL_ID);

@@ -500,6 +500,151 @@ describe("★ الترحيلة 0037", () => {
 });
 
 
+
+/* ═══════════ (٣٦–٤١) قياس المحاولات ═══════════ */
+
+/**
+ * ★ الفجوة التي كشفتها نافذة الرصد الأولى.
+ *
+ * ٢٨ طلبًا حيًّا، وكلها تعرض `fallback_count = 0` و`provider_calls = -1`.
+ * وتتبّعُ الكود أثبت أنهما **قيمتان افتراضيتان لا قياسان**: المسار يشتقّهما
+ * من `chunk.attemptCount` و`chunk.providerCalls`، ومزوّد YSD لم يكن يبثّ
+ * أيًّا منهما. فكان الصفر يبدو إثباتًا لعزل الاحتياط وهو لا يقيسه — ولو وقع
+ * احتياطٌ يومًا لَبدا الحقل كما هو.
+ *
+ * ── وما يحرسه هذا القسم ──
+ *
+ * أن يصير الحقلان قياسًا، وأن يبقيا **صادقين** حين لا يقع نداء: فالكذب
+ * بالإيجاب ليس أفضل من الكذب بالسكوت.
+ */
+describe("★ (٣٦–٤١) الحقلان يقيسان لا يفترضان", () => {
+  const metasOf = (chunks: StreamChunk[]) => chunks.filter((c) => c.type === "meta");
+  const counterMeta = (chunks: StreamChunk[]) =>
+    metasOf(chunks).find((c) => typeof c.providerCalls === "number");
+
+  it("★ (٣٦) ★ بثٌّ ناجح ⇒ محاولةٌ واحدة ونداءٌ واحد", async () => {
+    const { provider } = build();
+    const chunks = await collect(provider.streamChat(chatRequest()));
+    const m = counterMeta(chunks);
+    expect(m).toBeDefined();
+    expect(m!.attemptCount).toBe(1);
+    expect(m!.providerCalls).toBe(1);
+  });
+
+  it("★ (٣٧) ★ ولا يتجاوزان الواحد مهما طال البثّ", async () => {
+    /**
+     * المزوّد بلا سلسلة احتياط داخلية ولا إعادة محاولة. فقيمةٌ أكبر من
+     * واحد تعني أن شيئًا تغيّر في التصميم بلا أن يتغيّر القياس معه.
+     */
+    const { provider } = build(
+      (async function* () {
+        for (let i = 0; i < 12; i++) yield { type: "text", text: `ج${i}` } as YSDRuntimeChunk;
+        yield { type: "usage", usage: { inputTokens: 5, outputTokens: 9 } } as YSDRuntimeChunk;
+        yield { type: "done" } as YSDRuntimeChunk;
+      }) as RuntimeStream,
+    );
+    const chunks = await collect(provider.streamChat(chatRequest()));
+    const counters = metasOf(chunks).filter((c) => typeof c.providerCalls === "number");
+    // إطارُ عدّادٍ واحد لا أكثر
+    expect(counters).toHaveLength(1);
+    expect(counters[0]!.attemptCount).toBe(1);
+    expect(counters[0]!.providerCalls).toBe(1);
+  });
+
+  it("★ (٣٨) ★ وطلبٌ ملغى قبل البدء ⇒ لا يدّعي نداءً لم يقع", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const { provider, deps } = build();
+    const chunks = await collect(provider.streamChat(chatRequest({ signal: ac.signal })));
+    expect(chunks).toHaveLength(0);
+    expect(deps.streamRuntimeChat).not.toHaveBeenCalled();
+  });
+
+  it("★ (٣٩) ★ والخدمة مغلقة أو الهدف متعذّر ⇒ لا عدّاد إطلاقًا", async () => {
+    /**
+     * لا نداء وقع، فلا رقم يُقال. و`-1` في القاعدة تعني «لم يُبلَّغ» — وهي
+     * الحقيقة هنا، لا نقصٌ في القياس.
+     */
+    delete process.env.YSD_PROVIDER_ENABLED;
+    const off = build();
+    expect(counterMeta(await collect(off.provider.streamChat(chatRequest())))).toBeUndefined();
+    process.env.YSD_PROVIDER_ENABLED = "1";
+
+    const unresolved = build();
+    unresolved.deps.resolveDeployment = vi.fn(async () => ({
+      ok: false,
+      reason: "no_active_deployment",
+    })) as unknown as typeof unresolved.deps.resolveDeployment;
+    const p2 = new YSDProvider(unresolved.deps as unknown as Partial<YSDProviderDependencies>);
+    expect(counterMeta(await collect(p2.streamChat(chatRequest())))).toBeUndefined();
+  });
+
+  it("★ (٤٠) ★★ وهدفٌ يرفضه الناقل قبل الاتصال ⇒ محاولةٌ بلا نداء", async () => {
+    /**
+     * ★ الحالة التي تجعل الرقم صادقًا لا تقريبيًّا.
+     *
+     * `invalid_target` رمزٌ يعني في عقد الناقل: رُفض الهدف **قبل أي
+     * اتصال** — صفر `fetch`. فالمحاولة بدأت والنداء لم يخرج. ولو قلنا
+     * `providerCalls: 1` هنا لَكنّا استبدلنا كذبًا بكذب.
+     */
+    const { provider } = build(
+      (async function* () {
+        yield { type: "error", reason: "invalid_target" } as YSDRuntimeChunk;
+      }) as RuntimeStream,
+    );
+    const chunks = await collect(provider.streamChat(chatRequest()));
+    const m = counterMeta(chunks);
+    expect(m).toBeDefined();
+    expect(m!.attemptCount).toBe(1);
+    expect(m!.providerCalls).toBe(0);
+  });
+
+  it("★ (٤٠′) وأعطالُ الاتصال الأخرى ⇒ نداءٌ وقع فعلًا", async () => {
+    for (const reason of ["network_error", "timeout", "unauthorized", "runtime_unavailable"] as const) {
+      const { provider } = build(
+        (async function* () {
+          yield { type: "error", reason } as YSDRuntimeChunk;
+        }) as RuntimeStream,
+      );
+      const m = counterMeta(await collect(provider.streamChat(chatRequest())));
+      expect(m!.providerCalls, reason).toBe(1);
+      expect(m!.attemptCount, reason).toBe(1);
+    }
+  });
+
+  it("★ (٤١) ★ وإطار العدّاد لا يمسّ النسب ولا يعبر إلى المتصفّح", async () => {
+    /**
+     * لا يحمل `model` ولا نسبًا، فلا يُرسل إلى العميل (حارسه `chunk.model`)
+     * ولا يُعدّ مجموعةً ثانية تُثير عَلَم التعارض.
+     */
+    const { provider } = build();
+    const chunks = await collect(provider.streamChat(chatRequest()));
+    const m = counterMeta(chunks)!;
+    expect(m.model).toBeUndefined();
+    expect(m.modelVersion).toBeUndefined();
+    expect(m.modelVersionId).toBeUndefined();
+    expect(m.deploymentId).toBeUndefined();
+    expect(m.deploymentEnvironment).toBeUndefined();
+
+    // والنسب ما يزال في إطاره الأول كاملًا
+    const prov = metasOf(chunks).find((c) => c.modelVersionId);
+    expect(prov!.model).toBe(YSD_ALPHA_MODEL_ID);
+    expect(prov!.modelVersion).toBe("1.4.2");
+    expect(prov!.deploymentId).toBe(DEPLOYMENT_ID);
+    expect(prov!.deploymentEnvironment).toBe("production");
+    expect(prov!.providerCalls).toBeUndefined();
+  });
+
+  it("★ ولا سرَّ ولا هدفَ اتصالٍ في أي إطار meta", async () => {
+    const { provider } = build();
+    const chunks = await collect(provider.streamChat(chatRequest()));
+    const wire = JSON.stringify(metasOf(chunks));
+    for (const leak of [RUNTIME_MODEL, ARTIFACT, ALIAS, BASE_URL, KEY, "base-a"]) {
+      expect(wire, leak).not.toContain(leak);
+    }
+  });
+});
+
 /* ═══════════ (٢٩–٣٥) المصدر: مزوّد YSD وحده ═══════════ */
 
 /**

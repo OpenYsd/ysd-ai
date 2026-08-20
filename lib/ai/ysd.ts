@@ -402,6 +402,31 @@ export class YSDProvider implements AIProviderAdapter {
      */
     let sawText = false;
     let sawTerminal = false;
+    /**
+     * ★ قياس المحاولات — يُبَثّ **بعد** أن يصير صادقًا، لا قبله.
+     *
+     * ── لماذا لا يُوضع في إطار `meta` أعلاه ──
+     *
+     * ذاك يُبَثّ قبل استدعاء المولّد أصلًا. و`streamRuntimeChat` مولّدٌ
+     * كسول: لا يقع `fetch` إلا عند أول `next()`. فبين الإطارين ينصرف
+     * المستخدم أحيانًا، ويعود الناقل بصفر اتصال. وإعلانُ `providerCalls: 1`
+     * هناك ادّعاءُ نداءٍ لم يقع — وهو الكذب الذي جاءت هذه الرقعة لإزالته
+     * لا لتبديله بآخر.
+     *
+     * ── والدلالة مأخوذة من العقد ──
+     *
+     * `providerCalls` = «طلبات التوليد **المرسَلة** فعلًا»، و`OpenRouter`
+     * يزيدها قبل `fetch` مباشرة. و`attemptCount` = محاولات النماذج، تُزاد
+     * عند بدء المحاولة. فيُبَثّان عند أول إطارٍ يصل من وقت التشغيل، إذ
+     * عنده يكون الطلب قد خرج.
+     *
+     * ── إلا حالةً واحدة ──
+     *
+     * `invalid_target` رمزٌ يعني في عقد الناقل: **رُفض الهدف قبل أي
+     * اتصال**. فالمحاولة بدأت والنداء لم يخرج — `attemptCount: 1` و
+     * `providerCalls: 0`. وبلا هذا التمييز يصير أول ما نقيسه خطأً.
+     */
+    let countersSent = false;
 
     try {
       for await (const chunk of this.deps.streamRuntimeChat(
@@ -410,6 +435,16 @@ export class YSDProvider implements AIProviderAdapter {
         target.version,
         req,
       )) {
+        if (!countersSent) {
+          countersSent = true;
+          const rejectedBeforeContact =
+            chunk.type === "error" && chunk.reason === "invalid_target";
+          yield {
+            type: "meta",
+            attemptCount: 1,
+            providerCalls: rejectedBeforeContact ? 0 : 1,
+          };
+        }
         if (chunk.type === "text") {
           sawText = true;
           yield { type: "text", text: chunk.text };

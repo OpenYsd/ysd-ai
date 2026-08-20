@@ -447,10 +447,18 @@ describe("★ (٢٠–٣٢) تحويل إطارات وقت التشغيل", () =
   it("★ (٣١) الإلغاء لا يُنتج إطار خطأ للمستخدم", async () => {
     const { provider } = build({ streamRuntimeChat: runtimeError("aborted") });
     const chunks = await collect(provider.streamChat(chatRequest()));
+    /**
+     * ★ حُدِّث بعد رقعة قياس المحاولات.
+     *
+     * الثابت المحروس هو: **لا إطار يراه المستخدم بعد الإلغاء** — لا خطأ
+     * ولا نصّ ولا طرفيّ مصطنع. وكان يُقاس بعدد الإطارات، فصار إطارُ
+     * عدّادٍ داخليّ يُسقطه بلا أن يُخالف الثابت. فيُقاس الثابت نفسه.
+     */
     expect(chunks.some((c) => c.type === "error")).toBe(false);
-    // meta وحده خرج قبل الإلغاء — ولا إطار طرفيّ مصطنع بعده
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]!.type).toBe("meta");
+    expect(chunks.some((c) => c.type === "text")).toBe(false);
+    expect(chunks.some((c) => c.type === "done")).toBe(false);
+    // وما خرج كله إطارات meta — ولا شيء منها يصل المتصفّح إلا المعرّف
+    expect(chunks.every((c) => c.type === "meta")).toBe(true);
     expect(chunks[0]!.model).toBe(YSD_ALPHA_MODEL_ID);
   });
 
