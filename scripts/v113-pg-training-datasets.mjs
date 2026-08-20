@@ -138,12 +138,13 @@ insert into public.training_candidates
 
 function run() {
   startContainer();
-  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042…");
+  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042 → 0043…");
   psql(BASE, { tuples: false });
   psql(mig("0040_ysd_training_bank.sql"), { tuples: false });
   psql(mig("0041_ysd_training_bank_hardening.sql"), { tuples: false });
   psql(mig("0042_ysd_training_dataset_releases.sql"), { tuples: false });
-  console.log("  ✅ الترحيلات الثلاث طُبّقت");
+  psql(mig("0043_ysd_training_dataset_hardening.sql"), { tuples: false });
+  console.log("  ✅ الترحيلات الأربع طُبّقت");
 
   // ── (١) لا زرع ──
   console.log("\n① الترحيلة لا تُدخل صفًّا");
@@ -154,7 +155,13 @@ function run() {
   // ── (٢) إعادة التطبيق آمنة ──
   console.log("\n② إعادة التطبيق لا تفشل");
   const again = attempt(mig("0042_ysd_training_dataset_releases.sql"));
-  ok(again.ok, "(٢) الترحيلة قابلة لإعادة التشغيل");
+  ok(again.ok, "(٢) 0042 قابلة لإعادة التشغيل");
+  const again43 = attempt(mig("0043_ysd_training_dataset_hardening.sql"));
+  ok(again43.ok, "(٢′) وكذلك 0043");
+  const chain = attempt(
+    mig("0040_ysd_training_bank.sql") + mig("0041_ysd_training_bank_hardening.sql") +
+    mig("0042_ysd_training_dataset_releases.sql") + mig("0043_ysd_training_dataset_hardening.sql"));
+  ok(chain.ok, "(٢″) ★ والأربع معًا تُعاد بلا إخفاق");
 
   psql(approvedCandidate(UA, AA, H1), { tuples: false });
   psql(approvedCandidate(UB, AB, H2), { tuples: false });
@@ -363,6 +370,116 @@ function run() {
           where table_name in ('training_dataset_releases','training_dataset_items')
             and column_name in ('user_id','raw_content','user_content','assistant_content','raw_jsonl');`) === "0",
     "(٣٣) ★ ولا نصَّ ولا هوّية في جدولَي الإصدار");
+
+  // ── (١٢) تشديد 0043 ──
+  console.log("\n⓬ ★ التشديد (0043)");
+
+  /**
+   * ★ الدالّة لا تُستدعى مباشرةً.
+   *
+   * وهي `security definer` تقرأ جدولًا مسحوبةً امتيازاته من أدوار
+   * العميل — فبقاء `execute` مفتوحًا نافذةٌ حول ذلك المنع.
+   */
+  const FN = "public.guard_frozen_dataset_items()";
+  for (const role of ["anon", "authenticated"]) {
+    ok(one(`select has_function_privilege('${role}', '${FN}', 'EXECUTE')::int;`) === "0",
+      "(٣٤/" + role + ") ★ لا execute لـ" + role);
+  }
+  ok(one(`select coalesce(
+            (select count(*) from pg_proc p, unnest(coalesce(p.proacl, '{}')) a
+              where p.proname='guard_frozen_dataset_items' and a::text like '=X/%'), 0)::text;`) === "0",
+    "(٣٥) ★ وPUBLIC لا يملكه");
+
+  ok(one(`select prosecdef::int from pg_proc where proname='guard_frozen_dataset_items';`) === "1",
+    "(٣٦) وهي ما تزال `security definer` — لا تغيير سلوك");
+  ok(one(`select count(*) from pg_trigger
+          where tgname='training_dataset_items_frozen_guard' and not tgisinternal;`) === "1",
+    "(٣٧) والمِشغَل قائم");
+
+  /**
+   * ★ والسؤال الذي لا يُجيبه إلّا تشغيل حقيقيّ: أيبقى يعمل؟
+   *
+   * دورٌ يكتب ولا يملك `execute` — كما هو حال `service_role` بعد
+   * السحب من PUBLIC. وPostgreSQL يفحص `execute` عند **إنشاء** المِشغَل
+   * لا عند إطلاقه — وهذا ما يُثبَت هنا لا يُدَّعى.
+   */
+  psql(`create role ysd_writer nologin bypassrls;
+    grant usage on schema public to ysd_writer;
+    grant select, insert, update, delete on public.training_dataset_releases to ysd_writer;
+    grant select, insert, update, delete on public.training_dataset_items to ysd_writer;
+    grant usage on sequence public.training_dataset_version_seq to ysd_writer;`, { tuples: false });
+
+  ok(one(`select has_function_privilege('ysd_writer', '${FN}', 'EXECUTE')::int;`) === "0",
+    "(٣٨) ★ والكاتب نفسه لا يملك `execute`");
+
+  const D1 = one(`insert into public.training_dataset_releases default values returning id;`);
+  const asWriter = attempt(`set role ysd_writer;
+    insert into public.training_dataset_items
+      (dataset_release_id, candidate_id, sample_order, sample_hash)
+      values ('${D1}', '${C1}', 0, '${SH}');
+    reset role;`);
+  ok(asWriter.ok, "(٣٩) ★ ويُدخِل في المسوَّدة — المِشغَل يعمل بلا `execute`");
+
+  const updWriter = attempt(`set role ysd_writer;
+    update public.training_dataset_items set sample_order = 3
+      where dataset_release_id='${D1}';
+    reset role;`);
+  ok(updWriter.ok, "(٤٠) ويُعَدِّل فيها");
+
+  psql(`update public.training_dataset_releases
+    set status='frozen', frozen_at=now(), manifest_hash='${SH}', sample_count=1
+    where id='${D1}';`, { tuples: false });
+
+  const addFrozen = attempt(`set role ysd_writer;
+    insert into public.training_dataset_items
+      (dataset_release_id, candidate_id, sample_order, sample_hash)
+      values ('${D1}', '${C2}', 9, '${SH}');
+    reset role;`);
+  ok(!addFrozen.ok && /immutable/i.test(addFrozen.out),
+    "(٤١) ★ ويَحرُس المجمَّد — إضافةٌ");
+
+  const updFrozen = attempt(`set role ysd_writer;
+    update public.training_dataset_items set sample_order = 5
+      where dataset_release_id='${D1}';
+    reset role;`);
+  ok(!updFrozen.ok && /immutable/i.test(updFrozen.out),
+    "(٤٢) ★ وتعديلًا");
+
+  /** والحذف كما كان: يمرّ — فمحو صاحب الكلام لا يُمنع */
+  const delFrozen = attempt(`set role ysd_writer;
+    delete from public.training_dataset_items where dataset_release_id='${D1}';
+    reset role;`);
+  ok(delFrozen.ok, "(٤٣) ★ والحذف كما كان — لم يتغيّر بالتشديد");
+
+  /** ★ ولا طريق RPC: استدعاءٌ مباشر يُردّ */
+  const rpc = attempt(`set role ysd_writer;
+    select public.guard_frozen_dataset_items();
+    reset role;`);
+  ok(!rpc.ok && /permission denied/i.test(rpc.out),
+    "(٤٤) ★ ولا استدعاء مباشر");
+
+  // ── الفهرس ──
+  ok(one(`select count(*) from pg_indexes
+          where tablename='training_dataset_releases'
+            and indexname='training_dataset_releases_created_by_idx';`) === "1",
+    "(٤٥) فهرس `created_by` موجود");
+  ok(one(`select array_to_string(array_agg(a.attname order by k.ord), ',')
+          from pg_index i
+          join pg_class c on c.oid = i.indexrelid
+          cross join lateral unnest(i.indkey) with ordinality as k(attnum, ord)
+          join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum
+          where c.relname = 'training_dataset_releases_created_by_idx';`) === "created_by",
+    "(٤٦) ★ وعلى `created_by` وحده — لا عمود آخر");
+
+  /** والمرجع لم يُمسّ */
+  ok(one(`select confdeltype::text from pg_constraint
+          where conname='training_dataset_releases_created_by_fkey';`) === "n",
+    "(٤٧) و`on delete set null` كما هي");
+
+  /**
+   * ولا يُحذف الدور: الحاوية تُهدم بعد قليل، وحذفُه يلزمه سحبُ كل ما
+   * مُنح له أوّلًا — عملٌ لا يقيس شيئًا ويُسقط الجولة إن تعثّر.
+   */
 
   console.log(`\n═══ النتيجة: ${passed}/${passed + failed} ${failed === 0 ? "✅" : "❌"}   الإخفاقات: ${failed}`);
 }

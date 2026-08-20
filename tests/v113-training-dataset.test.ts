@@ -50,6 +50,7 @@ const stripSql = (src: string) =>
 const DATASET_SRC = readSrc("lib/training/dataset.ts");
 const FORMAT_SRC = readSrc("lib/training/dataset-format.ts");
 const MIGRATION = readSrc("supabase/migrations/0042_ysd_training_dataset_releases.sql");
+const HARDENING = readSrc("supabase/migrations/0043_ysd_training_dataset_hardening.sql");
 const LIST_ROUTE = readSrc("app/api/admin/training-datasets/route.ts");
 const FREEZE_ROUTE = readSrc("app/api/admin/training-datasets/[id]/freeze/route.ts");
 const CHAT_ROUTE = readSrc("app/api/chat/route.ts");
@@ -784,12 +785,88 @@ describe("★ (٨) المساران — للمشرف وحده، ولا يقبل�
   });
 });
 
+/* ═══════════ (١٠) التشديد (0043) ═══════════ */
+
+describe("★ (١٠) 0043 — صلاحيةٌ وأداءٌ لا سلوك", () => {
+  it("★ ★ `execute` مسحوب من PUBLIC و`anon` و`authenticated`", () => {
+    /**
+     * ── ولماذا يلزم، والدالّة لا تفعل شيئًا خطيرًا ظاهرًا ──
+     *
+     * لأنها `security definer` تقرأ جدولًا سُحبت امتيازاته من أدوار العميل
+     * عمدًا. فبقاء البابِ مفتوحًا يجعلها نافذةً حول ذلك المنع: تُفرّق في
+     * السلوك بين إصدارٍ مجمَّدٍ موجود (استثناء) وإصدارٍ لا وجود له (صمت) —
+     * وذلك فرقٌ يُقرأ، وقناةٌ جانبية تكشف وجود الصفّ وحالته.
+     */
+    /**
+     * والمقارنة نصّية لا نمطيّة: السطر المطلوب حرفٌ واحد لا يحتمل تأويلًا،
+     * وتعبيرٌ نمطيّ فيه أقواس يُهرَّب مرّتين فيُخطئ من يقرأه.
+     */
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(stripSql(HARDENING)).toContain(
+        `revoke execute on function public.guard_frozen_dataset_items() from ${role};`,
+      );
+    }
+  });
+
+  it("★ ★ ولا يُعاد منحها لأحدٍ من أدوار العميل", () => {
+    expect(stripSql(HARDENING)).not.toMatch(/grant execute on function public\.guard_frozen_dataset_items/);
+    expect(stripSql(HARDENING)).not.toMatch(/to (anon|authenticated|public)/);
+  });
+
+  it("★ ★ وتبقى `security definer` — السحب لا يغيّر سلوكًا", () => {
+    /**
+     * ★ والقياس على الأمر لا على شرحه: الترحيلة تفسّر **لماذا لا** تُحوّل
+     * إلى `security invoker`، وحارسٌ يقرأ شرحه دليلًا على وقوعه يشهد زورًا
+     * على نفسه. فتُجرَّد تعليقات SQL قبل كل قياسٍ هنا.
+     *
+     * و`security invoker` كانت ستجعلها تقرأ بصلاحية الكاتب: يمرّ
+     * `service_role` اليوم، ويسقط مِشغَلُ أيّ دورٍ يُمنح كتابةً غدًا بخطأِ
+     * صلاحيةٍ غامض بدل أن يحرس. والسحب يُغلق الباب بلا أن يمسّ ما وراءه.
+     */
+    expect(stripSql(HARDENING)).not.toMatch(/security invoker/);
+    expect(stripSql(HARDENING)).not.toMatch(/create or replace function public\.guard_frozen_dataset_items/);
+    expect(MIGRATION).toMatch(/security definer/);
+  });
+
+  it("★ ★ وفهرسٌ على `created_by` وحده", () => {
+    expect(stripSql(HARDENING)).toMatch(
+      /create index if not exists training_dataset_releases_created_by_idx\s+on public\.training_dataset_releases \(created_by\);/,
+    );
+  });
+
+  it("★ ★ ولا تمسّ المرجع ولا 0042", () => {
+    expect(stripSql(HARDENING)).not.toMatch(/alter table[\s\S]*constraint|drop constraint|drop index|drop trigger/);
+    expect(stripSql(HARDENING)).not.toMatch(/^\s*insert into/im);
+    expect(stripSql(HARDENING)).not.toMatch(/update public\.|delete from public\./);
+  });
+
+  it("★ ★ ولا تمسّ المرشّحين ولا الموافقات ولا خدمة YSD", () => {
+    for (const t of ["training_candidates", "training_consents", "ai_models",
+                     "ai_model_deployments", "messages", "conversations"]) {
+      expect(stripSql(HARDENING)).not.toMatch(new RegExp(t));
+    }
+  });
+
+  it("★ ★ ولا تصدير ولا تدريب", () => {
+    expect(stripSql(HARDENING)).not.toMatch(/jsonl|dataset_export|fine_?tune|LoRA|weights|gpu/i);
+  });
+
+  it("★ وهي التالية في الترقيم", () => {
+    const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
+    expect(files).toContain("0043_ysd_training_dataset_hardening.sql");
+    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    expect(Math.max(...numbers)).toBe(43);
+    expect(new Set(numbers).size).toBe(numbers.length);
+  });
+});
+
 /* ═══════════ (٩) الترحيلة ═══════════ */
 
 describe("★ (٩) 0042 — بالحدّ الأدنى", () => {
-  it("★ ★ وهي التالية في الترقيم", () => {
+  it("★ ★ و0042 قائمةٌ في الترقيم", () => {
+    /** وملكيّة «أحدث رقم» للكتلة (١٠) — فلا يسقط هذا مع كل ترحيلةٍ تُضاف */
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(42);
+    expect(files).toContain("0042_ysd_training_dataset_releases.sql");
   });
 
   it("★ ★ جدولان لا أكثر", () => {
