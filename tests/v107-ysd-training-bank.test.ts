@@ -124,13 +124,39 @@ const activeConsent = [
   },
 ];
 
+/** الموافقة في `activeConsent` مؤرَّخة بـ 2026-08-20T00:00:00Z */
+const AFTER_CONSENT = "2026-08-20T09:00:00Z";
+const BEFORE_CONSENT = "2026-08-19T23:59:59Z";
+
 const goodSources = {
   conversation: [{ id: CONV, user_id: USER, deleted_at: null }],
   messages: [
-    { id: UMSG, conversation_id: CONV, role: "user", content: LONG_USER, deleted_at: null },
-    { id: AMSG, conversation_id: CONV, role: "assistant", content: LONG_ASSISTANT, deleted_at: null },
+    {
+      id: UMSG, conversation_id: CONV, role: "user", content: LONG_USER,
+      created_at: AFTER_CONSENT, deleted_at: null, metadata: {},
+    },
+    {
+      id: AMSG, conversation_id: CONV, role: "assistant", content: LONG_ASSISTANT,
+      created_at: AFTER_CONSENT, deleted_at: null, metadata: {},
+    },
   ],
 };
+
+/** يبني زوجًا بطابعٍ ووصفٍ مختارين */
+const pairAt = (
+  userAt: string | null,
+  asstAt: string | null,
+  metadata: Record<string, unknown> = {},
+) => [
+  {
+    id: UMSG, conversation_id: CONV, role: "user", content: LONG_USER,
+    created_at: userAt, deleted_at: null, metadata: {},
+  },
+  {
+    id: AMSG, conversation_id: CONV, role: "assistant", content: LONG_ASSISTANT,
+    created_at: asstAt, deleted_at: null, metadata,
+  },
+];
 
 const input = (over: Record<string, unknown> = {}) => ({
   userId: USER,
@@ -414,6 +440,129 @@ describe("★ (٦) لا تكرار — والحارس في القاعدة", () =
 });
 
 /* ═══════════ (٧) المسار الكامل والإبطال ═══════════ */
+
+/* ═══════════ (٦′) حدّ الإذن الزمنيّ ═══════════ */
+
+describe("★ (٦′) لا عيّنة بأثر رجعيّ", () => {
+  it("★ ★ زوجٌ سبق الموافقة ⇒ رفض — ولو اختاره صاحبه اليوم", async () => {
+    /**
+     * وهذا هو الفرق بين «أذنتُ» و«أذنتُ لما مضى». المستخدم يملك أن يأذن
+     * لما هو آتٍ، ولا يملك أن يُنشئ إذنًا في الماضي — فالماضي قيل حين لم
+     * يكن أحدٌ يسأل، ولا يصير مأذونًا بسؤالٍ متأخّر.
+     */
+    const db = memoryDb({
+      consent: activeConsent,
+      ...goodSources,
+      messages: pairAt(BEFORE_CONSENT, BEFORE_CONSENT),
+    });
+    const r = await run(db);
+    expect(r).toEqual({ ok: false, reason: "before_consent" });
+    expect(db.calls.inserts).toHaveLength(0);
+  });
+
+  it("★ ★ ويكفي أن يسبقها **أحدهما**", async () => {
+    /**
+     * السؤال قبل الإذن والجواب بعده ⇒ الزوج كلّه مرفوض. لأن العيّنة هي
+     * الاثنان معًا: تعليمُ جوابٍ على سؤالٍ لم يُؤذن به تعليمٌ للسؤال أيضًا.
+     */
+    for (const messages of [
+      pairAt(BEFORE_CONSENT, AFTER_CONSENT),
+      pairAt(AFTER_CONSENT, BEFORE_CONSENT),
+    ]) {
+      const db = memoryDb({ consent: activeConsent, ...goodSources, messages });
+      expect(await run(db)).toEqual({ ok: false, reason: "before_consent" });
+      expect(db.calls.inserts).toHaveLength(0);
+    }
+  });
+
+  it("★ ★ وطابعٌ غائب أو غير مقروء ⇒ رفض — لا «ربما»", async () => {
+    for (const messages of [
+      pairAt(null, AFTER_CONSENT),
+      pairAt(AFTER_CONSENT, null),
+      pairAt("ليس تاريخًا", AFTER_CONSENT),
+    ]) {
+      const db = memoryDb({ consent: activeConsent, ...goodSources, messages });
+      expect(await run(db)).toEqual({ ok: false, reason: "before_consent" });
+    }
+  });
+
+  it("★ ★ وموافقةٌ بلا `granted_at` لا تفتح شيئًا", async () => {
+    // `isConsentActive` ترفضها سلفًا — وهذا يثبت أن البوّابتين متّسقتان
+    const db = memoryDb({
+      consent: [{ enabled: true, policy_version: TRAINING_CONSENT_POLICY_VERSION, granted_at: null, revoked_at: null }],
+      ...goodSources,
+    });
+    expect(await run(db)).toEqual({ ok: false, reason: "consent_missing" });
+    expect(db.calls.inserts).toHaveLength(0);
+  });
+
+  it("★ واللحظة نفسها مأذونة — الحدّ شامل", async () => {
+    const db = memoryDb({
+      consent: activeConsent,
+      ...goodSources,
+      messages: pairAt("2026-08-20T00:00:00Z", "2026-08-20T00:00:00Z"),
+    });
+    expect((await run(db)).ok).toBe(true);
+  });
+
+  it("★ وفروق المناطق الزمنية تُقاس لا تُقارن نصًّا", async () => {
+    /**
+     * «2026-08-19T21:00:00-04:00» يسبق «2026-08-20T00:00:00Z» في النصّ
+     * ويساويه في الزمن. فالمقارنة على اللحظة لا على الحروف.
+     */
+    const db = memoryDb({
+      consent: activeConsent,
+      ...goodSources,
+      messages: pairAt("2026-08-19T21:00:00-04:00", "2026-08-19T21:00:00-04:00"),
+    });
+    expect((await run(db)).ok).toBe(true);
+  });
+
+  it("★ ★ والشرط داخل الباب الوحيد — لا في مستدعٍ", () => {
+    /**
+     * فمستدعٍ يُكتب بعد سنة لا يقرأ عقدًا مكتوبًا في طبقةٍ أخرى. والحارس
+     * الذي يعيش في الأعلى يسقط أوّل ما يُفتح طريقٌ ثانٍ إلى البنك.
+     */
+    const src = stripComments(CANDIDATE_SRC);
+    expect(src).toMatch(/before_consent/);
+    expect(src).toMatch(/isAfter\(\s*userMsg\.created_at/);
+    expect(src).toMatch(/isAfter\(\s*assistantMsg\.created_at/);
+    expect(src).toMatch(/consent\.grantedAt/);
+    // ولا يُقاس على المحادثة
+    expect(src).not.toMatch(/conversation\.created_at/);
+  });
+
+  it("★ ★ وحالُ الردّ يُقرأ من القاعدة لا من المستدعي", async () => {
+    /**
+     * `screenQuality` تأخذ `completion` وسيطًا؛ ووسيطٌ يُملأ من الخارج بابٌ
+     * يُنسى. فردٌّ موسومٌ ناقصًا في `metadata` يُرفض ولو لم يمرّر المستدعي شيئًا.
+     */
+    const db = memoryDb({
+      consent: activeConsent,
+      ...goodSources,
+      messages: pairAt(AFTER_CONSENT, AFTER_CONSENT, {
+        completion: { status: "incomplete_provider", reason: "stream_interrupted" },
+      }),
+    });
+    const r = await run(db);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("quality_rejected");
+      expect(r.qualityCodes).toContain("incomplete_completion");
+      expect(r.qualityCodes).toContain("provider_error");
+    }
+    expect(db.calls.inserts).toHaveLength(0);
+  });
+
+  it("★ وغيابُ الوسم يعني مكتملًا — فالرسائل القديمة تبقى صالحة", async () => {
+    const db = memoryDb({
+      consent: activeConsent,
+      ...goodSources,
+      messages: pairAt(AFTER_CONSENT, AFTER_CONSENT, {}),
+    });
+    expect((await run(db)).ok).toBe(true);
+  });
+});
 
 describe("★ (٧) المرشّح والإبطال", () => {
   it("★ زوجٌ سليم بموافقةٍ سارية ⇒ مرشّحٌ معلّق", async () => {

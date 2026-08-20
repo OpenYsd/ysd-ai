@@ -44,6 +44,7 @@ import {
 } from "@/lib/evidence/evidence-layout";
 import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { TrainingShareAction } from "./training-share-action";
 import { Markdown } from "./markdown";
 
 export interface ChatModel {
@@ -1017,6 +1018,13 @@ export function ChatView({
             {initialTitle}
           </div>
         )}
+        {/**
+          * ★ لا يظهر إلا لمحادثةٍ محفوظة.
+          *
+          * قبل أول رسالة لا يوجد `conversationId` ولا شيء يُشارك، وزرٌّ
+          * يَعِد بفعلٍ لا موضوع له يُربك أكثر مما يفيد.
+          */}
+        {conversationId && <TrainingShareAction conversationId={conversationId} />}
       </header>
 
       {noProvider && (

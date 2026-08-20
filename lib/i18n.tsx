@@ -138,6 +138,59 @@ const dict = {
     ar: "تعذّر تحديث إعداد المشاركة. حاول مرة أخرى.",
     en: "Could not update sharing preference. Please try again.",
   },
+
+  /* ── مشاركة محادثةٍ مع بنك تحسين YSD (v0.9.5) ── */
+  /**
+   * ★ «لتحسين YSD» جزءٌ من الاسم لا زينة.
+   *
+   * «شارك هذه المحادثة» وحدها تُقرأ تصديرًا أو رابطًا عامًّا — وهي أشيع
+   * معاني الكلمة في التطبيقات. فتُقيَّد بوجهتها في كل موضع تظهر فيه.
+   */
+  shareForTraining: {
+    ar: "شارك هذه المحادثة لتحسين YSD",
+    en: "Share this conversation to improve YSD",
+  },
+  shareForTrainingConfirmTitle: {
+    ar: "مشاركة المحادثة لتحسين YSD؟",
+    en: "Share this conversation to improve YSD?",
+  },
+  shareForTrainingConfirmBody: {
+    ar: "سيتم إرسال الأجزاء المؤهلة من هذه المحادثة التي أُنشئت بعد موافقتك إلى بنك تحسين YSD للفحص قبل أي استخدام تدريبي.",
+    en: "Eligible parts of this conversation created after your consent will be sent to the YSD improvement bank for review before any training use.",
+  },
+  shareForTrainingConfirmNote: {
+    ar: "لن يتم تدريب النموذج مباشرةً، ولن تُضمّن الرسائل الأقدم من وقت موافقتك.",
+    en: "The model is not trained directly, and messages older than your consent are not included.",
+  },
+  shareForTrainingConfirmAction: { ar: "مشاركة", en: "Share" },
+  shareForTrainingCancel: { ar: "إلغاء", en: "Cancel" },
+  shareForTrainingClose: { ar: "إغلاق", en: "Close" },
+  /**
+   * ★ «للمراجعة» — لا «تم التدريب».
+   *
+   * ما يقع فعلًا أن العيّنات تدخل موقوفةً بانتظار فحص. وقولُ «تم تدريب
+   * YSD» يصف شيئًا لم يحدث، ويجعل صاحبه يظنّ أن سحب إذنه لاحقًا لا يُجدي.
+   */
+  shareForTrainingSuccess: {
+    ar: "تمت إضافة الأجزاء المؤهلة إلى بنك تحسين YSD للمراجعة.",
+    en: "Eligible parts were added to the YSD improvement bank for review.",
+  },
+  shareForTrainingNothingNew: {
+    ar: "تمت مراجعة المحادثة، ولا توجد أجزاء جديدة لإضافتها.",
+    en: "This conversation was reviewed, and there are no new parts to add.",
+  },
+  shareForTrainingOlderSkipped: {
+    ar: "تم تجاهل الرسائل الأقدم من وقت موافقتك.",
+    en: "Messages older than your consent were skipped.",
+  },
+  shareForTrainingConsentRequired: {
+    ar: "لتفعيل المشاركة، افتح الإعدادات وشغّل «ساعد في تحسين YSD».",
+    en: "To enable sharing, open Settings and turn on “Help improve YSD”.",
+  },
+  shareForTrainingError: {
+    ar: "تعذّرت المشاركة. حاول مرة أخرى.",
+    en: "Could not share the conversation. Please try again.",
+  },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {
