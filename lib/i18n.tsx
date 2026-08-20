@@ -100,6 +100,44 @@ const dict = {
   tokens: { ar: "Tokens", en: "Tokens" },
   of: { ar: "من", en: "of" },
   saved: { ar: "تم الحفظ", en: "Saved" },
+
+  /* ── إذن المساهمة في تحسين YSD (v0.9.4) ── */
+  trainingConsentSection: {
+    ar: "الخصوصية وتحسين YSD",
+    en: "Privacy & YSD Improvement",
+  },
+  trainingConsentTitle: {
+    ar: "ساعد في تحسين YSD",
+    en: "Help improve YSD",
+  },
+  trainingConsentDescription: {
+    ar: "اسمح لـ YSD باستخدام المحادثات التي تختار مشاركتها للمساعدة في تحسين نماذجه المستقبلية.",
+    en: "Allow YSD to use conversations you choose to share to help improve future YSD models.",
+  },
+  /**
+   * ★ نصٌّ يقول ما لا يقع كما يقول ما يقع.
+   *
+   * فلو كُتب «ستُستخدم محادثاتك» لَوافق الناس على شيءٍ لا يجري، ثم شعروا
+   * بالخديعة يوم يجري غيره. و«التي تختار مشاركتها» هي التصميم نفسه.
+   */
+  trainingConsentNotice: {
+    ar: "لن يؤدي تشغيل هذا الخيار إلى تدريب النموذج مباشرة على كل رسالة، ولن تُستخدم محادثاتك السابقة بأثر رجعي.",
+    en: "Turning this on does not train the model directly on every message, and your previous conversations are not included retroactively.",
+  },
+  trainingConsentReversible: {
+    ar: "يمكنك إيقاف المشاركة في أي وقت.",
+    en: "You can turn sharing off at any time.",
+  },
+  trainingConsentReconsent: {
+    ar: "تحتاج إلى الموافقة مجددًا على سياسة المشاركة الحالية.",
+    en: "You need to consent again to the current sharing policy.",
+  },
+  trainingConsentOn: { ar: "تم تفعيل المشاركة.", en: "Sharing enabled." },
+  trainingConsentOff: { ar: "تم إيقاف المشاركة.", en: "Sharing disabled." },
+  trainingConsentError: {
+    ar: "تعذّر تحديث إعداد المشاركة. حاول مرة أخرى.",
+    en: "Could not update sharing preference. Please try again.",
+  },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

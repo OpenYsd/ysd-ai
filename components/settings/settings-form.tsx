@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import { useTheme } from "@/components/theme";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { TrainingConsentToggle } from "./training-consent-toggle";
 
 interface ModelOption {
   id: string;
@@ -127,6 +128,12 @@ export function SettingsForm({
               </select>
             )}
           </section>
+
+          {/**
+            * الخصوصية بعد اللغة والنموذج — قرارٌ يخصّ البيانات لا العرض،
+            * فيُقرأ بعد ما يخصّ الشكل ولا يُدفن تحته.
+            */}
+          <TrainingConsentToggle />
         </div>
       </div>
     </>
