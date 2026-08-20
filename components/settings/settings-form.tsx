@@ -105,10 +105,15 @@ export function SettingsForm({
               {t("defaultModel")}
             </h2>
             {models.length === 0 ? (
-              <p className="text-[13px] text-ink-faint">
-                {locale === "ar"
-                  ? "لا توجد نماذج متاحة — أضف مفتاح موفر إلى ملف .env"
-                  : "No models available — add a provider key to .env"}
+              /**
+               * ★ لا تعليمَ مشغِّلٍ هنا (v0.9.12، المرحلة 6A).
+               *
+               * كان النصّ يطلب إضافة مفتاح مزوّد إلى ملفّ `.env` — بالعربية
+               * والإنجليزية معًا. والقائمةُ تفرغ لأسبابٍ تشغيلية لا يملك
+               * المستخدم منها شيئًا، فيُقال له ما يعنيه ذلك وما يفعله.
+               */
+              <p role="status" data-no-models="" className="text-[13px] text-ink-faint">
+                {t("noModelsAvailable")}
               </p>
             ) : (
               <select

@@ -6,18 +6,14 @@ import { getCachedSettings } from "@/lib/settings";
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 
-const PUBLIC_PATHS = [
-  "/login",
-  "/register",
-  "/forgot-password",
-  "/auth",
-  "/beta",
-  "/invite",
-  "/terms",
-  "/privacy",
-  "/suspended",
-  "/maintenance",
-];
+/**
+ * ★ سياسة المسارات من وحدةٍ واحدة (v0.9.12، المرحلة 6A).
+ *
+ * كانت القوائم هنا، فكان اختبارها تفتيشًا نصّيًّا: يُثبت أن سطرًا مكتوب لا
+ * أن مسارًا محميّ. وخروجها إلى `lib/route-policy` يجعل الاختبار **يشغّل**
+ * القاعدة نفسها التي يشغّلها الوسيط — راجعها هناك لشرح التعداد وحدوده.
+ */
+import { isProtectedPath, isPublicPath } from "@/lib/route-policy";
 // مسارات API عامة لا تتطلب مستخدمًا نشطًا
 // /api/live: فحص حياة المنصّة — يجب أن يعمل حتى بلا جلسة وبلا أي تبعية.
 const PUBLIC_API = ["/api/health", "/api/live"];
@@ -50,7 +46,7 @@ export async function middleware(request: NextRequest) {
   );
 
   const path = request.nextUrl.pathname;
-  const isPublic = PUBLIC_PATHS.some((p) => path.startsWith(p));
+  const isPublic = isPublicPath(path);
   const isApi = path.startsWith("/api");
 
   // يبني الاستجابة النهائية. مهم: نضع قياسات الوسيط في **ترويسة طلب داخلية**
@@ -101,7 +97,8 @@ export async function middleware(request: NextRequest) {
     // انتهت جلسة كانت قائمة → ميّزها عن «لم يسجّل دخولًا أصلًا» ليعرف العميل السبب
     const expired = hasAuthCookie(request);
     if (isApi) return finalize(expired ? json401Expired() : undefined);
-    if (!isPublic && path !== "/") {
+    // المحميّ وحده يُحوَّل؛ والمجهول يمضي إلى Next فتردّ not-found بـ404
+    if (isProtectedPath(path)) {
       // عنوان مطلق من APP_ORIGIN: الوسيط يمرّ بمحوّل Next وهو يرفض Location
       // النسبي بـTypeError — راجع lib/http/redirect.ts
       return finalize(
@@ -123,7 +120,8 @@ export async function middleware(request: NextRequest) {
   // مصادَق بتوكن صالح لكن بلا صف profiles = مستخدم محذوف/ناقص → عامله كغير مصادَق
   if (!profile) {
     if (isApi) return finalize();
-    if (!isPublic && path !== "/") {
+    // نفس قاعدة الفرع أعلاه: المحميّ يُحوَّل، والمجهول يبقى 404
+    if (isProtectedPath(path)) {
       return finalize(absoluteRedirect("/login"));
     }
     return finalize();

@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowUp,
@@ -1027,10 +1028,32 @@ export function ChatView({
         {conversationId && <TrainingShareAction conversationId={conversationId} />}
       </header>
 
+      {/**
+       * ★ عطلُ الخدمة بلغة المنتج (v0.9.12، المرحلة 6A).
+       *
+       * كان هنا نصٌّ يطلب إضافة `ANTHROPIC_API_KEY` إلى ملفّ `.env` وإعادة
+       * تشغيل الخادم — تعليمُ مشغِّلٍ وصل مستخدمًا لا يملك ملفًّا ولا خادمًا.
+       * وأسوأ ما فيه أنه يظهر في اللحظة التي يجب أن تبدو فيها المنصّة
+       * محترمة: أوّل عطلٍ في مزوّد.
+       *
+       * والنصّ الآن يقول ما وقع وما العمل، ويصل بالمستخدم إلى قناةٍ — ولا
+       * يذكر مزوّدًا ولا متغيّرًا ولا منصّة نشر.
+       */}
       {noProvider && (
-        <div className="mx-4 mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-300">
-          لم يُضبط مفتاح أي موفر ذكاء اصطناعي بعد. أضف <code dir="ltr">ANTHROPIC_API_KEY</code>{" "}
-          إلى ملف <code dir="ltr">.env</code> ثم أعد تشغيل الخادم.
+        <div
+          role="status"
+          data-ai-unavailable=""
+          className="mx-4 mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-300"
+        >
+          <p className="font-medium">{t("aiUnavailableTitle")}</p>
+          <p className="mt-1 text-amber-300/85">{t("aiUnavailableBody")}</p>
+          <Link
+            href="/support"
+            className="mt-2 inline-block underline underline-offset-2 hover:text-amber-200
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 rounded"
+          >
+            {t("contactSupport")}
+          </Link>
         </div>
       )}
 

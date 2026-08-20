@@ -724,6 +724,70 @@ const dict = {
     ar: "بلغت الحد. انتظر التجديد أو رقِّ باقتك.",
     en: "You've reached the limit. Wait for renewal or upgrade.",
   },
+  /* ═══════════ المرحلة 6A — أسطح الفشل والدعم العامّة ═══════════ */
+
+  /**
+   * ★ عطلُ الخدمة يُقال بلغة المنتج لا بلغة المشغّل.
+   *
+   * كان مكانَ هذين المفتاحين نصٌّ يطلب من المستخدم أن يضيف مفتاح مزوّد
+   * إلى ملفّ `.env` ويعيد تشغيل الخادم. وهو تعليمُ تشغيلٍ داخليّ: لا يملك
+   * المستخدم ملفًّا ولا خادمًا، ويقرأ منه أن المنتج غير مكتمل لا أن خدمةً
+   * تعطّلت. ولا يخرج من هنا اسمُ مزوّد ولا متغيّر بيئة ولا منصّة نشر.
+   */
+  aiUnavailableTitle: {
+    ar: "خدمة الذكاء الاصطناعي غير متاحة مؤقتًا",
+    en: "AI service is temporarily unavailable",
+  },
+  aiUnavailableBody: {
+    ar: "حاول مرة أخرى بعد قليل. وإذا استمرت المشكلة فتواصل مع الدعم.",
+    en: "Please try again shortly. If the issue continues, contact support.",
+  },
+  noModelsAvailable: {
+    ar: "لا توجد نماذج متاحة الآن. حاول مرة أخرى بعد قليل، وإذا استمرت المشكلة فتواصل مع الدعم.",
+    en: "No models are available right now. Try again shortly — and if the issue continues, contact support.",
+  },
+  contactSupport: { ar: "تواصل مع الدعم", en: "Contact support" },
+
+  supportTitle: { ar: "الدعم والمساعدة", en: "Help & support" },
+  supportIntro: {
+    ar: "توضّح هذه الصفحة كيف تحصل على مساعدة في YSD AI، وأين ترسل بلاغًا أو طلبًا يخصّ بياناتك.",
+    en: "This page explains how to get help with YSD AI, and where to send a report or a request about your data.",
+  },
+  supportChannelTitle: { ar: "قناة التواصل", en: "Contact channel" },
+  /**
+   * ★ حين لا تُضبط وجهةٌ، يُقال ذلك.
+   *
+   * وعنوانٌ مخترع أسوأ من لا عنوان: يكتب صاحب الشكوى ويصمت منتظرًا ردًّا
+   * من صندوقٍ لا وجود له.
+   */
+  supportChannelPending: {
+    ar: "لم تُنشر بعد قناة تواصل عامة لهذه النسخة التجريبية. سيظهر عنوانها هنا فور اعتمادها.",
+    en: "A public contact channel has not been published for this private beta yet. It will appear here once it is set.",
+  },
+  supportIncludeTitle: { ar: "ما الذي يفيد ذكره", en: "What helps us help you" },
+  supportIncludeWhat: {
+    ar: "ما الذي كنت تحاول فعله، وما الذي حدث بدلًا منه.",
+    en: "What you were trying to do, and what happened instead.",
+  },
+  supportIncludeWhen: {
+    ar: "وقت حدوث المشكلة تقريبًا.",
+    en: "Roughly when the problem happened.",
+  },
+  supportIncludeWhere: {
+    ar: "الصفحة أو الخطوة التي ظهرت فيها المشكلة.",
+    en: "The page or step where it appeared.",
+  },
+  supportNoSecrets: {
+    ar: "لا ترسل كلمة مرورك ولا أي رمز دخول — لن نطلبهما منك أبدًا.",
+    en: "Never send your password or any access token — we will never ask for them.",
+  },
+  supportDataTitle: { ar: "طلبات البيانات", en: "Data requests" },
+  supportDataBody: {
+    ar: "يمكنك حذف محادثاتك وملفاتك بنفسك من داخل التطبيق. أما حذف الحساب وبياناته بالكامل فيتم عبر طلب يُرسل من هنا.",
+    en: "You can delete your own conversations and files from inside the app. Deleting the account and its data entirely is done through a request sent from here.",
+  },
+  supportBack: { ar: "العودة إلى YSD AI", en: "Back to YSD AI" },
+
   suggestions: {
     ar: [
       { title: "ساعدني في البرمجة", desc: "اكتب، اشرح، أو صحّح كودًا" },

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const metadata = { title: "شروط الاستخدام — YSD AI" };
 
 export default function TermsPage() {
@@ -12,7 +14,12 @@ export default function TermsPage() {
       <h2 className="text-[14px] font-medium text-ink-strong">الاستخدام المقبول</h2>
       <p>
         تلتزم بعدم إساءة استخدام المنصة، أو محاولة تجاوز حدود الاستخدام، أو رفع محتوى غير قانوني.
-        قد يُعلَّق حسابك أو يُحظر عند مخالفة هذه الشروط.
+        قد يُعلَّق حسابك أو يُحظر عند مخالفة هذه الشروط. وإن رأيت أن ذلك وقع بالخطأ، فيمكنك
+        مراجعتنا عبر{" "}
+        <Link href="/support" className="text-primary-glow hover:brightness-125 transition-all">
+          صفحة الدعم
+        </Link>
+        .
       </p>
       <h2 className="text-[14px] font-medium text-ink-strong">المحتوى والذكاء الاصطناعي</h2>
       <p>
