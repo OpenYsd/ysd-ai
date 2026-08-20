@@ -266,6 +266,75 @@ const dict = {
   trainingBankQuality_passed: { ar: "جودة: مرّت", en: "Quality: passed" },
   trainingBankQuality_rejected: { ar: "جودة: مرفوضة", en: "Quality: rejected" },
 
+  /* ── تقدّم جمع بيانات التدريب (v0.9.11، المرحلة 5A) ── */
+  progressTitle: { ar: "تقدّم جمع بيانات التدريب", en: "Training data collection" },
+  progressApproved: { ar: "معتمَدة", en: "Approved" },
+  progressRemaining: { ar: "المتبقّي", en: "Remaining" },
+  progressLast7: { ar: "اعتُمدت خلال ٧ أيام", en: "Approved in 7 days" },
+  progressLast30: { ar: "اعتُمدت خلال ٣٠ يومًا", en: "Approved in 30 days" },
+  progressPolicy: { ar: "سياسة الجاهزية", en: "Readiness policy" },
+  /**
+   * ★ ونصٌّ يقول ما يعنيه الرقم لا ما يُظنّ به.
+   *
+   * فمن يرى «١ / ١٠٠» يظنّ المئةَ العددَ الذي يصير عنده النموذج جيّدًا.
+   * وما تعنيه أنها الحدّ الذي دونه لا يُفتح اختبارُ تدريبٍ أصلًا.
+   */
+  progressMeaning: {
+    ar: "١٠٠ عينة هي الحد التشغيلي الأدنى لفتح مرحلة اختبار التدريب، وليست ضمانًا لجودة النموذج.",
+    en: "100 samples is the minimum operational threshold to open a training trial — not a guarantee of model quality.",
+  },
+  progressReached: {
+    ar: "بلغت البيانات حد الجاهزية. يمكنك إنشاء إصدار مجموعة جديد.",
+    en: "The data reached the readiness threshold. You can create a new dataset version.",
+  },
+  /**
+   * ★ ولا يُنشأ شيءٌ تلقائيًّا عند البلوغ.
+   *
+   * فبلوغُ عددٍ ليس قرارًا. والقرار للمشرف: أيّ عيّنات، ومتى، وبأيّ إصدار.
+   */
+  progressReachedNote: {
+    ar: "لا يُنشأ شيء تلقائيًا: المجموعة الحالية والمهمة الحالية تبقيان كما هما.",
+    en: "Nothing is created automatically: the current dataset and job stay as they are.",
+  },
+  progressDiversity: { ar: "التنوّع", en: "Diversity" },
+  progressConversations: { ar: "محادثات", en: "conversations" },
+  progressContributors: { ar: "مساهمون", en: "contributors" },
+  /**
+   * ★ وتنبيهاتٌ استشاريّة — لا ترفض ولا تحجب.
+   *
+   * لأن الرفض حكمٌ يحتاج قراءةً، وهذه أعدادٌ لا تقرأ. وغرضُها أن يرى
+   * المشرف تركّزًا قد يُفسد طيّارًا قبل أن يبنيه.
+   */
+  progressWarning_concentrated_conversations: {
+    ar: "أغلب العينات المعتمَدة تأتي من عدد قليل من المحادثات. التنوّع محدود.",
+    en: "Most approved samples come from few conversations. Diversity is limited.",
+  },
+  progressWarning_single_contributor: {
+    ar: "كل العينات المعتمَدة من مساهم واحد.",
+    en: "All approved samples come from a single contributor.",
+  },
+  progressWarningsAdvisory: {
+    ar: "تنبيهات إرشادية فقط — لا ترفض أي عينة ولا تمنع شيئًا.",
+    en: "Advisory only — they reject nothing and block nothing.",
+  },
+
+  /* ── طابور المراجعة ── */
+  queueRemaining: { ar: "بانتظار المراجعة", en: "pending review" },
+  queuePosition: { ar: "العيّنة", en: "Sample" },
+  queueNext: { ar: "التالية", en: "Next" },
+  queuePrev: { ar: "السابقة", en: "Previous" },
+  queueDone: { ar: "لا عيّنات أخرى بانتظار المراجعة.", en: "No more samples awaiting review." },
+  /**
+   * ★ واختصارٌ بمُعدِّل لا بحرفٍ واحد.
+   *
+   * فحرفٌ واحد يعتمد عيّنةً بضغطةٍ عابرة — وقرارُ إدخال كلامِ إنسانٍ إلى
+   * بنك تدريب لا يُتَّخذ سهوًا.
+   */
+  queueShortcuts: {
+    ar: "اختصارات: Ctrl+Enter اعتماد · Ctrl+Q رفض جودة · Ctrl+P رفض خصوصية · Ctrl+← التالية",
+    en: "Shortcuts: Ctrl+Enter approve · Ctrl+Q reject quality · Ctrl+P reject privacy · Ctrl+← next",
+  },
+
   /* ── إصدارات مجموعة التدريب (v0.9.6، المرحلة 3A) ── */
   datasetsSection: { ar: "إصدارات المجموعة", en: "Dataset releases" },
   /**

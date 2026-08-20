@@ -20,6 +20,7 @@ import { I18nProvider } from "@/lib/i18n";
 import {
   TrainingReviewView,
   type CandidateSummary,
+  type TrainingProgress,
 } from "@/components/admin/training-review-view";
 
 const ID = "eeeeeeee-0000-4000-8000-000000000001";
@@ -54,10 +55,28 @@ const okReview = (over: Record<string, unknown> = {}) =>
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-function mount(locale: "ar" | "en" = "ar", pending = [row(ID), row(ID2)]) {
+const PROGRESS: TrainingProgress = {
+  approved: 1,
+  pending: 2,
+  minimumSamples: 100,
+  remaining: 99,
+  thresholdReached: false,
+  readinessPolicy: "ysd-training-readiness-v1",
+  approvedLast7Days: 1,
+  approvedLast30Days: 1,
+  distinctConversations: 1,
+  distinctContributors: 1,
+  warnings: [],
+};
+
+function mount(
+  locale: "ar" | "en" = "ar",
+  pending = [row(ID), row(ID2)],
+  progress: TrainingProgress | undefined = PROGRESS,
+) {
   return render(
     <I18nProvider initialLocale={locale}>
-      <TrainingReviewView counts={COUNTS} pending={pending} />
+      <TrainingReviewView counts={COUNTS} pending={pending} progress={progress} />
     </I18nProvider>,
   );
 }
@@ -121,6 +140,168 @@ describe("★ (١) القائمة — وصفٌ آمن لا هوّية ولا ن�
   it("★ وقائمةٌ فارغة تُقال صراحةً", () => {
     mount("ar", []);
     expect(text()).toContain("لا عيّنات تنتظر المراجعة");
+  });
+});
+
+/* ═══ (١′) لوحة التقدّم ═══ */
+
+describe("★ (١′) التقدّم — عددان ومعناهما", () => {
+  it("★ ★ ★ يُعرض «١ / ١٠٠» والمتبقّي", () => {
+    mount();
+    const panel = document.querySelector("[data-training-progress]")!;
+    expect(panel.textContent).toContain("1");
+    expect(panel.textContent).toContain("100");
+    expect(panel.textContent).toContain("99");
+    expect(panel.textContent).toContain("ysd-training-readiness-v1");
+  });
+
+  it("★ ★ ★ ويُقال ما يعنيه الرقم — ولا يُوعد بجودة", () => {
+    /**
+     * فمن يرى «١ / ١٠٠» يظنّ المئةَ العددَ الذي يصير عنده النموذج جيّدًا.
+     * وما تعنيه أنها الحدّ الذي دونه لا يُفتح اختبارٌ أصلًا.
+     */
+    mount();
+    expect(text()).toContain("الحد التشغيلي الأدنى لفتح مرحلة اختبار التدريب");
+    expect(text()).toContain("وليست ضمانًا لجودة النموذج");
+  });
+
+  it("★ ★ والأعداد الزمنية والتنوّع تُعرض", () => {
+    mount();
+    const panel = document.querySelector("[data-training-progress]")!;
+    expect(panel.textContent).toContain("اعتُمدت خلال ٧ أيام");
+    expect(panel.textContent).toContain("محادثات");
+    expect(panel.textContent).toContain("مساهمون");
+  });
+
+  it("★ ★ ★ وتنبيهاتُ التنوّع استشاريّة", () => {
+    mount("ar", [row(ID)], {
+      ...PROGRESS, approved: 30, remaining: 70,
+      distinctConversations: 2, distinctContributors: 1,
+      warnings: ["concentrated_conversations", "single_contributor"],
+    });
+    const w = document.querySelector("[data-progress-warnings]")!;
+    expect(w.textContent).toContain("التنوّع محدود");
+    expect(w.textContent).toContain("مساهم واحد");
+    expect(w.textContent).toContain("لا ترفض أي عينة ولا تمنع شيئًا");
+  });
+
+  it("★ ★ ★ وبلوغُ الحدّ يُقال — ولا يُنشئُ شيئًا", () => {
+    /**
+     * فبلوغُ عددٍ ليس قرارًا. والقرار للمشرف: أيّ عيّنات، ومتى، وبأيّ إصدار.
+     */
+    mount("ar", [row(ID)], { ...PROGRESS, approved: 100, remaining: 0, thresholdReached: true });
+    const reached = document.querySelector("[data-progress-reached]")!;
+    expect(reached.textContent).toContain("بلغت البيانات حد الجاهزية");
+    expect(reached.textContent).toContain("لا يُنشأ شيء تلقائيًا");
+    expect(document.querySelector("[data-progress-create]")).toBeNull();
+  });
+
+  it("★ ★ ولا هوّيةَ في اللوحة", () => {
+    mount();
+    const panel = document.querySelector("[data-training-progress]")!.textContent ?? "";
+    for (const leak of ["@", "user-", "conv-", "aaaaaaaa"]) {
+      expect(panel).not.toContain(leak);
+    }
+  });
+});
+
+/* ═══ (١″) الطابور ═══ */
+
+describe("★ (١″) الطابور — تنقّلٌ لا حكم", () => {
+  it("★ ★ عدّادُ المنتظِر يُعرض", () => {
+    mount();
+    expect(document.querySelector("[data-queue-remaining]")!.textContent).toContain("2");
+  });
+
+  it("★ ★ ★ ولا زرَّ «اعتمد الكل»", () => {
+    /**
+     * فكلّ اعتمادٍ قرارٌ على عيّنةٍ قُرئت. و«اعتمد الكل» يجعل مئةَ قرارٍ
+     * ضغطةً واحدة على ما لم يُقرأ.
+     */
+    mount();
+    expect(document.querySelector("[data-training-approve-all]")).toBeNull();
+    expect(document.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(text()).not.toMatch(/اعتماد الكل|Approve all/i);
+  });
+
+  it("★ ★ ★ وبعد القرار يظهر زرُّ «التالية» بعددِ المتبقّي", async () => {
+    await openReview();
+    fetchMock.mockResolvedValueOnce(body({ ok: true, status: "approved" }));
+    await act(async () => {
+      fireEvent.click(approveBtn()!);
+    });
+    const next = document.querySelector("[data-training-review-next]")!;
+    expect(next.textContent).toContain("التالية");
+    expect(next.textContent).toContain("1");
+  });
+
+  it("★ ★ ★ والانتقال يفتح التالية للقراءة — ولا يقرّر", async () => {
+    await openReview();
+    fetchMock.mockResolvedValueOnce(body({ ok: true, status: "approved" }));
+    await act(async () => {
+      fireEvent.click(approveBtn()!);
+    });
+    const before = fetchMock.mock.calls.length;
+    fetchMock.mockResolvedValueOnce(okReview());
+    await act(async () => {
+      fireEvent.click(document.querySelector("[data-training-review-next]") as HTMLElement);
+    });
+    const added = fetchMock.mock.calls.slice(before);
+    expect(added).toHaveLength(1);
+    expect(String(added[0]![0])).toContain(`/${ID2}/review`);
+    expect((added[0]![1] as RequestInit | undefined)?.method).toBeUndefined();
+  });
+
+  it("★ ★ وآخرُ عيّنةٍ ⇒ يُقال إن الطابور انتهى", async () => {
+    mount("ar", [row(ID)]);
+    fetchMock.mockResolvedValueOnce(okReview());
+    await act(async () => {
+      fireEvent.click(openBtn());
+    });
+    fetchMock.mockResolvedValueOnce(body({ ok: true, status: "approved" }));
+    await act(async () => {
+      fireEvent.click(approveBtn()!);
+    });
+    expect(document.querySelector("[data-training-review-next]")).toBeNull();
+    expect(document.querySelector("[data-training-review-done]")!.textContent)
+      .toContain("لا عيّنات أخرى بانتظار المراجعة");
+  });
+
+  it("★ ★ ★ والاختصار يحتاج مُعدّلًا — وحرفٌ وحده لا يقرّر", async () => {
+    /**
+     * فحرفٌ مفرد يعتمد عيّنةً بضغطةٍ عابرة أو بلمسةِ لوحةٍ خاطئة.
+     */
+    await openReview();
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Enter" });
+      fireEvent.keyDown(document, { key: "q" });
+      fireEvent.keyDown(document, { key: "p" });
+    });
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/decision"))).toHaveLength(0);
+
+    fetchMock.mockResolvedValueOnce(body({ ok: true, status: "approved" }));
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
+    });
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/decision"))).toHaveLength(1);
+  });
+
+  it("★ ★ ★ ولا يُعتمد بالاختصار ما لا يجوز اعتماده", async () => {
+    await openReview({ approvable: false, blockers: ["privacy_finding"] });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Enter", ctrlKey: true });
+    });
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/decision"))).toHaveLength(0);
+  });
+
+  it("★ ★ ولا يُجلب نصُّ عيّناتٍ كثيرة مسبقًا", async () => {
+    mount();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(okReview());
+    await act(async () => {
+      fireEvent.click(openBtn());
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

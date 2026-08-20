@@ -25,6 +25,20 @@ import {
   type DatasetRelease,
 } from "./training-datasets-section";
 
+export interface TrainingProgress {
+  approved: number;
+  pending: number;
+  minimumSamples: number;
+  remaining: number;
+  thresholdReached: boolean;
+  readinessPolicy: string;
+  approvedLast7Days: number;
+  approvedLast30Days: number;
+  distinctConversations: number;
+  distinctContributors: number;
+  warnings: readonly string[];
+}
+
 export interface CandidateSummary {
   id: string;
   createdAt: string;
@@ -70,32 +84,31 @@ export function TrainingReviewView({
   counts,
   pending,
   releases = [],
+  progress,
 }: {
   counts: Record<string, number>;
   pending: CandidateSummary[];
   releases?: DatasetRelease[];
+  /**
+   * ★ يُحسب في الخادم ويُمرَّر وصفًا.
+   *
+   * ولا يُحسب هنا: الحدّ سياسةٌ يملكها الخادم، وحسابُه في المتصفّح يجعله
+   * رقمًا يبدّله من يفتح الأدوات فيرى تقدُّمًا لا وجود له.
+   */
+  progress?: TrainingProgress;
 }) {
   const { t, locale } = useI18n();
   const ar = locale === "ar";
   const [panel, setPanel] = useState<Panel>({ phase: "closed" });
   const [decided, setDecided] = useState<Record<string, string>>({});
   const openerRef = useRef<HTMLButtonElement | null>(null);
+  const busyRef = useRef(false);
 
   const close = useCallback(() => {
     setPanel({ phase: "closed" });
     openerRef.current?.focus();
   }, []);
 
-  useEffect(() => {
-    if (panel.phase === "closed") return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      close();
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [panel.phase, close]);
 
   const open = useCallback(async (id: string) => {
     setPanel({ phase: "loading", id });
@@ -146,8 +159,61 @@ export function TrainingReviewView({
     [],
   );
 
+  useEffect(() => {
+    if (panel.phase === "closed") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+        return;
+      }
+      /**
+       * ★ اختصارٌ بمُعدِّل — ولا حرفَ واحدًا يقرّر.
+       *
+       * فحرفٌ مفرد يعتمد عيّنةً بضغطةٍ عابرة أو بلمسةِ لوحةٍ خاطئة. وقرارُ
+       * إدخال كلامِ إنسانٍ إلى بنك تدريب لا يُتَّخذ سهوًا — فيُشترط
+       * `Ctrl`/`Cmd` مع الحرف، ويبقى الزرّ هو الطريق الظاهر.
+       */
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (panel.phase !== "ready" || busyRef.current) return;
+
+      const key = e.key.toLowerCase();
+      if (key === "enter" && panel.approvable) {
+        e.preventDefault();
+        void decide(panel.id, "approve");
+      } else if (key === "q") {
+        e.preventDefault();
+        void decide(panel.id, "reject_quality");
+      } else if (key === "p") {
+        e.preventDefault();
+        void decide(panel.id, "reject_privacy");
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [panel, close, decide]);
+
   const busy = panel.phase === "loading" || panel.phase === "sending";
   const rows = pending.filter((c) => decided[c.id] === undefined);
+  busyRef.current = busy;
+
+  /**
+   * ★ الانتقال إلى التالية بعد القرار.
+   *
+   * فالمراجعة عملٌ متتابع، وإغلاقُ الحوار بعد كل قرارٍ ثم فتحُ الصفّ التالي
+   * بيدٍ يجعل مئةَ عيّنةٍ ثلاثمئة نقرة. والانتقال **لا يقرّر شيئًا** — يفتح
+   * التالية للقراءة، والقرار يبقى ضغطةً على زرّ.
+   *
+   * والترتيب هو ترتيب الطابور نفسه: الأقدم أوّلًا، كما تقرؤه القاعدة.
+   */
+  const openNext = useCallback(() => {
+    const next = rows[0];
+    if (!next) {
+      setPanel({ phase: "closed" });
+      return;
+    }
+    void open(next.id);
+  }, [rows, open]);
 
   return (
     <div className="px-4 md:px-6 py-5 space-y-5">
@@ -155,6 +221,83 @@ export function TrainingReviewView({
         <h1 className="text-[18px] font-semibold">{t("trainingBankTitle")}</h1>
         <p className="text-[12.5px] text-ink-dim mt-1">{t("trainingBankSubtitle")}</p>
       </div>
+
+      {progress && (
+        <div
+          className="rounded-xl border border-line/60 bg-surface/40 px-4 py-4"
+          data-training-progress=""
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-[13px] font-medium">{t("progressTitle")}</span>
+            <span className="text-[12px] text-ink-faint">
+              {t("progressPolicy")}: {progress.readinessPolicy}
+            </span>
+          </div>
+
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-[26px] font-semibold tabular-nums text-ink-strong">
+              {progress.approved}
+            </span>
+            <span className="text-[14px] text-ink-dim tabular-nums">
+              / {progress.minimumSamples}
+            </span>
+            <span className="text-[12px] text-ink-faint tabular-nums">
+              · {t("progressRemaining")}: {progress.remaining}
+            </span>
+          </div>
+
+          {/**
+            * شريطٌ يقرأ العددين نفسيهما — لا نسبةً تُحسب هنا من حدٍّ يُكتب
+            * في المتصفّح.
+            */}
+          <div className="mt-2 h-1.5 w-full rounded-full bg-raised overflow-hidden">
+            <div
+              className="h-full bg-primary-glow"
+              style={{
+                width: `${Math.min(100, Math.round((progress.approved / Math.max(1, progress.minimumSamples)) * 100))}%`,
+              }}
+            />
+          </div>
+
+          {/**
+            * ★ وما يعنيه الرقم يُقال حيث يُقرأ.
+            *
+            * فمن يرى «١ / ١٠٠» يظنّ المئةَ العددَ الذي يصير عنده النموذج
+            * جيّدًا. وما تعنيه أنها الحدّ الذي دونه لا يُفتح اختبارٌ أصلًا.
+            */}
+          <p className="text-[11.5px] text-ink-faint mt-2.5 leading-relaxed">
+            {t("progressMeaning")}
+          </p>
+
+          <div className="mt-2.5 text-[11.5px] text-ink-faint flex flex-wrap gap-x-3 tabular-nums">
+            <span>{t("progressLast7")}: {progress.approvedLast7Days}</span>
+            <span>{t("progressLast30")}: {progress.approvedLast30Days}</span>
+            <span>
+              {t("progressDiversity")}: {progress.distinctConversations} {t("progressConversations")}
+              {" · "}
+              {progress.distinctContributors} {t("progressContributors")}
+            </span>
+          </div>
+
+          {progress.warnings.length > 0 && (
+            <div className="mt-2.5" data-progress-warnings="">
+              {progress.warnings.map((w) => (
+                <p key={w} className="text-[11.5px] text-amber-400">
+                  {t(`progressWarning_${w}` as never)}
+                </p>
+              ))}
+              <p className="text-[11px] text-ink-faint mt-1">{t("progressWarningsAdvisory")}</p>
+            </div>
+          )}
+
+          {progress.thresholdReached && (
+            <div className="mt-3" role="status" data-progress-reached="">
+              <p className="text-[12px] text-emerald-400">{t("progressReached")}</p>
+              <p className="text-[11.5px] text-ink-faint mt-1">{t("progressReachedNote")}</p>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {(["pending", "approved", "rejected_privacy", "rejected_quality", "revoked"] as const).map(
@@ -184,8 +327,12 @@ export function TrainingReviewView({
       <TrainingDatasetsSection releases={releases} />
 
       <div className="rounded-xl border border-line/60 bg-surface/40 overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-line/50 text-[13px] font-medium">
-          {t("trainingBankPendingList")}
+        <div className="px-4 py-2.5 border-b border-line/50 text-[13px] font-medium
+                        flex items-baseline justify-between gap-2">
+          <span>{t("trainingBankPendingList")}</span>
+          <span className="text-[11.5px] text-ink-faint tabular-nums" data-queue-remaining="">
+            {rows.length} {t("queueRemaining")}
+          </span>
         </div>
         {rows.length === 0 ? (
           <div className="px-4 py-6 text-[13px] text-ink-dim">{t("trainingBankEmpty")}</div>
@@ -262,6 +409,10 @@ export function TrainingReviewView({
               </p>
             )}
 
+            {panel.phase === "ready" && (
+              <p className="text-[11px] text-ink-faint mt-3">{t("queueShortcuts")}</p>
+            )}
+
             {(panel.phase === "ready" || panel.phase === "sending") && (
               <>
                 {/**
@@ -328,6 +479,23 @@ export function TrainingReviewView({
             )}
 
             <div className="flex flex-wrap items-center justify-end gap-2 mt-5">
+              {panel.phase === "done" && rows.length > 0 && (
+                <button
+                  type="button"
+                  data-training-review-next=""
+                  onClick={() => openNext()}
+                  className="rounded-lg px-3 py-1.5 text-[12.5px] text-ink-strong bg-raised border border-line
+                             hover:border-primary/40 transition-colors focus:outline-none
+                             focus:ring-2 focus:ring-primary/50"
+                >
+                  {t("queueNext")} · {rows.length}
+                </button>
+              )}
+              {panel.phase === "done" && rows.length === 0 && (
+                <span className="text-[12px] text-ink-faint" data-training-review-done="">
+                  {t("queueDone")}
+                </span>
+              )}
               <button
                 type="button"
                 data-training-review-close=""

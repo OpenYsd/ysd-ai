@@ -11,6 +11,7 @@ import {
 import { describeBaseModel, listBaseModels } from "@/lib/training/base-models";
 import { listTrainingPresets } from "@/lib/training/job-config";
 import { validateTrainingReadiness } from "@/lib/training/readiness";
+import { buildTrainingSummary } from "@/lib/training/summary";
 import {
   TrainingReviewView,
   type CandidateSummary,
@@ -48,6 +49,7 @@ export default async function AdminTrainingPage() {
   if (!ctx) redirect("/chat");
 
   let counts: Record<string, number> = {};
+  let progress: Awaited<ReturnType<typeof buildTrainingSummary>> = null;
   let pending: CandidateSummary[] = [];
   let releases: DatasetRelease[] = [];
   let jobs: TrainingJobRow[] = [];
@@ -56,6 +58,8 @@ export default async function AdminTrainingPage() {
   try {
     const counted = await countTrainingCandidates();
     if (counted) counts = counted;
+    /** ★ والتقدّم يُحسب في الخادم — الحدّ سياسةٌ لا رقمٌ في متصفّح */
+    progress = await buildTrainingSummary();
 
     const db = getAdminClient();
     if (db) {
@@ -186,7 +190,12 @@ export default async function AdminTrainingPage() {
 
   return (
     <>
-      <TrainingReviewView counts={counts} pending={pending} releases={releases} />
+      <TrainingReviewView
+        counts={counts}
+        pending={pending}
+        releases={releases}
+        progress={progress ?? undefined}
+      />
       <div className="px-4 md:px-6 pb-5">
         <TrainingJobsSection
           jobs={jobs}
