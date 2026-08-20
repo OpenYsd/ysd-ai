@@ -147,14 +147,15 @@ insert into public.training_candidates
 
 function run() {
   startContainer();
-  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042 → 0043 → 0044…");
+  console.log("\n▶ تطبيق المخطط ثم 0040 → 0041 → 0042 → 0043 → 0044 → 0045…");
   psql(BASE, { tuples: false });
   psql(mig("0040_ysd_training_bank.sql"), { tuples: false });
   psql(mig("0041_ysd_training_bank_hardening.sql"), { tuples: false });
   psql(mig("0042_ysd_training_dataset_releases.sql"), { tuples: false });
   psql(mig("0043_ysd_training_dataset_hardening.sql"), { tuples: false });
   psql(mig("0044_ysd_training_dataset_artifacts.sql"), { tuples: false });
-  console.log("  ✅ الترحيلات الخمس طُبّقت");
+  psql(mig("0045_ysd_training_jobs.sql"), { tuples: false });
+  console.log("  ✅ الترحيلات الست طُبّقت");
 
   // ── (١) لا زرع ──
   console.log("\n① الترحيلة لا تُدخل صفًّا");
@@ -170,10 +171,12 @@ function run() {
   ok(again43.ok, "(٢′) وكذلك 0043");
   const again44 = attempt(mig("0044_ysd_training_dataset_artifacts.sql"));
   ok(again44.ok, "(٢‴) وكذلك 0044");
+  const again45 = attempt(mig("0045_ysd_training_jobs.sql"));
+  ok(again45.ok, "(٢⁴) وكذلك 0045");
   const chain = attempt(
     mig("0040_ysd_training_bank.sql") + mig("0041_ysd_training_bank_hardening.sql") +
     mig("0042_ysd_training_dataset_releases.sql") + mig("0043_ysd_training_dataset_hardening.sql") +
-    mig("0044_ysd_training_dataset_artifacts.sql"));
+    mig("0044_ysd_training_dataset_artifacts.sql") + mig("0045_ysd_training_jobs.sql"));
   ok(chain.ok, "(٢″) ★ والأربع معًا تُعاد بلا إخفاق");
 
   psql(approvedCandidate(UA, AA, H1), { tuples: false });
@@ -608,6 +611,142 @@ function run() {
             where tablename='training_dataset_artifacts' and indexname='${name}';`) === "1",
       "(٦٦/" + name.slice(-14) + ") موجود");
   }
+
+  // ── (١٤) مهامّ التدريب (0045) ──
+  console.log("\n⓮ ★ مهامّ التدريب (0045)");
+
+  const RJ = one(`insert into public.training_dataset_releases default values returning id;`);
+  psql(`insert into public.training_dataset_items
+    (dataset_release_id, candidate_id, sample_order, sample_hash)
+    values ('${RJ}', '${C1}', 0, '${SH}');
+    update public.training_dataset_releases
+      set status='frozen', frozen_at=now(), manifest_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', sample_count=1
+      where id='${RJ}';
+    insert into public.training_dataset_artifacts
+      (dataset_release_id, format_version, status, artifact_sha256, byte_size,
+       sample_count, release_manifest_hash, storage_path, ready_at)
+      values ('${RJ}', 'ysd-chat-v1', 'ready', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 245, 1, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              'releases/${RJ}/ysd-chat-v1.jsonl', now());`, { tuples: false });
+  const AID = one(`select id from public.training_dataset_artifacts
+                   where dataset_release_id='${RJ}';`);
+
+  const HP = '{"epochs":1,"learningRate":0.0001,"batchSize":1,"gradientAccumulation":8,'
+           + '"maxSequenceLength":2048,"loraRank":16,"loraAlpha":32,"loraDropout":0.05}';
+
+  const job = (over) => {
+    const a = { artifact: AID, base: "openai/gpt-oss-20b", rev: "null", method: "lora_sft",
+      preset: "ysd-lora-v1", cfgver: "ysd-training-config-v1", hp: HP, seed: 20260820,
+      status: "draft", hash: "null", prepared: "null", cancelled: "null", ...over };
+    return `insert into public.training_jobs
+      (dataset_artifact_id, base_model_id, base_model_revision, method, preset_id,
+       config_version, hyperparameters, seed, status, config_hash, prepared_at, cancelled_at)
+      values ('${a.artifact}', '${a.base}', ${a.rev}, '${a.method}', '${a.preset}',
+              '${a.cfgver}', '${a.hp}'::jsonb, ${a.seed}, '${a.status}',
+              ${a.hash}, ${a.prepared}, ${a.cancelled}) returning id;`;
+  };
+
+  /** ★ الترقيم من تسلسل */
+  const J1 = one(job({}));
+  const J2 = one(job({ base: "openai/gpt-oss-120b" }));
+  const jvers = String(psql(`select version from public.training_jobs order by version;`))
+    .split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  ok(jvers.length === 2 && new Set(jvers).size === 2, "(٦٧) رقمان مختلفان");
+  ok(jvers.every((v) => /^ysd-train-\d{6,}$/.test(v)), "(٦٨) بالصيغة المتّفق عليها");
+  ok(!mig("0045_ysd_training_jobs.sql").match(/max\(version\)/i),
+    "(٦٩) ★ ولا `max(version)+1`");
+
+  /** ★ ولا حالات تشغيل */
+  for (const bad of ["running", "succeeded", "failed", "deploying", "deployed", "queued"]) {
+    const r = attempt(job({ status: bad }));
+    ok(!r.ok, "(٧٠) ★ ولا حالة " + bad);
+  }
+
+  /** ★ والمُجهَّز يلزمه بصمةٌ ووقت */
+  const prepNaked = attempt(job({ status: "prepared" }));
+  ok(!prepNaked.ok, "(٧١) ★ `prepared` بلا بصمة يُردّ");
+  const cancelNaked = attempt(job({ status: "cancelled" }));
+  ok(!cancelNaked.ok, "(٧٢) و`cancelled` بلا طابع يُردّ");
+  const draftWithHash = attempt(job({ hash: "'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'" }));
+  ok(!draftWithHash.ok, "(٧٣) ومسوَّدةٌ ببصمة تُردّ");
+
+  /** ★ والنموذج الأساسيّ ليس عنوانًا */
+  for (const bad of ["https://evil.example/weights", "//host/model", "file:///etc/passwd"]) {
+    const r = attempt(job({ base: bad }));
+    ok(!r.ok, "(٧٤) ★ عنوانٌ كنموذج أساسيّ يُردّ: " + bad.slice(0, 16));
+  }
+
+  /** ★ والأرقام أرقام — ولا مفتاح غريب */
+  const hpText = attempt(job({ hp: '{"epochs":1,"apiKey":"sk-secret-value-here"}' }));
+  ok(!hpText.ok, "(٧٥) ★ مفتاحٌ غريب في الأرقام يُردّ");
+  const hpString = attempt(job({ hp: '{"epochs":"نصّ"}' }));
+  ok(!hpString.ok, "(٧٦) ★ وقيمةٌ نصّية تُردّ");
+  const hpArray = attempt(job({ hp: '[1,2,3]' }));
+  ok(!hpArray.ok, "(٧٧) ومصفوفةٌ تُردّ");
+
+  const badMethod = attempt(job({ method: "full_finetune" }));
+  ok(!badMethod.ok, "(٧٨) وطريقةٌ غير مدعومة تُردّ");
+  const negSeed = attempt(job({ seed: -1 }));
+  ok(!negSeed.ok, "(٧٩) وبذرةٌ سالبة تُردّ");
+
+  /** ★ والمُجهَّز لا يُمسّ */
+  psql(`update public.training_jobs
+    set status='prepared', config_hash='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', prepared_at=now() where id='${J1}';`, { tuples: false });
+  ok(one(`select status from public.training_jobs where id='${J1}';`) === "prepared",
+    "(٨٠) جُهِّزت");
+
+  for (const [col, val, label] of [
+    ["seed", "1", "البذرة"],
+    ["base_model_id", "'openai/gpt-oss-120b'", "النموذج"],
+    ["preset_id", "'other'", "الإعداد"],
+    ["config_version", "'v2'", "نسخة الصيغة"],
+    ["config_hash", "'" + "d".repeat(64) + "'", "البصمة"],
+    ["hyperparameters", "'{\"epochs\":9}'::jsonb", "الأرقام"],
+  ]) {
+    const r = attempt(`update public.training_jobs set ${col} = ${val} where id='${J1}';`);
+    ok(!r.ok && /immutable/i.test(r.out), "(٨١) ★ ولا يُبدَّل " + label);
+  }
+
+  /** والإلغاء وحده يمرّ */
+  const cancelPrepared = attempt(`update public.training_jobs
+    set status='cancelled', cancelled_at=now() where id='${J1}';`);
+  ok(cancelPrepared.ok, "(٨٢) ★ والإلغاء يمرّ — فهو لا يغيّر ما وُصف");
+
+  /** ★ ودالّة المِشغَل لا تُستدعى مباشرةً */
+  for (const role of ["anon", "authenticated"]) {
+    ok(one(`select has_function_privilege('${role}',
+            'public.guard_prepared_training_job()', 'EXECUTE')::int;`) === "0",
+      "(٨٣/" + role + ") ★ لا `execute`");
+  }
+
+  /** ★ والأثر لا يُحذف ما دامت مهمّة تشير إليه */
+  const delArt = attempt(`delete from public.training_dataset_artifacts where id='${AID}';`);
+  ok(!delArt.ok && /violates foreign key|restrict/i.test(delArt.out),
+    "(٨٤) ★ ووصف الأثر لا يُحذف تحت مهمّة");
+
+  /** ★ والأمن */
+  ok(one(`select relrowsecurity::int from pg_class where relname='training_jobs';`) === "1",
+    "(٨٥) RLS مفعّلة");
+  for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
+    ok(one(`select count(*) from pg_policies
+            where tablename='training_jobs' and cmd='${cmd}';`) === "0",
+      "(٨٦/" + cmd + ") ★ ولا سياسة " + cmd);
+  }
+  for (const role of ["anon", "authenticated"]) {
+    for (const priv of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+      ok(one(`select coalesce(has_table_privilege('${role}',
+              'public.training_jobs', '${priv}'), false)::int;`) === "0",
+        "(٨٧/" + role + "/" + priv + ") لا امتياز");
+    }
+  }
+
+  /** ★ ولا سرّ ولا نصّ ولا هوّية في الأعمدة */
+  ok(one(`select count(*) from information_schema.columns
+          where table_name='training_jobs'
+            and column_name in ('api_key','token','secret','hf_token','storage_path',
+                                'user_id','conversation_id','raw_content','dataset_content');`) === "0",
+    "(٨٨) ★ ولا سرّ ولا نصّ ولا هوّية");
+
+  void J2;
 
   console.log(`\n═══ النتيجة: ${passed}/${passed + failed} ${failed === 0 ? "✅" : "❌"}   الإخفاقات: ${failed}`);
 }

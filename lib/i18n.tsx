@@ -350,6 +350,69 @@ const dict = {
     en: "Some samples are no longer valid, so the artifact was not created.",
   },
   artifactFailed: { ar: "تعذّر إنشاء الأثر. حاول مرة أخرى.", en: "Could not create the artifact. Please try again." },
+
+  /* ── مهامّ التدريب — مواصفةٌ لا تشغيل (v0.9.8، المرحلة 4A) ── */
+  jobsSection: { ar: "مهام التدريب", en: "Training jobs" },
+  /**
+   * ★ ونصٌّ يقول ما ليس بعد.
+   *
+   * «مهمّة تدريب» تُقرأ على أنها شيءٌ يجري. وما يقع أن مواصفةً كُتبت —
+   * ولا عتاد، ولا مزوّد، ولا أوزان.
+   */
+  jobsMeaning: {
+    ar: "المهمة مواصفة تدريب فقط: أي بيانات، وأي نموذج أساسي، وبأي أرقام. لا تشغيل، ولا GPU، ولا نموذج جديد.",
+    en: "A job is only a training specification: which data, which base model, which numbers. No execution, no GPU, no new model.",
+  },
+  jobsEmpty: { ar: "لا مهام بعد.", en: "No jobs yet." },
+  jobsCreate: { ar: "إنشاء مهمة تدريب", en: "Create training job" },
+  jobsConfirmTitle: { ar: "إنشاء مهمة تدريب؟", en: "Create training job?" },
+  jobsConfirmBody: {
+    ar: "سيتم إنشاء مواصفة تدريب فقط. لن يبدأ أي تدريب أو استخدام GPU.",
+    en: "Only a training specification will be created. No training will start and no GPU will be used.",
+  },
+  jobsConfirmAction: { ar: "إنشاء", en: "Create" },
+  jobsCancel: { ar: "إلغاء", en: "Cancel" },
+  jobsBaseModel: { ar: "النموذج الأساسي", en: "Base model" },
+  jobsPreset: { ar: "الإعداد", en: "Preset" },
+  jobsMethod: { ar: "الطريقة", en: "Method" },
+  jobsSeed: { ar: "البذرة", en: "Seed" },
+  jobsDataset: { ar: "المجموعة", en: "Dataset" },
+  jobsSamples: { ar: "العيّنات", en: "Samples" },
+  jobsCreated: { ar: "أُنشئت", en: "Created" },
+  jobsPrepared: { ar: "جُهِّزت", en: "Prepared" },
+  jobStatus_draft: { ar: "مسوَّدة", en: "Draft" },
+  jobStatus_prepared: { ar: "مُجهَّزة", en: "Prepared" },
+  jobStatus_cancelled: { ar: "ملغاة", en: "Cancelled" },
+  jobsPrepareAction: { ar: "تجهيز", en: "Prepare" },
+  jobsCancelAction: { ar: "إلغاء المهمة", en: "Cancel job" },
+  /**
+   * ★ و«مُجهَّزة» تُشرح حيث تُقرأ.
+   *
+   * فمن يرى الكلمة وحدها يظنّ أن شيئًا صار جاهزًا للانطلاق. وما يعنيه
+   * أن المواصفة ثبتت — ويبقى فحصٌ جديد قبل أيّ تسليم.
+   */
+  jobsPreparedMeaning: {
+    ar: "«مُجهَّزة» تعني أن المواصفة ثبتت وصلحت للتسليم مستقبلًا. لم يبدأ تدريب، وتُفحص صلاحيتها من جديد قبل أي استخدام.",
+    en: "“Prepared” means the specification is fixed and fit for future handover. No training started, and its validity is rechecked before any use.",
+  },
+  jobsCreatedOk: {
+    ar: "أُنشئت المواصفة. لم يبدأ أي تدريب ولم يُستخدم أي GPU.",
+    en: "The specification was created. No training started and no GPU was used.",
+  },
+  jobsPreparedOk: {
+    ar: "جُهِّزت المواصفة. لم يبدأ أي تدريب.",
+    en: "The specification is prepared. No training started.",
+  },
+  jobsCancelledOk: { ar: "أُلغيت المهمة.", en: "The job was cancelled." },
+  jobsArtifactInvalid: {
+    ar: "لم تعد بيانات هذه المهمة صالحة، فلم تُجهَّز.",
+    en: "This job's data is no longer valid, so it was not prepared.",
+  },
+  jobsConflict: {
+    ar: "تغيّرت حالة المهمة. حدّث الصفحة.",
+    en: "The job state changed. Refresh the page.",
+  },
+  jobsFailed: { ar: "تعذّرت العملية. حاول مرة أخرى.", en: "Operation failed. Please try again." },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

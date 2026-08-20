@@ -717,11 +717,15 @@ describe("★ (٨) الحدود — لا تدريب", () => {
     expect(CHAT_ROUTE).not.toMatch(/lib\/training|artifact/i);
   });
 
-  it("★ وهي التالية في الترقيم", () => {
+  it("★ و0044 قائمةٌ في الترقيم", () => {
+    /**
+     * ★ وملكيّة «أحدث رقم» لأحدث حزمة — لا لهذه.
+     *
+     * فحارسٌ يملكه يسقط مع كل ترحيلةٍ تُضاف بعده وهو لا يحرس شيئًا يخصّها.
+     */
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0044_ysd_training_dataset_artifacts.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(44);
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 });
