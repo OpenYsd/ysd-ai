@@ -148,13 +148,16 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
           </Link>
           <button
             onClick={() => setCollapsed((v) => !v)}
-            title={t("collapseSidebar")}
+            title={collapsed ? t("expandSidebar") : t("collapseSidebar")}
+            aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
+            aria-expanded={!collapsed}
             className="hidden md:flex w-7 h-7 items-center justify-center rounded-lg text-ink-dim hover:bg-raised transition-colors"
           >
             {collapsed ? <ExpandIcon size={15} /> : <CollapseIcon size={15} />}
           </button>
           <button
             onClick={() => setMobileOpen(false)}
+            aria-label={t("closeSidebar")}
             className="md:hidden w-7 h-7 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised"
           >
             <X size={16} />
@@ -221,14 +224,20 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
                     onKeyDown={(e) => e.key === "Escape" && setEditingId(null)}
+                    aria-label={t("conversationTitleLabel")}
                     className="bg-transparent w-full text-[13px] text-ink-strong focus:outline-none py-1"
                   />
-                  <button type="submit" className="p-1 text-primary-glow hover:brightness-125">
+                  <button
+                    type="submit"
+                    aria-label={t("saveTitle")}
+                    className="p-1 text-primary-glow hover:brightness-125"
+                  >
                     <Check size={14} />
                   </button>
                   <button
                     type="button"
                     onClick={() => setEditingId(null)}
+                    aria-label={t("cancelRename")}
                     className="p-1 text-ink-faint hover:text-ink"
                   >
                     <X size={14} />
@@ -263,6 +272,7 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                         setEditValue(c.title);
                       }}
                       title={t("rename")}
+                      aria-label={t("rename")}
                       className="p-1 rounded text-ink-faint hover:text-ink"
                     >
                       <Pencil size={12.5} />
@@ -270,6 +280,7 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                     <button
                       onClick={() => void deleteConversation(c.id)}
                       title={t("delete")}
+                      aria-label={t("delete")}
                       className="p-1 rounded text-ink-faint hover:text-red-400"
                     >
                       <Trash2 size={12.5} />
@@ -344,6 +355,7 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                 <button
                   onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
                   title={theme === "dark" ? t("themeLight") : t("themeDark")}
+                  aria-label={t("switchTheme")}
                   className="p-1.5 rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors"
                 >
                   {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
@@ -351,6 +363,7 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                 <button
                   onClick={() => setLocale(locale === "ar" ? "en" : "ar")}
                   title={locale === "ar" ? "English" : "العربية"}
+                  aria-label={t("switchLanguage")}
                   className="p-1.5 rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors"
                 >
                   <Languages size={14} />
@@ -359,6 +372,7 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
                   <button
                     type="submit"
                     title={t("logout")}
+                    aria-label={t("logout")}
                     className="p-1.5 rounded-lg text-ink-faint hover:text-red-400 hover:bg-raised transition-colors"
                   >
                     <LogOut size={14} />
@@ -416,10 +430,13 @@ function NavItem({
 
 /** زر فتح الشريط على الجوال — يُستخدم في رؤوس الصفحات */
 export function MobileMenuButton() {
-  const { setMobileOpen } = useShell();
+  const { mobileOpen, setMobileOpen } = useShell();
+  const { t } = useI18n();
   return (
     <button
       onClick={() => setMobileOpen(true)}
+      aria-label={t("openSidebar")}
+      aria-expanded={mobileOpen}
       className="md:hidden w-8 h-8 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised transition-colors"
     >
       <Menu size={17} />

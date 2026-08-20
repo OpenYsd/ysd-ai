@@ -311,6 +311,7 @@ export function FilesView({
                 <button
                   onClick={u.abort}
                   title={t("cancelUpload")}
+              aria-label={t("cancelUpload")}
                   className="p-1 rounded text-ink-faint hover:text-red-400"
                 >
                   <X size={13} />
@@ -379,7 +380,11 @@ export function FilesView({
           {(error || loadFailed) && (
             <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[13px] text-red-300 flex items-center justify-between gap-3">
               <span>{error ?? t("loadError")}</span>
-              <button onClick={() => setError(null)} className="shrink-0 p-1 hover:text-red-200">
+              <button
+                onClick={() => setError(null)}
+                aria-label={t("dismissError")}
+                className="shrink-0 p-1 hover:text-red-200"
+              >
                 <X size={13} />
               </button>
             </div>
@@ -472,6 +477,7 @@ function FileRow({
     <div className="rise rounded-xl border border-line/70 bg-surface/60 hover:border-primary/30 transition-colors">
       <button
         onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-3 px-4 py-3 text-start"
       >
         <span className="shrink-0 text-primary-glow">

@@ -295,7 +295,15 @@ export async function POST(req: NextRequest) {
   const tParse = Date.now();
   const parsed = chatRequestSchema.safeParse(await req.json().catch(() => null));
   stage.requestParseMs = Date.now() - tParse;
-  if (!parsed.success) return json({ error: "بيانات الطلب غير صحيحة." }, 400);
+  /**
+   * ★ رمزٌ مع كل رسالة (المرحلة 6D) — **إضافةٌ لا تغيير**.
+   *
+   * `error` يبقى كما هو حرفًا: عقدٌ قائم قد يقرأه عميلٌ لا نملكه. والرمز
+   * يُضاف كي يعرف المتصفّح **أيّ** حالةٍ وقعت فيعرضها بلغة صاحبها — وبلا
+   * رمزٍ كان يسقط إلى نصّ الخادم العربيّ مهما كانت لغة الواجهة.
+   */
+  if (!parsed.success)
+    return json({ error: "بيانات الطلب غير صحيحة.", code: "invalid_request" }, 400);
   const { conversationId, modelId, message, editMessageId, regenerate, clientRequestId } =
     parsed.data;
 
@@ -314,8 +322,12 @@ export async function POST(req: NextRequest) {
   ]);
   const conversationLookupMs = Date.now() - tConvLookup;
   stage.conversationAccessMs = conversationLookupMs;
-  if (!conv) return json({ error: "المحادثة غير موجودة." }, 404);
-  if (allowed === false) return json({ error: "وصلت إلى حد الاستهلاك في باقتك الحالية." }, 403);
+  if (!conv) return json({ error: "المحادثة غير موجودة.", code: "invalid_request" }, 404);
+  if (allowed === false)
+    return json(
+      { error: "وصلت إلى حد الاستهلاك في باقتك الحالية.", code: "usage_limit" },
+      403,
+    );
 
   // تعليمات المشروع الخاصة تُضاف إلى موجه النظام
   let systemPrompt = SYSTEM_PROMPT;
@@ -539,7 +551,10 @@ export async function POST(req: NextRequest) {
       await finalizeRequest(supabase as never, userId, clientRequestId, "failed", null);
       await slot.release();
       await releaseChatBudget(requestId);
-      return json({ error: "لا توجد رسالة لإعادة التوليد." }, 400);
+      return json(
+        { error: "لا توجد رسالة لإعادة التوليد.", code: "invalid_request" },
+        400,
+      );
     }
 
     /**

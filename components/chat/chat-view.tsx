@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowUp,
   Check,
   ChevronDown,
@@ -31,8 +32,10 @@ import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
 import {
   type ChatErrorCode,
-  ERROR_MESSAGES,
-  codeFromHttpStatus,
+  CHAT_ERROR_KEY,
+  isRetryable,
+  needsSignIn,
+  normalizeChatErrorCode,
 } from "@/lib/ai/error-codes";
 import {
   citationFromEvent,
@@ -283,6 +286,18 @@ export function ChatView({
   }, []);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
+  /**
+   * ★ حالة التوليد — **جملةٌ واحدة تُعلَن، لا كلُّ جزءٍ يصل**.
+   *
+   * وضعُ `aria-live` حول النصّ المتدفّق يجعل قارئ الشاشة ينطق كل دفعةٍ تصل،
+   * فيسمع صاحبه ضجيجًا متقطّعًا لا جملة. فالمنطقة الحيّة تحمل هذه الحالة
+   * وحدها — أربع قيمٍ لا أكثر — والنصُّ يبقى محتوًى عاديًّا يُقرأ حين يشاء.
+   */
+  const [streamStatus, setStreamStatus] = useState<
+    "idle" | "responding" | "complete" | "stopped" | "failed"
+  >("idle");
+  /** أُوقف بطلب المستخدم؟ — يفصل «توقّف» عن «فشل» في الإعلان */
+  const stoppedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   /** رمز آخر خطأ — يحدد الرسالة وهل تُعرض إعادة المحاولة */
   const [errorCode, setErrorCode] = useState<ChatErrorCode | null>(null);
@@ -412,6 +427,8 @@ export function ChatView({
       tempUserId: string | null,
     ): Promise<void> => {
       setGenerating(true);
+      stoppedRef.current = false;
+      setStreamStatus("responding");
       setError(null);
       stickRef.current = true;
 
@@ -449,9 +466,16 @@ export function ChatView({
             | { error?: string; code?: string }
             | null;
           // 401 من الوسيط يعني انتهاء الجلسة — يُميَّز عن أعطال الشبكة
-          const code = (j?.code ?? codeFromHttpStatus(res.status)) as ChatErrorCode;
+          /**
+           * ★ الرمز من السلك، والنصّ من لغة المستخدم.
+           *
+           * وأسباب الميزانية ورفض النموذج تُجمَع إلى رمز عرضٍ يفهمه المستخدم —
+           * ولا يُعرض نصُّ الخادم، فهو عربيٌّ دائمًا مهما كانت لغة الواجهة.
+           */
+          const code = normalizeChatErrorCode(j?.code, res.status);
           setErrorCode(code);
-          setError(ERROR_MESSAGES[code] ?? j?.error ?? t("sendError"));
+          setError(t(CHAT_ERROR_KEY[code]));
+          setStreamStatus("failed");
           return; // الرسالة معروضة ومصنّفة — لا نرميها كخطأ عام
         }
 
@@ -588,9 +612,10 @@ export function ChatView({
               );
             } else if (data.type === "error" && data.error) {
               // الرسالة المصنّفة تتقدّم على نص الخادم العام
-              const code = (data.code ?? "unknown") as ChatErrorCode;
+              const code = normalizeChatErrorCode(data.code);
               setErrorCode(code);
-              setError(ERROR_MESSAGES[code] ?? data.error);
+              setError(t(CHAT_ERROR_KEY[code]));
+              setStreamStatus("failed");
             } else if (data.type === "done") {
               // استبدال المعرّفات المؤقتة بالحقيقية من قاعدة البيانات
               setMessages((prev) =>
@@ -611,15 +636,33 @@ export function ChatView({
             }
           }
         }
-      } catch (err) {
+      } catch {
+        /**
+         * ★ الاستثناء لا يُربَط اسمًا.
+         *
+         * كان يُقرأ منه `message` ويُعرض حين لا يوجد نصّ آخر — وهي جملةٌ
+         * كتبها المتصفّح أو المكتبة، لا نملك لغتها ولا محتواها. وما لا
+         * يُربَط لا يُعرض بالخطأ يومًا.
+         */
         if (!ac.signal.aborted) {
           // فشل fetch/قراءة البثّ = انقطاع شبكة بين المتصفح والخادم
+          /** ولا تُعرض رسالة الاستثناء: تصف الداخل لمن ليس من أهله */
           setErrorCode("network_error");
-          setError(ERROR_MESSAGES.network_error || (err as Error).message || t("sendError"));
+          setError(t(CHAT_ERROR_KEY.network_error));
+          setStreamStatus("failed");
         }
       } finally {
         abortRef.current = null;
         setGenerating(false);
+        /**
+         * ★ «توقّف» و«فشل» و«اكتمل» ثلاثةٌ لا واحد.
+         *
+         * ومن أوقف التوليد بنفسه لا يُقال له إنه فشل — يعرف أنه أوقفه،
+         * وإعلانُ الفشل يجعله يظنّ أن شيئًا انكسر.
+         */
+        setStreamStatus((prev) =>
+          stoppedRef.current ? "stopped" : prev === "failed" ? "failed" : "complete",
+        );
         // تنظيف: لا رسالة تبقى "قيد البث"، واحذف الرد الفارغ إن فشل الطلب
         setMessages((prev) =>
           prev
@@ -886,6 +929,8 @@ export function ChatView({
   );
 
   const stop = useCallback(() => {
+    stoppedRef.current = true;
+    setStreamStatus("stopped");
     abortRef.current?.abort();
   }, []);
 
@@ -899,8 +944,41 @@ export function ChatView({
 
   const hour = new Date().getHours();
   const greeting = hour >= 5 && hour < 17 ? t("greetingMorning") : t("greetingEvening");
+  /**
+   * ★ نصُّ الحالة — يُنطق مرّةً عند كل انتقال، لا مع كل جزءٍ يصل.
+   *
+   * و«خامل» نصٌّ فارغ: منطقةٌ حيّة تحمل نصًّا ثابتًا تُنطق كلّما أُعيد رسمُ
+   * ما حولها، فيسمع صاحبها تكرارًا بلا حدث.
+   */
+  const streamStatusText =
+    streamStatus === "responding"
+      ? t("streamResponding")
+      : streamStatus === "complete"
+        ? t("streamComplete")
+        : streamStatus === "stopped"
+          ? t("streamStopped")
+          : streamStatus === "failed"
+            ? t("streamFailed")
+            : "";
+
   const suggestions = t("suggestions");
   const isEmpty = messages.length === 0;
+
+  /**
+   * ★ التركيز يذهب إلى المُنشئ في محادثةٍ فارغة — **وبشرطين**.
+   *
+   * فمن فتح «محادثة جديدة» يريد الكتابة، وإجبارُه على البحث عن الحقل بعد كل
+   * فتحٍ ضريبةٌ يدفعها من يتنقّل بلوحة المفاتيح وحده.
+   *
+   * والشرطان: ألّا يكون التركيز عند عنصرٍ آخر (فلا يُنتزع ممّن يتصفّح
+   * القائمة أو حوارًا مفتوحًا)، وأن تكون المحادثة فارغةً فعلًا.
+   */
+  useEffect(() => {
+    if (!isEmpty) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    taRef.current?.focus();
+  }, [isEmpty]);
   const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
   return (
@@ -913,6 +991,9 @@ export function ChatView({
             onClick={() => setModelOpen((v) => !v)}
             disabled={noProvider || generating}
             data-model-locked={generating ? "1" : "0"}
+            aria-label={t("chooseModel")}
+            aria-haspopup="menu"
+            aria-expanded={modelOpen}
             title={generating ? "لا يمكن تغيير النموذج أثناء التوليد" : undefined}
             className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] text-ink bg-raised border border-line hover:border-primary/40 transition-colors disabled:opacity-50"
           >
@@ -1052,6 +1133,19 @@ export function ChatView({
        * والنصّ الآن يقول ما وقع وما العمل، ويصل بالمستخدم إلى قناةٍ — ولا
        * يذكر مزوّدًا ولا متغيّرًا ولا منصّة نشر.
        */}
+      {/*
+        ★ منطقةٌ حيّة واحدة — تحمل الحالة لا النصّ.
+        `polite` لا `assertive`: الإعلان لا يقاطع ما يقرأه المستخدم الآن.
+      */}
+      <p
+        role="status"
+        aria-live="polite"
+        data-stream-status={streamStatus}
+        className="sr-only"
+      >
+        {streamStatusText}
+      </p>
+
       {noProvider && (
         <div
           role="status"
@@ -1106,6 +1200,7 @@ export function ChatView({
               placeholder={t("composerPlaceholder")}
               sendLabel={t("send")}
               stopLabel={t("stop")}
+              composerLabel={t("messageLabel")}
               centered
             />
 
@@ -1176,6 +1271,7 @@ export function ChatView({
                               setEditValue(m.content);
                             }}
                             title={t("editMessage")}
+                            aria-label={t("editMessage")}
                             className="opacity-0 group-hover:opacity-100 p-1.5 mt-1 rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-all"
                           >
                             <Pencil size={13} />
@@ -1345,20 +1441,40 @@ export function ChatView({
                   className="rise rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[13px] text-red-300 flex items-center justify-between gap-3"
                   data-error-code={errorCode ?? "unknown"}
                 >
-                  <span>{error}</span>
-                  {errorCode === "auth_expired" ? (
+                  {/* الأيقونة والنصّ معًا — لا يُفهم الخطأ من اللون وحده */}
+                  <span className="flex items-center gap-2 min-w-0">
+                    <AlertTriangle size={14} aria-hidden className="shrink-0" />
+                    <span className="sr-only">{t("errorLabel")}: </span>
+                    <span>{error}</span>
+                  </span>
+                  {errorCode && needsSignIn(errorCode) ? (
                     // إعادة التوليد بلا فائدة بعد انتهاء الجلسة — الطريق هو الدخول
                     <a
                       href="/login?reason=session_expired"
-                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
+                      data-error-action="sign-in"
+                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors
+                                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
                     >
-                      {t("login")}
+                      {t("errSignInAgain")}
                     </a>
+                  ) : errorCode && !isRetryable(errorCode) ? (
+                    /**
+                     * ★ لا زرَّ حين لا يُجدي.
+                     *
+                     * حدُّ الباقة المستنفد والطلبُ غير الصالح لا يُصلحهما
+                     * تكرار. وزرٌّ لا يعمل يجعل صاحبه يعيد ويعيد ويظنّ العطل
+                     * عابرًا بينما السبب ثابت.
+                     */
+                    <span data-error-action="none" className="sr-only">
+                      {t("errorLabel")}
+                    </span>
                   ) : (
                     // إعادة التوليد لا تُعيد إرسال رسالة المستخدم — لا تكرار
                     <button
                       onClick={() => void regenerate()}
-                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors"
+                      data-error-action="retry"
+                      className="shrink-0 text-[12px] px-2.5 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors
+                                 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
                     >
                       {t("retry")}
                     </button>
@@ -1391,6 +1507,7 @@ export function ChatView({
                 placeholder={t("composerPlaceholder")}
                 sendLabel={t("send")}
                 stopLabel={t("stop")}
+                composerLabel={t("messageLabel")}
               />
               <div className="text-center text-[10.5px] text-ink-faint mt-2">
                 {t("disclaimer")}
@@ -1516,6 +1633,7 @@ function AttachmentBar({
               <button
                 onClick={() => onRetry(a.id)}
                 title={a.ragError ?? t("ragRetry")}
+                aria-label={t("ragRetry")}
                 className="p-1 rounded text-ink-faint hover:text-primary-glow shrink-0 transition-colors"
               >
                 <RotateCw size={12} />
@@ -1524,6 +1642,7 @@ function AttachmentBar({
             <button
               onClick={() => onUnlink(a.id)}
               title={t("removeFromContext")}
+              aria-label={t("removeFromContext")}
               className="p-1 rounded text-ink-faint hover:text-red-400 shrink-0 transition-colors"
             >
               <X size={12} />
@@ -1620,6 +1739,7 @@ function Composer({
   placeholder,
   sendLabel,
   stopLabel,
+  composerLabel,
   centered,
 }: {
   input: string;
@@ -1636,6 +1756,7 @@ function Composer({
   placeholder: string;
   sendLabel: string;
   stopLabel: string;
+  composerLabel: string;
   centered?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1652,6 +1773,15 @@ function Composer({
         value={input}
         rows={1}
         disabled={disabled}
+        aria-label={composerLabel}
+        /**
+         * ★ `aria-busy` لا `disabled` أثناء التوليد.
+         *
+         * تعطيلُ الحقل يسحب التركيز منه ويمنع الكتابة أثناء انتظار الرد —
+         * وكتابةُ الرسالة التالية أثناء الانتظار سلوكٌ مشروع. و`aria-busy`
+         * يُعلم قارئ الشاشة أن المنطقة تتغيّر بلا أن يمنع أحدًا من شيء.
+         */
+        aria-busy={generating}
         onChange={(e) => {
           setInput(e.target.value);
           autoGrow();
@@ -1671,6 +1801,7 @@ function Composer({
           onClick={() => fileRef.current?.click()}
           disabled={disabled || attachBusy}
           title={attachLabel}
+          aria-label={attachLabel}
           className="w-8 h-8 flex items-center justify-center rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors disabled:opacity-40"
         >
           {attachBusy ? (

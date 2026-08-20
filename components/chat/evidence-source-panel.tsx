@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 import type { ClientCitation } from "@/lib/evidence/client-citation";
 
@@ -104,6 +105,14 @@ export function EvidenceSourcePanel({
   citation: ClientCitation | null;
   onClose: () => void;
 }) {
+  /**
+   * ★ اسم زرّ الإغلاق من القاموس (المرحلة 6D).
+   *
+   * كان `aria-label="إغلاق"` نصًّا عربيًّا ثابتًا — فيسمعه مستخدم الإنجليزية
+   * بالعربية. وهو العطل نفسه الذي أُصلح في نصوص الأخطاء، وقد كشفه الفاحص
+   * البنيويّ في هذه المرحلة.
+   */
+  const { t } = useI18n();
   const [state, setState] = useState<LoadState>({ status: "idle" });
   const abortRef = useRef<AbortController | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -205,7 +214,7 @@ export function EvidenceSourcePanel({
       {/* النقر خارج اللوحة يغلقها */}
       <button
         type="button"
-        aria-label="إغلاق"
+        aria-label={t("close")}
         tabIndex={-1}
         onClick={onClose}
         className="absolute inset-0 bg-night/60 backdrop-blur-[2px] cursor-default"
@@ -248,7 +257,7 @@ export function EvidenceSourcePanel({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="إغلاق"
+            aria-label={t("close")}
             className="shrink-0 p-1.5 rounded-lg text-ink-dim hover:text-ink-strong hover:bg-raised
                        focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >

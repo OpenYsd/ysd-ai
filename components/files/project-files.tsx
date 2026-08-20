@@ -138,7 +138,11 @@ export function ProjectFiles({
             {progress}%
           </span>
           {abortFn && (
-            <button onClick={abortFn} className="p-1 text-ink-faint hover:text-red-400">
+            <button
+              onClick={abortFn}
+              aria-label={t("cancelUpload")}
+              className="p-1 text-ink-faint hover:text-red-400"
+            >
               <X size={12} />
             </button>
           )}
@@ -172,6 +176,7 @@ export function ProjectFiles({
                 className="text-[12.5px] text-ink truncate flex-1 text-start hover:text-primary-glow transition-colors"
                 dir="ltr"
                 title={t("download")}
+                aria-label={`${t("download")}: ${f.original_name}`}
               >
                 {f.original_name}
               </button>
@@ -198,6 +203,7 @@ export function ProjectFiles({
                   onClick={() => void unlink(f)}
                   disabled={busyId === f.id}
                   title={t("unlink")}
+                aria-label={t("unlink")}
                   className="p-1 rounded text-ink-faint hover:text-ink disabled:opacity-50"
                 >
                   <Unlink size={12} />
@@ -206,6 +212,7 @@ export function ProjectFiles({
                   onClick={() => void remove(f)}
                   disabled={busyId === f.id}
                   title={t("deleteFile")}
+                aria-label={t("deleteFile")}
                   className="p-1 rounded text-ink-faint hover:text-red-400 disabled:opacity-50"
                 >
                   <Trash2 size={12} />

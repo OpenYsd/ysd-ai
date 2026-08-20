@@ -452,7 +452,11 @@ describe("(١٩)(٤٤)(٤٥)(٤٦) لوحة المفاتيح", () => {
   it("النقر خارج اللوحة يغلق", () => {
     const onClose = vi.fn();
     render(<EvidenceSourcePanel citation={citation()} onClose={onClose} />);
-    fireEvent.click(screen.getAllByRole("button", { name: "إغلاق" })[0]!);
+    /**
+     * ★ اسم الزرّ صار من القاموس (المرحلة 6D) — وكان نصًّا عربيًّا ثابتًا
+     * يسمعه مستخدم الإنجليزية بالعربية. ومحاكاة `t` هنا تُرجع المفتاح.
+     */
+    fireEvent.click(screen.getAllByRole("button", { name: "close" })[0]!);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 

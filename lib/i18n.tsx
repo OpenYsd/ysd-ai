@@ -34,6 +34,7 @@ const dict = {
   editMessage: { ar: "تعديل", en: "Edit" },
   save: { ar: "حفظ", en: "Save" },
   cancel: { ar: "إلغاء", en: "Cancel" },
+  close: { ar: "إغلاق", en: "Close" },
   delete: { ar: "حذف", en: "Delete" },
   rename: { ar: "إعادة تسمية", en: "Rename" },
   confirmDelete: {
@@ -787,6 +788,89 @@ const dict = {
     en: "You can delete your own conversations and files from inside the app. Deleting the account and its data entirely is done through a request sent from here.",
   },
   supportBack: { ar: "العودة إلى YSD AI", en: "Back to YSD AI" },
+
+  /* ═══════════ المرحلة 6D — الإتاحة وأخطاء المحادثة ═══════════ */
+
+  /**
+   * ★ نصوص الأخطاء — **بلغة المستخدم لا بلغةٍ واحدة**.
+   *
+   * كانت `ERROR_MESSAGES` عربيةً وحدها وتُعرض للجميع، فيرى مستخدم الإنجليزية
+   * واجهةً إنجليزية وخطأً عربيًّا — وأسوأ لحظةٍ يقع فيها ذلك هي لحظةُ العطل،
+   * حيث يحتاج أن يفهم بسرعة.
+   *
+   * وكلُّ نصٍّ هنا يقول شيئين: **ما وقع** و**ما العمل**. ولا يذكر مزوّدًا ولا
+   * قاعدةً ولا رمز حالة — تلك تصف الداخل لمن ليس من أهله.
+   */
+  errProviderUnavailable: {
+    ar: "خدمة الذكاء الاصطناعي غير متاحة الآن. رسالتك محفوظة — أعد المحاولة بعد قليل.",
+    en: "The AI service is unavailable right now. Your message is saved — try again shortly.",
+  },
+  errNetwork: {
+    ar: "تعذّر الاتصال بالخدمة. تحقّق من اتصالك ثم أعد المحاولة.",
+    en: "Couldn't reach the service. Check your connection and try again.",
+  },
+  errAuthExpired: {
+    ar: "انتهت جلستك. سجّل الدخول من جديد — مسودتك محفوظة.",
+    en: "Your session has expired. Sign in again — your draft is saved.",
+  },
+  errTimeout: {
+    ar: "استغرق الرد وقتًا أطول من المتوقع فأُوقف. أعد المحاولة.",
+    en: "The response took longer than expected and was stopped. Try again.",
+  },
+  errRateLimit: {
+    ar: "أرسلت طلبات كثيرة في وقت قصير. انتظر قليلًا ثم أعد المحاولة.",
+    en: "Too many requests in a short time. Wait a moment, then try again.",
+  },
+  errQualityGuard: {
+    ar: "تعذّر الحصول على رد بجودة مناسبة. أعد المحاولة.",
+    en: "Couldn't produce a good enough response. Try again.",
+  },
+  /** حدُّ الباقة — لا زرَّ إعادة، فالتكرار لا يُغيّر شيئًا */
+  errUsageLimit: {
+    ar: "وصلت إلى حد الاستهلاك في باقتك الحالية. راجع صفحة الاستهلاك لمعرفة موعد التجديد.",
+    en: "You've reached your plan's usage limit. Check the usage page to see when it renews.",
+  },
+  errInvalidRequest: {
+    ar: "تعذّر تنفيذ هذا الطلب. حدّث الصفحة وحاول من جديد.",
+    en: "This request couldn't be completed. Refresh the page and try again.",
+  },
+  errConcurrent: {
+    ar: "لديك ردّ جارٍ الآن. انتظر انتهاءه قبل إرسال طلب جديد.",
+    en: "A response is still being generated. Wait for it to finish before sending another.",
+  },
+  errUnknown: {
+    ar: "تعذّر إكمال الطلب. أعد المحاولة.",
+    en: "Couldn't complete the request. Try again.",
+  },
+  errSignInAgain: { ar: "تسجيل الدخول مجددًا", en: "Sign in again" },
+  errorLabel: { ar: "خطأ", en: "Error" },
+
+  /**
+   * ★ حالة التوليد — **جملةٌ واحدة لا كلُّ رمز**.
+   *
+   * وضعُ `aria-live` حول النصّ المتدفّق يجعل قارئ الشاشة ينطق كل جزءٍ يصل،
+   * فيسمع صاحبه ضجيجًا متقطّعًا لا جملةً. فالمنطقة الحيّة تحمل **الحالة**
+   * وحدها، والنصُّ يبقى محتوًى عاديًّا يُقرأ حين يشاء.
+   */
+  streamResponding: { ar: "YSD يكتب الرد…", en: "YSD is responding…" },
+  streamComplete: { ar: "اكتمل الرد", en: "Response complete" },
+  streamStopped: { ar: "أُوقف التوليد", en: "Generation stopped" },
+  streamFailed: { ar: "تعذّر إكمال الرد", en: "Response failed" },
+
+  /* ── أسماء مسموعة لأزرارٍ لا نصّ فيها ── */
+  openSidebar: { ar: "فتح الشريط الجانبي", en: "Open sidebar" },
+  closeSidebar: { ar: "إغلاق الشريط الجانبي", en: "Close sidebar" },
+  expandSidebar: { ar: "توسيع الشريط الجانبي", en: "Expand sidebar" },
+  switchTheme: { ar: "تبديل المظهر", en: "Switch theme" },
+  switchLanguage: { ar: "تبديل اللغة", en: "Switch language" },
+  saveTitle: { ar: "حفظ العنوان", en: "Save title" },
+  cancelRename: { ar: "إلغاء إعادة التسمية", en: "Cancel rename" },
+  conversationTitleLabel: { ar: "عنوان المحادثة", en: "Conversation title" },
+  chooseModel: { ar: "اختيار النموذج", en: "Choose model" },
+  messageLabel: { ar: "رسالتك إلى YSD AI", en: "Your message to YSD AI" },
+  dismissError: { ar: "إخفاء التنبيه", en: "Dismiss notice" },
+  fileActions: { ar: "إجراءات الملف", en: "File actions" },
+  toggleFileDetails: { ar: "عرض تفاصيل الملف", en: "Toggle file details" },
 
   /* ═══════════ المرحلة 6C — تصليب ما قبل التجربة العامّة ═══════════ */
 
