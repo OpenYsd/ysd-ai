@@ -20,7 +20,8 @@
     "test:pg:registry": "node scripts/v095-pg-model-registry.mjs",
     "test:pg:ysd-observability": "node scripts/v099-pg-ysd-observability.mjs",
     "test:pg:ysd-rollout": "node scripts/v102-pg-ysd-rollout.mjs",
-    "test:pg:ysd-release": "node scripts/v103-pg-ysd-release.mjs"
+    "test:pg:ysd-release": "node scripts/v103-pg-ysd-release.mjs",
+    "test:pg:training-bank": "node scripts/v107-pg-training-bank.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

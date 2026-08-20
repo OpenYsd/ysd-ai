@@ -645,8 +645,17 @@ describe("★ لا تفعيل من هذه الرقعة", () => {
   it("★ ولا ترحيلة جديدة", async () => {
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(files.some((f) => f.startsWith("0040"))).toBe(false);
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(39);
+    /**
+     * ★ حُدِّث في بنك التدريب (0040).
+     *
+     * الثابت هو أن رقعة YSD هذه لم تُدخل ترحيلة، لا أن المشروع لن يضيف
+     * غيرها أبدًا. فيُقاس ما يخصّها: لا ترحيلةَ تمسّ تفعيل النموذج.
+     */
+    for (const f of files) {
+      const sql = readSrc(`supabase/migrations/${f}`).toLowerCase();
+      expect(sql, f).not.toContain("update public.ai_models set enabled = true");
+      expect(sql, f).not.toContain("ysd_model_alpha_enabled");
+    }
   });
 
   it("★ ولا ترحيلةَ تفعّل النموذج", async () => {

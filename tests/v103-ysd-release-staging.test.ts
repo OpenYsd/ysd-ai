@@ -736,7 +736,15 @@ describe("★ (٢٥–٣٠) 0039 وما لا تفعله", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0039_ysd_release_staging.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(39);
+    /**
+     * ★ حُدِّث في بنك التدريب (0040).
+     *
+     * الثابت المحروس هو أن **هذه الرقعة** لم تُدخل ترحيلة، لا أن المشروع
+     * توقّف عند رقمٍ بعينه. وربطُه بالأعلى يجعل كل ترحيلةٍ لاحقة تُسقطه
+     * بلا خطأ حقيقيّ — و«0040 هي الأحدث» يملكه v107.
+     */
+    expect(numbers).toContain(39);
+    for (let n = 1; n <= 39; n++) expect(numbers, String(n)).toContain(n);
     expect(new Set(numbers).size).toBe(numbers.length);
 
     const { execFileSync } = await import("node:child_process");
