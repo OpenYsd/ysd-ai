@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getAdminClient } from "@/lib/supabase/admin";
 import { validateDatasetArtifactForTraining } from "./artifact";
-import { findBaseModel, isBaseModelPinned } from "./base-models";
+import { findBaseModel, isVerifiedRevision } from "./base-models";
 import {
   TRAINING_CONFIG_VERSION,
   buildTrainingSpec,
@@ -38,6 +38,7 @@ export type JobFailure =
   | "artifact_not_found"
   | "artifact_invalid"
   | "unknown_base_model"
+  | "base_model_unpinned"
   | "unknown_preset"
   | "invalid_config"
   | "job_not_found"
@@ -50,7 +51,6 @@ export type JobFailure =
 export type ExecutionFailure =
   | JobFailure
   | "config_mismatch"
-  | "base_model_unpinned"
   | "base_model_not_allowed";
 
 export interface JobDependencies {
@@ -201,9 +201,11 @@ export async function createTrainingJobDraft(
     const reason: JobFailure =
       spec.reason === "unknown_base_model"
         ? "unknown_base_model"
-        : spec.reason === "unknown_preset"
-          ? "unknown_preset"
-          : "invalid_config";
+        : spec.reason === "base_model_unpinned"
+          ? "base_model_unpinned"
+          : spec.reason === "unknown_preset"
+            ? "unknown_preset"
+            : "invalid_config";
     return { ok: false, reason, field: spec.field };
   }
 
@@ -218,7 +220,7 @@ export async function createTrainingJobDraft(
       .insert({
         dataset_artifact_id: artifactId,
         base_model_id: spec.base.id,
-        base_model_revision: spec.base.revision,
+        base_model_revision: spec.revision,
         method: spec.preset.method,
         preset_id: spec.preset.id,
         config_version: TRAINING_CONFIG_VERSION,
@@ -452,19 +454,34 @@ export async function validateTrainingJobForExecution(
       baseModelId: job.base_model_id,
       presetId: job.preset_id,
     },
-    { ...base, revision: job.base_model_revision },
+    base,
     {
       id: job.preset_id,
       method: preset.method,
       seed: job.seed,
       hyperparameters: job.hyperparameters as never,
     },
+    job.base_model_revision,
   );
   if (hashTrainingConfig(canonical) !== job.config_hash) {
     return { ok: false, reason: "config_mismatch" };
   }
 
-  if (!isBaseModelPinned(base)) {
+  /**
+   * ★ والفحص على مراجعة **المهمّة** لا على الفهرس.
+   *
+   * ── ولماذا لا تُشترط مساواةُ الفهرس ──
+   *
+   * لأن الفهرس يتقدّم: مهمّةٌ بُنيت على مراجعةٍ تحقّقنا منها تبقى صحيحةً
+   * تاريخيًّا وإن صارت المراجعة الافتراضية غيرها. واشتراطُ المساواة يقتل
+   * كل مهمّةٍ قديمة مع أوّل تحديث.
+   *
+   * ── ولا يكفي الشكل ──
+   *
+   * أربعون خانةً يكتبها أحدٌ تُشبه التزامة ولا تكون واحدة. فالشرط أن تكون
+   * في قائمة ما رأيناه في المستودع الرسميّ.
+   */
+  if (!isVerifiedRevision(base, job.base_model_revision)) {
     return { ok: false, reason: "base_model_unpinned" };
   }
 

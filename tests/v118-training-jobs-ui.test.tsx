@@ -43,7 +43,7 @@ const ARTIFACTS: ArtifactChoice[] = [
   { artifactId: ART, datasetVersion: "ysd-dataset-000001", sampleCount: 1 },
 ];
 const MODELS: BaseModelChoice[] = [
-  { id: "openai/gpt-oss-20b", family: "gpt-oss", source: "huggingface", pinned: false },
+  { id: "openai/gpt-oss-20b", family: "gpt-oss", source: "huggingface", pinned: true },
   { id: "openai/gpt-oss-120b", family: "gpt-oss", source: "huggingface", pinned: false },
 ];
 const PRESETS = ["ysd-lora-v1"];
@@ -192,6 +192,72 @@ describe("★ (٢) الأزرار — حسب الحالة", () => {
       "openai/gpt-oss-120b",
     ]);
     expect(document.querySelector('input[type="text"]')).toBeNull();
+  });
+
+  it("★ ★ ★ وغير المثبَّت يُعرض معطَّلًا لا يُخفى", () => {
+    /**
+     * فإخفاؤه يجعل المشرف لا يعرف أنه موجود ولا لماذا لا يُختار. وعرضُه
+     * بحاله يقول: هذا نموذج، ولم يُتحقَّق من هوّية أوزانه.
+     *
+     * والواجهة ليست حماية — الخادم يردّه على كل حال.
+     */
+    mount();
+    const opts = [...(document.querySelector("[data-job-base-model]") as HTMLSelectElement).options];
+    const pinned = opts.find((o) => o.value === "openai/gpt-oss-20b")!;
+    const unpinned = opts.find((o) => o.value === "openai/gpt-oss-120b")!;
+    expect(pinned.disabled).toBe(false);
+    expect(unpinned.disabled).toBe(true);
+    expect(pinned.textContent).toContain("مثبَّت");
+    expect(unpinned.textContent).toContain("غير مثبَّت");
+    expect(text()).toContain("لم يُتحقَّق من هوية أوزانها");
+  });
+
+  it("★ ★ ★ والافتراض أوّل نموذجٍ **مثبَّت** لا أوّل نموذجٍ في القائمة", () => {
+    /**
+     * ── فجوةٌ كشفَتها طفرة ──
+     *
+     * `baseModels[0]` و`find(pinned)` يتّفقان ما دام الأوّل مثبَّتًا. والفرق
+     * يظهر حين يتقدّمه غير مثبَّت — وحينها يفتح الحوار على خيارٍ معطَّل،
+     * فيضغط المشرف «إنشاء» ويُردّ بلا أن يفهم لماذا.
+     */
+    render(
+      <I18nProvider initialLocale="ar">
+        <TrainingJobsSection
+          jobs={[]}
+          artifacts={ARTIFACTS}
+          baseModels={[
+            { id: "x/unpinned", family: "f", source: "huggingface", pinned: false },
+            { id: "openai/gpt-oss-20b", family: "gpt-oss", source: "huggingface", pinned: true },
+          ]}
+          presets={PRESETS}
+        />
+      </I18nProvider>,
+    );
+    expect((document.querySelector("[data-job-base-model]") as HTMLSelectElement).value)
+      .toBe("openai/gpt-oss-20b");
+  });
+
+  it("★ ★ ولا زرَّ إنشاءٍ إن لم يكن ثمّة مثبَّت", () => {
+    render(
+      <I18nProvider initialLocale="ar">
+        <TrainingJobsSection
+          jobs={[]}
+          artifacts={ARTIFACTS}
+          baseModels={[{ id: "x/y", family: "f", source: "huggingface", pinned: false }]}
+          presets={PRESETS}
+        />
+      </I18nProvider>,
+    );
+    expect(createBtn()).toBeNull();
+  });
+
+  it("★ ★ ورفضُ الخادم لغير المثبَّت يُقال بوضوح", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body({ ok: false, reason: "base_model_unpinned" }, 400));
+    await act(async () => {
+      fireEvent.click(prepareBtn(J1)!);
+    });
+    expect(text()).toContain("هذا النموذج غير مثبَّت، فلم تُنشأ المهمة");
   });
 });
 

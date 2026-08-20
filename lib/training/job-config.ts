@@ -2,7 +2,12 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { canonicalBaseModel, findBaseModel, type BaseModelEntry } from "./base-models";
+import {
+  canonicalBaseModel,
+  findBaseModel,
+  isBaseModelPinned,
+  type BaseModelEntry,
+} from "./base-models";
 
 /**
  * مواصفة التدريب — صياغةٌ معياريّة وبصمة (v0.9.8، المرحلة 4A).
@@ -114,6 +119,7 @@ const BOUNDS: Record<keyof TrainingHyperparameters, [number, number]> = {
 
 export type ConfigRejection =
   | "unknown_base_model"
+  | "base_model_unpinned"
   | "unknown_preset"
   | "hyperparameter_out_of_range"
   | "invalid_seed";
@@ -167,6 +173,14 @@ export function buildCanonicalTrainingConfig(
   input: TrainingSpecInput,
   base: BaseModelEntry,
   preset: TrainingPreset,
+  /**
+   * ★ المراجعة صريحةٌ لا تُقرأ من الفهرس.
+   *
+   * فالبصمة تصف ما وُقّع عليه في المهمّة، لا ما صار عليه الفهرس بعدها.
+   * ولو قُرئت من الفهرس لتغيّرت بصمةُ مهمّةٍ قديمة كلّما تقدّم — وهي لم
+   * تتغيّر.
+   */
+  revision: string | null,
 ): string {
   const hp = preset.hyperparameters;
   /** الترتيب مكتوبٌ سطرًا سطرًا — ومن يغيّره يغيّر البصمة عن قصد */
@@ -177,7 +191,7 @@ export function buildCanonicalTrainingConfig(
     `datasetVersion\t${input.datasetVersion}`,
     `datasetFormatVersion\t${input.datasetFormatVersion}`,
     `sampleCount\t${input.sampleCount}`,
-    `baseModel\t${canonicalBaseModel(base)}`,
+    `baseModel\t${canonicalBaseModel(base, revision)}`,
     `method\t${preset.method}`,
     `preset\t${preset.id}`,
     `seed\t${preset.seed}`,
@@ -203,6 +217,8 @@ export type SpecResult =
       ok: true;
       base: BaseModelEntry;
       preset: TrainingPreset;
+      /** المراجعة التي وُقّع عليها — تُنسخ إلى المهمّة */
+      revision: string;
       canonical: string;
       configHash: string;
     }
@@ -224,6 +240,28 @@ export function buildTrainingSpec(input: TrainingSpecInput): SpecResult {
   const check = validateTrainingPreset(preset);
   if (!check.ok) return check;
 
-  const canonical = buildCanonicalTrainingConfig(input, base, preset);
-  return { ok: true, base, preset, canonical, configHash: hashTrainingConfig(canonical) };
+  /**
+   * ★ ولا يُبنى شيءٌ من نموذجٍ غير مثبَّت.
+   *
+   * فمواصفةٌ على أوزانٍ مجهولة مسوَّدةٌ ميّتة: تُنشأ اليوم ويردّها حارسُ
+   * التنفيذ يومًا. والردّ عند الإنشاء أصدق — يقول للمشرف الآن ما سيُقال له
+   * لاحقًا.
+   */
+  if (!isBaseModelPinned(base)) return { ok: false, reason: "base_model_unpinned" };
+
+  /**
+   * و`isBaseModelPinned` تضمن أنها سلسلة — والمحوّل لا يقرأ ذلك عبر دالّة.
+   * فيُقرأ الحقل مرّةً ويُفحص، بدل تأكيدٍ بـ`!` يُخفي احتمالًا.
+   */
+  const revision = base.defaultRevision;
+  if (revision === null) return { ok: false, reason: "base_model_unpinned" };
+  const canonical = buildCanonicalTrainingConfig(input, base, preset, revision);
+  return {
+    ok: true,
+    base,
+    preset,
+    revision,
+    canonical,
+    configHash: hashTrainingConfig(canonical),
+  };
 }

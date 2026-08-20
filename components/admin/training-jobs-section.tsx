@@ -72,7 +72,9 @@ export function TrainingJobsSection({
   const { t } = useI18n();
   const [action, setAction] = useState<Action>({ phase: "idle" });
   const [dialog, setDialog] = useState<Dialog>({ phase: "closed" });
-  const [baseModelId, setBaseModelId] = useState(baseModels[0]?.id ?? "");
+  const [baseModelId, setBaseModelId] = useState(
+    baseModels.find((m) => m.pinned)?.id ?? "",
+  );
   const [presetId, setPresetId] = useState(presets[0] ?? "");
   const [moved, setMoved] = useState<Record<string, string>>({});
 
@@ -143,7 +145,7 @@ export function TrainingJobsSection({
     <div className="rounded-xl border border-line/60 bg-surface/40 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-line/50 flex flex-wrap items-center justify-between gap-3">
         <span className="text-[13px] font-medium">{t("jobsSection")}</span>
-        {artifacts.length > 0 && (
+        {artifacts.length > 0 && baseModels.some((m) => m.pinned) && (
           <div className="flex flex-wrap items-center gap-2">
             {/**
               * ★ اختيارٌ من قائمة — لا حقلٌ يُكتب فيه.
@@ -159,9 +161,15 @@ export function TrainingJobsSection({
               className="rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink bg-raised border border-line
                          focus:outline-none focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
             >
+              {/**
+                * ★ وغير المثبَّت يُعرض معطَّلًا لا يُخفى.
+                *
+                * فإخفاؤه يجعل المشرف لا يعرف أنه موجود ولا لماذا لا يُختار.
+                * وعرضُه بحاله يقول: هذا نموذج، ولم يُتحقَّق من هوّية أوزانه.
+                */}
               {baseModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id}
+                <option key={m.id} value={m.id} disabled={!m.pinned}>
+                  {m.id} — {m.pinned ? t("jobsPinned") : t("jobsUnpinned")}
                 </option>
               ))}
             </select>
@@ -195,6 +203,11 @@ export function TrainingJobsSection({
       </div>
 
       <p className="px-4 pt-3 text-[11.5px] text-ink-faint leading-relaxed">{t("jobsMeaning")}</p>
+      {baseModels.some((m) => !m.pinned) && (
+        <p className="px-4 pt-1.5 text-[11.5px] text-ink-faint leading-relaxed">
+          {t("jobsUnpinnedNote")}
+        </p>
+      )}
       <p className="px-4 pt-1.5 text-[11.5px] text-ink-faint leading-relaxed">
         {t("jobsPreparedMeaning")}
       </p>
@@ -216,7 +229,9 @@ export function TrainingJobsSection({
       )}
       {action.phase === "failed" && (
         <p role="alert" className="px-4 pt-3 text-[12px] text-red-400">
-          {action.reason === "artifact_invalid"
+          {action.reason === "base_model_unpinned"
+            ? t("jobsUnpinnedError")
+            : action.reason === "artifact_invalid"
             ? t("jobsArtifactInvalid")
             : action.reason === "conflict" || action.reason === "not_draft"
               ? t("jobsConflict")

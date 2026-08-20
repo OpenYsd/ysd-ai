@@ -413,6 +413,22 @@ const dict = {
     en: "The job state changed. Refresh the page.",
   },
   jobsFailed: { ar: "تعذّرت العملية. حاول مرة أخرى.", en: "Operation failed. Please try again." },
+  jobsPinned: { ar: "مثبَّت", en: "Pinned" },
+  jobsUnpinned: { ar: "غير مثبَّت", en: "Unpinned" },
+  /**
+   * ★ ونصٌّ يقول لماذا لا يُختار.
+   *
+   * فقائمةٌ فيها خيارٌ معطَّل بلا سبب تُقرأ عطلًا. و«غير مثبَّت» تعني أن
+   * هوّية أوزانه لم يُتحقَّق منها — فما سيُنزَّل قد لا يكون ما وُصف.
+   */
+  jobsUnpinnedNote: {
+    ar: "النماذج غير المثبَّتة لا يمكن إنشاء مهمة منها: لم يُتحقَّق من هوية أوزانها.",
+    en: "Unpinned models cannot start a job: their weight identity has not been verified.",
+  },
+  jobsUnpinnedError: {
+    ar: "هذا النموذج غير مثبَّت، فلم تُنشأ المهمة.",
+    en: "This model is unpinned, so the job was not created.",
+  },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

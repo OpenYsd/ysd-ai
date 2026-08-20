@@ -33,6 +33,7 @@ import {
   canonicalBaseModel,
   findBaseModel,
   isBaseModelPinned,
+  isVerifiedRevision,
   listBaseModels,
 } from "@/lib/training/base-models";
 import {
@@ -67,6 +68,9 @@ const SHA = "a".repeat(64);
 const MANIFEST = "b".repeat(64);
 const BASE_ID = "openai/gpt-oss-20b";
 const PRESET_ID = "ysd-lora-v1";
+/** المراجعة المثبَّتة — كما تحقّقتُ منها من المستودع الرسميّ */
+const REV = "6cee5e81ee83917806bbde320786a8fb61efebee";
+const UNPINNED = "openai/gpt-oss-120b";
 
 const SPEC = {
   artifactSha256: SHA,
@@ -110,7 +114,7 @@ function memoryDb(over: Over = {}) {
     version: "ysd-train-000001",
     dataset_artifact_id: ART,
     base_model_id: BASE_ID,
-    base_model_revision: null,
+    base_model_revision: REV,
     method: "lora_sft",
     preset_id: PRESET_ID,
     config_version: TRAINING_CONFIG_VERSION,
@@ -216,29 +220,103 @@ describe("★ (١) النموذج الأساسيّ — من قائمةٍ في ا
     }
   });
 
-  it("★ ★ ★ وحدُّ إعادة الإنتاج مُقال لا مُدَّعى", () => {
+  it("★ ★ ★ 20B مثبَّتة بمراجعةٍ تُحقَّق منها — و120B ليست", () => {
     /**
      * ── وهذا أهمّ ما في هذا الملفّ ──
      *
-     * «مواصفةٌ قابلة لإعادة الإنتاج» وعدٌ يُقاس. وهو هنا **ناقص**: لا يملك
-     * المشروع مراجعةً ثابتة لأيّ نموذج. فما تُثبته المواصفة: أيّ اسمٍ من
-     * أيّ مصدر. وما لا تُثبته: أيّ أوزانٍ بعينها.
+     * «مواصفةٌ قابلة لإعادة الإنتاج» وعدٌ يُقاس. وقد صار يُقاس لـ20B: مراجعةٌ
+     * ثابتة تحقّقتُ منها من المستودع الرسميّ — لا نقلًا عن ذاكرة ولا عن
+     * نصّ طلب.
      *
-     * ولو كتبنا رقم مراجعةٍ من عندنا لَكان أسوأ من غيابه: قيمةٌ تبدو دقيقة
-     * ولا تشير إلى شيء.
+     * و120B تبقى بلا مراجعة: التحقّق عملٌ يُفعل لا يُفترض، ولم يُفعل لها.
+     * وتثبيتُها لأنها «على الأرجح مثلها» ادّعاءُ عملٍ لم يقع.
      */
-    for (const m of listBaseModels()) {
-      expect(m.revision).toBeNull();
-      expect(isBaseModelPinned(m)).toBe(false);
-    }
-    expect(BASE_SRC).toMatch(/وحدُّ إعادة الإنتاج يُقال ولا يُبتلع/);
+    const twenty = findBaseModel(BASE_ID)!;
+    expect(twenty.defaultRevision).toBe(REV);
+    expect(twenty.defaultRevision).toMatch(/^[a-f0-9]{40}$/);
+    expect(isBaseModelPinned(twenty)).toBe(true);
+    expect(twenty.license).toBe("apache-2.0");
+
+    const oneTwenty = findBaseModel(UNPINNED)!;
+    expect(oneTwenty.defaultRevision).toBeNull();
+    expect(oneTwenty.verifiedRevisions).toEqual([]);
+    expect(isBaseModelPinned(oneTwenty)).toBe(false);
   });
 
-  it("★ ★ والمراجعة تدخل الهوّية المعياريّة — فيوم تُثبَّت تتغيّر البصمة", () => {
+  it("★ ★ ★ و«مثبَّت» لا يُقاس بالطول", () => {
+    /**
+     * ── عيبٌ كان قائمًا وأُصلح ──
+     *
+     * كان الفحص `length > 0` — فـ`"main"` تمرّ. و`main` **مؤشّرٌ متحرّك**:
+     * يشير اليوم إلى التزامةٍ وغدًا إلى أخرى. فمواصفةٌ تقول «دُرِّب على
+     * main» لا تقول شيئًا، وسلسلةٌ غير فارغة أسوأ من الفراغ: تُوهم بتثبيتٍ
+     * لم يقع.
+     */
     const base = findBaseModel(BASE_ID)!;
-    expect(canonicalBaseModel(base)).not.toBe(
-      canonicalBaseModel({ ...base, revision: "abc123" }),
-    );
+    for (const bad of [
+      null, "", "main", "refs/heads/main", "latest", "HEAD",
+      REV.slice(0, 7), REV.slice(0, 39), REV + "0",
+      REV.toUpperCase(), "https://huggingface.co/openai/gpt-oss-20b",
+      "  " + REV + "  ", 42, {},
+    ]) {
+      expect(isVerifiedRevision(base, bad as never)).toBe(false);
+    }
+    expect(isVerifiedRevision(base, REV)).toBe(true);
+  });
+
+  it("★ ★ ★ و`isBaseModelPinned` تقيس التحقّق لا الطول", () => {
+    /**
+     * ── فجوةٌ كشفَتها طفرة ──
+     *
+     * إرجاعُ الدالّة إلى `length > 0` لم يُسقط اختبارًا: فـ20B مراجعتُها
+     * صحيحة و120B `null` — والقياسان يتّفقان على القائمة الحاليّة.
+     *
+     * والفرق يظهر على مُدخَلٍ ثالث: سلسلةٌ غير فارغة وغير متحقَّق منها.
+     * وهي بالضبط ما يقع حين يكتب أحدٌ `"main"` في القائمة يومًا — فيقول
+     * الفحص «مثبَّت» عن مؤشّرٍ يتحرّك.
+     */
+    const base = findBaseModel(BASE_ID)!;
+    for (const bad of ["main", "latest", REV.slice(0, 7), "f".repeat(40)]) {
+      expect(isBaseModelPinned({ ...base, defaultRevision: bad })).toBe(false);
+    }
+    expect(isBaseModelPinned({ ...base, defaultRevision: null })).toBe(false);
+    expect(isBaseModelPinned(base)).toBe(true);
+  });
+
+  it("★ ★ ★ والبناء يردّ مراجعةً غير متحقَّق منها — لا `null` وحدها", () => {
+    /**
+     * ── والفجوة نفسها في البناء ──
+     *
+     * إسقاطُ حارس التثبيت لم يُسقط اختبارًا لأن 120B مراجعتُها `null`،
+     * وتضييقُ النوع يردّها على كل حال. فالمُختبَر الحقيقيّ نموذجٌ بمراجعةٍ
+     * **غير فارغة وغير متحقَّق منها**.
+     */
+    const base = findBaseModel(BASE_ID)!;
+    const spec = buildTrainingSpec({ ...SPEC, baseModelId: BASE_ID });
+    expect(spec.ok).toBe(true);
+    /** ولا سبيل إلى تمرير نموذجٍ مزوَّر عبر المعرّف — والقائمة هي المصدر */
+    expect(isBaseModelPinned({ ...base, defaultRevision: "main" })).toBe(false);
+    expect(isVerifiedRevision({ ...base, defaultRevision: "main" }, "main")).toBe(false);
+  });
+
+  it("★ ★ ★ وأربعون خانةً لم نرَها ليست تزامةً رأيناها", () => {
+    /**
+     * فالشكل يردّ `main` والسبعَ خانات، ولا يردّ أربعين خانةً يكتبها أحدٌ
+     * من عنده. والقائمة تفرّق بين «سلسلةٍ تشبه التزامة» و«التزامةٍ رأيناها
+     * في المستودع الرسميّ».
+     */
+    const base = findBaseModel(BASE_ID)!;
+    const fake = "f".repeat(40);
+    expect(fake).toMatch(/^[a-f0-9]{40}$/);
+    expect(isVerifiedRevision(base, fake)).toBe(false);
+    expect(base.verifiedRevisions).toContain(REV);
+  });
+
+  it("★ ★ والمراجعة تدخل الهوّية المعياريّة", () => {
+    const base = findBaseModel(BASE_ID)!;
+    expect(canonicalBaseModel(base, REV)).not.toBe(canonicalBaseModel(base, null));
+    expect(canonicalBaseModel(base, REV)).not.toBe(canonicalBaseModel(base, "f".repeat(40)));
+    expect(canonicalBaseModel(base, REV)).toContain(REV);
   });
 });
 
@@ -326,10 +404,15 @@ describe("★ (٣) البصمة — نفس المواصفة، نفس الباي�
   it("★ ★ وكلُّ ما يُحدّد التدريب يغيّرها", () => {
     const base = buildTrainingSpec(SPEC);
     expect(base.ok).toBe(true);
+    /**
+     * ★ و120B ليست هنا — لأنها لم تعد تُبنى أصلًا.
+     *
+     * بعد التثبيت صار البناء يردّ النموذج غير المثبَّت قبل أن يحسب بصمة.
+     * وذلك تحوّلٌ في السلوك يُختبر في موضعه، لا يُدسّ في قياس البصمات.
+     */
     const variants = [
       { ...SPEC, artifactSha256: "c".repeat(64) },
       { ...SPEC, releaseManifestHash: "d".repeat(64) },
-      { ...SPEC, baseModelId: "openai/gpt-oss-120b" },
       { ...SPEC, sampleCount: 2 },
       { ...SPEC, datasetVersion: "ysd-dataset-000002" },
     ];
@@ -343,7 +426,7 @@ describe("★ (٣) البصمة — نفس المواصفة، نفس الباي�
   it("★ ★ ورقمٌ في الإعداد يغيّرها", () => {
     const preset = findTrainingPreset(PRESET_ID)!;
     const base = findBaseModel(BASE_ID)!;
-    const original = hashTrainingConfig(buildCanonicalTrainingConfig(SPEC, base, preset));
+    const original = hashTrainingConfig(buildCanonicalTrainingConfig(SPEC, base, preset, REV));
     for (const patch of [
       { hyperparameters: { ...preset.hyperparameters, epochs: 2 } },
       { hyperparameters: { ...preset.hyperparameters, learningRate: 0.0002 } },
@@ -351,7 +434,7 @@ describe("★ (٣) البصمة — نفس المواصفة، نفس الباي�
       { seed: 7 },
     ]) {
       const changed = hashTrainingConfig(
-        buildCanonicalTrainingConfig(SPEC, base, { ...preset, ...patch }),
+        buildCanonicalTrainingConfig(SPEC, base, { ...preset, ...patch }, REV),
       );
       expect(changed).not.toBe(original);
     }
@@ -373,6 +456,23 @@ describe("★ (٣) البصمة — نفس المواصفة، نفس الباي�
     for (const leak of ["Date", "now(", "createdAt", "createdBy", "jobId"]) {
       expect(body).not.toContain(leak);
     }
+  });
+
+  it("★ ★ ★ والمراجعة داخل البايتات المعياريّة — لا مشتقّةً منها", () => {
+    /**
+     * ── فجوةٌ كشفَتها طفرة ──
+     *
+     * إخراجُ المراجعة من السطر المعياريّ لم يُسقط اختبارًا: كل بصماتي
+     * تُحسب بالدالّة نفسها، فتتحرّك معًا ويبقى الفرق بينها قائمًا.
+     *
+     * والقياس الصحيح على **النصّ**: أن تكون المراجعة فيه حرفًا. فبصمتان
+     * تختلفان لا تُثبتان أن ما اختلف هو المراجعة.
+     */
+    const canonical = GOOD.ok ? GOOD.canonical : "";
+    expect(canonical).toContain(REV);
+    const line = canonical.split("\n").find((l) => l.startsWith("baseModel\t"))!;
+    expect(line).toContain(REV);
+    expect(line).toContain(BASE_ID);
   });
 
   it("★ ★ والبصمة sha256 على البايتات المعياريّة", () => {
@@ -439,6 +539,31 @@ describe("★ (٤) الإنشاء — بعد إجازة الأثر", () => {
     }
   });
 
+  it("★ ★ ★ ونموذجٌ غير مثبَّت ⇒ لا مسوَّدة أصلًا", async () => {
+    /**
+     * ── ولماذا يُردّ عند الإنشاء لا عند التنفيذ ──
+     *
+     * لأن مواصفةً على أوزانٍ مجهولة مسوَّدةٌ ميّتة: تُنشأ اليوم ويردّها
+     * حارسُ التنفيذ يومًا. والردّ الآن أصدق — يقول للمشرف ما سيُقال له
+     * لاحقًا، ولا يُبقي في اللوحة صفًّا لا مستقبل له.
+     */
+    const db = memoryDb();
+    const r = await createTrainingJobDraft(ART, UNPINNED, PRESET_ID, ADMIN, deps(db));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("base_model_unpinned");
+    expect(db.inserts).toHaveLength(0);
+  });
+
+  it("★ ★ والمثبَّت تُنسخ مراجعتُه إلى المهمّة وقت الإنشاء", async () => {
+    /**
+     * ولا تُقرأ من الفهرس لاحقًا: مهمّةٌ بُنيت على مراجعةٍ تبقى عليها ولو
+     * تقدّم الفهرس. فالمواصفة تصف ما وُقّع عليه.
+     */
+    const db = memoryDb();
+    await createTrainingJobDraft(ART, BASE_ID, PRESET_ID, ADMIN, deps(db));
+    expect(db.inserts[0]!.rows.base_model_revision).toBe(REV);
+  });
+
   it("★ ★ وإعدادٌ خارج القائمة ⇒ رفض", async () => {
     const db = memoryDb();
     const r = await createTrainingJobDraft(ART, BASE_ID, "custom-fast", ADMIN, deps(db));
@@ -477,7 +602,7 @@ describe("★ (٥) التجهيز — إجازةٌ جديدة وبصمةٌ جد�
     memoryDb({
       job: [{
         id: JOB, version: "ysd-train-000001", dataset_artifact_id: ART,
-        base_model_id: BASE_ID, base_model_revision: null, method: "lora_sft",
+        base_model_id: BASE_ID, base_model_revision: REV, method: "lora_sft",
         preset_id: PRESET_ID, config_version: TRAINING_CONFIG_VERSION,
         hyperparameters: findTrainingPreset(PRESET_ID)!.hyperparameters,
         seed: findTrainingPreset(PRESET_ID)!.seed,
@@ -539,7 +664,7 @@ describe("★ (٥) التجهيز — إجازةٌ جديدة وبصمةٌ جد�
     const db = memoryDb({
       job: [{
         id: JOB, version: "v", dataset_artifact_id: ART, base_model_id: BASE_ID,
-        base_model_revision: null, method: "lora_sft", preset_id: PRESET_ID,
+        base_model_revision: REV, method: "lora_sft", preset_id: PRESET_ID,
         config_version: TRAINING_CONFIG_VERSION,
         hyperparameters: findTrainingPreset(PRESET_ID)!.hyperparameters,
         seed: findTrainingPreset(PRESET_ID)!.seed, status: "draft", config_hash: null,
@@ -557,7 +682,7 @@ describe("★ (٦) «مُجهَّزة» لا تعني «يجوز»", () => {
     memoryDb({
       job: [{
         id: JOB, version: "ysd-train-000001", dataset_artifact_id: ART,
-        base_model_id: BASE_ID, base_model_revision: null, method: "lora_sft",
+        base_model_id: BASE_ID, base_model_revision: REV, method: "lora_sft",
         preset_id: PRESET_ID, config_version: TRAINING_CONFIG_VERSION,
         hyperparameters: findTrainingPreset(PRESET_ID)!.hyperparameters,
         seed: findTrainingPreset(PRESET_ID)!.seed,
@@ -565,15 +690,49 @@ describe("★ (٦) «مُجهَّزة» لا تعني «يجوز»", () => {
       }],
     });
 
-  it("★ ★ ★ ومواصفةٌ سليمة تُردّ اليوم — لأن الأوزان غير مثبَّتة", async () => {
+  it("★ ★ ★ ومواصفةٌ سليمة على 20B تمرّ — بعد التثبيت", async () => {
     /**
-     * ── وهذا مقصود ──
+     * ── وهذا ما انحلّ في هذه المرحلة ──
      *
-     * كلّ ما سبق يمرّ: الحالة، والإجازة، والبصمة، والنموذج مسموح. ويبقى
-     * أن هوّية الأوزان **غير مثبَّتة** — فما سيُنزَّل قد لا يكون ما وُصف.
-     * والحارس يمنع التنفيذ حتى تُثبَّت، وذلك شرطُ المرحلة 4B لا هذه.
+     * كانت تُردّ بـ`base_model_unpinned` لأن الفهرس بلا مراجعة. وقد ثُبِّتت
+     * 20B بمراجعةٍ تحقّقتُ منها من المستودع الرسميّ، فمرّ آخر حارسٍ كان
+     * يمنع — وبقي كلّ ما عداه.
      */
     const r = await validateTrainingJobForExecution(JOB, deps(prepared()));
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.configHash).toBe(GOOD_HASH);
+      expect(r.artifactId).toBe(ART);
+    }
+  });
+
+  it("★ ★ ★ ومهمّةٌ بمراجعةٍ لم نتحقّق منها ⇒ لا يجوز", async () => {
+    /**
+     * والفحص على مراجعة **المهمّة** لا على الفهرس: أن يكون الفهرس مثبَّتًا
+     * لا يعني أن ما في المهمّة هو ما ثبَّتناه.
+     */
+    const base = findBaseModel(BASE_ID)!;
+    const preset = findTrainingPreset(PRESET_ID)!;
+    const fake = "f".repeat(40);
+    const fakeHash = hashTrainingConfig(
+      buildCanonicalTrainingConfig(SPEC, base, preset, fake),
+    );
+    const r = await validateTrainingJobForExecution(
+      JOB, deps(prepared({ base_model_revision: fake, config_hash: fakeHash })),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("base_model_unpinned");
+  });
+
+  it("★ ★ ومراجعةٌ متحرّكة (`main`) ⇒ لا يجوز", async () => {
+    const base = findBaseModel(BASE_ID)!;
+    const preset = findTrainingPreset(PRESET_ID)!;
+    const mainHash = hashTrainingConfig(
+      buildCanonicalTrainingConfig(SPEC, base, preset, "main"),
+    );
+    const r = await validateTrainingJobForExecution(
+      JOB, deps(prepared({ base_model_revision: "main", config_hash: mainHash })),
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("base_model_unpinned");
   });
@@ -624,26 +783,6 @@ describe("★ (٦) «مُجهَّزة» لا تعني «يجوز»", () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("base_model_not_allowed");
-  });
-
-  it("★ ★ وحين تُثبَّت الأوزان يمرّ — بالبصمة الموافقة", async () => {
-    /**
-     * ويُثبَت هنا أن المنع سببه التثبيت وحده لا خللٌ آخر: نُثبِّت المراجعة
-     * ونُعيد حساب البصمة عليها، فيمرّ كلّ شيء.
-     */
-    const base = findBaseModel(BASE_ID)!;
-    const preset = findTrainingPreset(PRESET_ID)!;
-    const pinnedHash = hashTrainingConfig(
-      buildCanonicalTrainingConfig(SPEC, { ...base, revision: "abc123" }, preset),
-    );
-    const db = prepared({ base_model_revision: "abc123", config_hash: pinnedHash });
-    const r = await validateTrainingJobForExecution(JOB, {
-      ...deps(db),
-      /** نموذجٌ مثبَّت — كما سيصير في 4B */
-    } as never);
-    /** ما يزال يُردّ لأن القائمة نفسها غير مثبَّتة — وهذا هو العقد */
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("base_model_unpinned");
   });
 
   it("★ ★ والعقد مكتوبٌ حيث يقرؤه من يبني المُنفِّذ", () => {
