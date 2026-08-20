@@ -35,6 +35,8 @@ const stripComments = (src: string) =>
   src.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
 
 const MIGRATION = readSrc("supabase/migrations/0040_ysd_training_bank.sql");
+const HARDENING = readSrc("supabase/migrations/0041_ysd_training_bank_hardening.sql");
+const numbersOf = (files: string[]) => files.map((f) => Number(f.slice(0, 4)));
 const CANDIDATE_SRC = readSrc("lib/training/candidate.ts");
 const CHAT_ROUTE = readSrc("app/api/chat/route.ts");
 const CONSENT_ROUTE = readSrc("app/api/training-consent/route.ts");
@@ -550,11 +552,122 @@ describe("★ (٨) الحدود", () => {
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0040_ysd_training_bank.sql");
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(40);
+    // و«الأحدث» يملكه قسم التشديد أدناه — وهذا يملك 0040 وحدها
+    expect(numbersOf(files)).toContain(40);
     // ولا تكرار ولا فجوة في الترقيم
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = numbersOf(files);
     expect(new Set(numbers).size).toBe(numbers.length);
     for (let n = 1; n <= 40; n++) expect(numbers, String(n)).toContain(n);
+  });
+});
+
+
+/* ═══════════ (١٠) تشديد 0041 ═══════════ */
+
+describe("★ (١٠) التشديد — صلاحيات وأداءٌ لا سلوك", () => {
+  const CODE = HARDENING.split("\n")
+    .filter((l) => !/^\s*(--|\*|\/\*)/.test(l))
+    .join("\n");
+
+  it("★ ★ امتياز الحذف مسحوب — دفاعٌ بطبقتين", () => {
+    /**
+     * المنع في 0040 يقوم على **غياب سياسة** لا على **غياب امتياز**.
+     * وسياسةٌ تُضاف يومًا لغرضٍ آخر — أو `for all` تُكتب على عجل — تفتح
+     * الحذف بلا أن ينتبه كاتبها. والامتياز المسحوب يُبقي الباب مغلقًا.
+     */
+    expect(CODE).toContain("revoke delete on public.training_consents from authenticated;");
+    expect(CODE).toContain("revoke delete on public.training_consents from anon;");
+    // ولا يُعاد منحه في أي موضع
+    expect(CODE).not.toMatch(/grant[^;]*delete[^;]*training_consents/i);
+    expect(MIGRATION).not.toMatch(/grant[^;]*delete[^;]*training_consents/i);
+  });
+
+  it("★ ★ والسياسات الثلاث تستعمل `(select auth.uid())`", () => {
+    /**
+     * `auth.uid()` تُستدعى لكل صفّ؛ ولفُّها في استعلامٍ فرعيّ قياسيّ يجعل
+     * المخطِّط يُقيّمها مرّة واحدة. والقيمة نفسها — جلسةٌ واحدة وهوّيةٌ
+     * واحدة — فهذا تحسينُ تقييمٍ لا تغييرُ حكم.
+     */
+    for (const name of [
+      "training_consents_select_own",
+      "training_consents_insert_own",
+      "training_consents_update_own",
+    ]) {
+      expect(CODE, name).toContain(`drop policy if exists "${name}"`);
+      expect(CODE, name).toContain(`create policy "${name}"`);
+    }
+    // كل مقارنةٍ بالهوية ملفوفة — ولا `auth.uid()` عارية
+    expect((CODE.match(/user_id = \(select auth\.uid\(\)\)/g) ?? []).length).toBe(4);
+    expect(CODE).not.toMatch(/user_id = auth\.uid\(\)/);
+  });
+
+  it("★ ★ والسلوك كما هو: صاحبها وحده — والمشرف يقرأ", () => {
+    expect(CODE).toContain(
+      'for select using (user_id = (select auth.uid()) or public.is_admin())',
+    );
+    expect(CODE).toContain('for insert with check (user_id = (select auth.uid()))');
+    expect(CODE).toContain("for update using (user_id = (select auth.uid()))");
+    expect(CODE).toContain("with check (user_id = (select auth.uid()))");
+    // ولا سياسة حذفٍ أُنشئت
+    expect(CODE).not.toContain("for delete");
+  });
+
+  it("★ ★ وثلاثة فهارس تغطّي المراجع المركّبة", () => {
+    /**
+     * PostgreSQL لا يُنشئ فهرسًا للطرف المُشير من مرجعٍ خارجيّ. وبلا ذلك
+     * يفرض كل حذف محادثةٍ أو رسالةٍ مسحًا كاملًا للتحقّق من `cascade` —
+     * فيُبطئ بنكُ تدريبٍ **خامل** حذفًا لا علاقة له به.
+     */
+    const idx: Array<[string, string]> = [
+      ["training_candidates_conversation_owner_idx", "(conversation_id, user_id)"],
+      ["training_candidates_user_message_idx", "(user_message_id, conversation_id)"],
+      ["training_candidates_assistant_message_idx", "(assistant_message_id, conversation_id)"],
+    ];
+    for (const [name, cols] of idx) {
+      expect(CODE, name).toContain(`create index if not exists ${name}`);
+      expect(CODE, `${name} cols`).toContain(`on public.training_candidates ${cols}`);
+    }
+    // والترتيب يطابق ترتيب أعمدة المرجع في 0040
+    expect(MIGRATION).toContain("foreign key (conversation_id, user_id)");
+    expect(MIGRATION).toContain("foreign key (user_message_id, conversation_id)");
+    expect(MIGRATION).toContain("foreign key (assistant_message_id, conversation_id)");
+  });
+
+  it("★ ★ ولا تمسّ دلالةً ولا صفًّا", () => {
+    const sql = CODE.toLowerCase();
+    for (const forbidden of [
+      "insert into",
+      "delete from",
+      "truncate",
+      "drop table",
+      "drop column",
+      "alter column",
+      "create trigger",
+      "alter table public.training_candidates",
+    ]) {
+      expect(sql, forbidden).not.toContain(forbidden);
+    }
+    // ولا تمسّ حالات المرشّحين ولا شروط الاعتماد
+    for (const forbidden of ["privacy_status", "quality_status", "status", "exported"]) {
+      expect(sql, forbidden).not.toContain(`check (${forbidden}`);
+    }
+  });
+
+  it("★ ولا تُعدَّل 0040 نفسها", () => {
+    // العقد الأصليّ قائمٌ كما هو — والتشديد إضافةٌ فوقه لا تعديلٌ فيه
+    expect(MIGRATION).toContain("create table if not exists public.training_consents");
+    expect(MIGRATION).toContain("create table if not exists public.training_candidates");
+    expect(MIGRATION).toContain("revoke all on public.training_candidates from anon, authenticated");
+    expect(MIGRATION).toContain('create policy "training_candidates_admin_read"');
+  });
+
+  it("★ وهي التالية في الترقيم", async () => {
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
+    expect(files).toContain("0041_ysd_training_bank_hardening.sql");
+    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    expect(Math.max(...numbers)).toBe(41);
+    expect(new Set(numbers).size).toBe(numbers.length);
   });
 });
 

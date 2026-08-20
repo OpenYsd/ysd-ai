@@ -55,6 +55,11 @@ const one = (sql) => {
 
 const mig = (f) => fs.readFileSync(path.join(ROOT, "supabase/migrations", f), "utf8");
 
+/** امتيازٌ واحد لدورٍ واحد على جدول — عددًا لا اسمًا */
+const priv = (role, table, p) =>
+  one(`select count(*) from information_schema.role_table_grants
+       where table_name='${table}' and grantee='${role}' and privilege_type='${p}';`);
+
 function startContainer() {
   try { sh("docker", ["rm", "-f", CONTAINER], { stdio: "ignore" }); } catch { /* لم توجد */ }
   console.log(`▶ تشغيل ${IMAGE}…`);
@@ -147,7 +152,8 @@ function run() {
   console.log("\n▶ تطبيق المخطط ثم 0040…");
   psql(BASE, { tuples: false });
   psql(mig("0040_ysd_training_bank.sql"), { tuples: false });
-  console.log("  ✅ الترحيلة طُبّقت");
+  psql(mig("0041_ysd_training_bank_hardening.sql"), { tuples: false });
+  console.log("  ✅ الترحيلتان طُبّقتا");
 
   // ── (١) لا زرع ──
   console.log("\n① الترحيلة لا تُدخل صفًّا");
@@ -229,9 +235,7 @@ function run() {
   ok(one("select relrowsecurity from pg_class where relname='training_consents';") === "t",
      "(١٤′) وعلى الموافقات");
 
-  const priv = (role, table, p) =>
-    one(`select count(*) from information_schema.role_table_grants
-         where table_name='${table}' and grantee='${role}' and privilege_type='${p}';`);
+  // `priv` مُعرَّفة أعلى الملفّ
   for (const p of ["INSERT", "UPDATE", "DELETE", "SELECT"]) {
     ok(priv("authenticated", "training_candidates", p) === "0",
        `(١٥/${p}) ★ authenticated بلا ${p} على المرشّحين`);
@@ -248,10 +252,79 @@ function run() {
     ok(policies("training_candidates", cmd) === "0", `(١٧′/${cmd}) ★ ولا سياسة ${cmd} إطلاقًا`);
   }
 
-  // ── (٩) إعادة التطبيق ──
-  console.log("\n⑧ إعادة التطبيق");
+  // ── (٩) تشديد 0041 ──
+  console.log("\n⑧ التشديد (0041)");
+
+  ok(priv("authenticated", "training_consents", "DELETE") === "0",
+     "(١٩) ★★ امتياز الحذف مسحوب من authenticated");
+  ok(priv("anon", "training_consents", "DELETE") === "0", "(١٩′) ومن anon كذلك");
+  // وبقيّة الامتيازات كما كانت — التشديد لم يقصّ ما يحتاجه صاحب الموافقة
+  ok(priv("authenticated", "training_consents", "SELECT") === "1", "(١٩″) والقراءة باقية");
+  ok(priv("authenticated", "training_consents", "UPDATE") === "1", "(١٩‴) والتبديل باقٍ");
+
+  /**
+   * ★ السياسات تُقرأ من الكتالوج لا من الملفّ.
+   *
+   * فما يهمّ أن القاعدة **تحمل** الصيغة الملفوفة فعلًا، لا أن الملفّ يذكرها.
+   */
+  const polSrc = one(`select string_agg(coalesce(qual,'') || ' ' || coalesce(with_check,''), ' | ')
+    from pg_policies where tablename = 'training_consents';`);
+  /**
+   * القاعدة تُطبّع الصيغة إلى `( SELECT auth.uid() AS uid)` — بمسافةٍ
+   * واسمٍ مستعار. فيُقاس المعنى: استعلامٌ فرعيّ يلفّ النداء، لا نداءٌ عارٍ.
+   */
+  const wrapped = (polSrc.match(/\(\s*SELECT\s+auth\.uid\(\)/gi) ?? []).length;
+  const bare = (polSrc.match(/user_id\s*=\s*auth\.uid\(\)/gi) ?? []).length;
+  ok(wrapped >= 4 && bare === 0,
+     "(٢٠) ★ والسياسات تحمل `(select auth.uid())` لا نداءً عاريًا",
+     `wrapped=${wrapped} bare=${bare}`);
+  ok(one(`select count(*) from pg_policies where tablename='training_consents';`) === "3",
+     "(٢٠′) وثلاث سياسات لا رابعة");
+  ok(one(`select count(*) from pg_policies
+          where tablename='training_consents' and cmd='DELETE';`) === "0",
+     "(٢٠″) ★ ولا سياسة حذف");
+
+  /** ★ والسلوك لم يتغيّر: صاحبها يقرأ صفّه وحده */
+  psql(`insert into public.training_consents (user_id, policy_version)
+        values ('${B}', 'v1') on conflict do nothing;`, { tuples: false });
+  const asUser = (actor, sql) =>
+    one(`begin; set local role authenticated; set local ysd.actor = '${actor}';
+         ${sql} rollback;`);
+  ok(asUser(A, `select count(*) from public.training_consents;`) === "1",
+     "(٢١) ★★ صاحب الحساب يرى صفّه وحده");
+  ok(asUser(B, `select count(*) from public.training_consents;`) === "1",
+     "(٢١′) والآخر يرى صفّه هو");
+
+  const foreignWrite = tryPsql(`begin; set local role authenticated;
+    set local ysd.actor = '${A}';
+    update public.training_consents set enabled = false where user_id = '${B}';
+    rollback;`);
+  ok(foreignWrite.ok, "(٢٢‑تمهيد) التحديث نُفّذ بلا خطأ (RLS ترشّح لا ترمي)");
+  ok(asUser(A, `select count(*) from public.training_consents where user_id = '${B}';`) === "0",
+     "(٢٢) ★★ ولا يرى موافقة غيره أصلًا — فلا يعدّلها");
+
+  // ── (١٠) الفهارس ──
+  console.log("\n⑨ فهارس تغطّي المراجع");
+  for (const [name, cols] of [
+    ["training_candidates_conversation_owner_idx", "conversation_id, user_id"],
+    ["training_candidates_user_message_idx", "user_message_id, conversation_id"],
+    ["training_candidates_assistant_message_idx", "assistant_message_id, conversation_id"],
+  ]) {
+    ok(one(`select count(*) from pg_indexes
+            where tablename='training_candidates' and indexname='${name}';`) === "1",
+       `(٢٣) الفهرس ${name}`);
+    const def = one(`select indexdef from pg_indexes where indexname='${name}';`);
+    ok(def.includes(cols), `(٢٣′) وأعمدته بالترتيب (${cols})`, def.slice(0, 70));
+  }
+
+  // ── (١١) إعادة التطبيق ──
+  console.log("\n⑩ إعادة التطبيق");
   const again = tryPsql(mig("0040_ysd_training_bank.sql"));
-  ok(again.ok, "(١٨) آمنة", again.err.slice(0, 90));
+  ok(again.ok, "(١٨) 0040 آمنة", again.err.slice(0, 90));
+  const again41 = tryPsql(mig("0041_ysd_training_bank_hardening.sql"));
+  ok(again41.ok, "(١٨′) و0041 كذلك", again41.err.slice(0, 90));
+  ok(priv("authenticated", "training_consents", "DELETE") === "0",
+     "(١٨″) والتشديد باقٍ بعدها");
 
   console.log("\n" + "─".repeat(62));
   console.log(`النتيجة: ${checks - failures}/${checks} ${failures === 0 ? "✅" : "❌"}   الإخفاقات: ${failures}`);
