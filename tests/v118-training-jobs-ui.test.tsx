@@ -36,6 +36,14 @@ const job = (id: string, status: string, over: Partial<TrainingJobRow> = {}): Tr
   sampleCount: 1,
   createdAt: "2026-08-20T09:00:00.000Z",
   preparedAt: status === "prepared" ? "2026-08-20T10:00:00.000Z" : null,
+  ...(status === "prepared"
+    ? {
+        readyForExecution: false,
+        readinessReason: "insufficient_training_data",
+        sampleCount2: 1,
+        minimumSamples: 100,
+      }
+    : {}),
   ...over,
 });
 
@@ -258,6 +266,132 @@ describe("★ (٢) الأزرار — حسب الحالة", () => {
       fireEvent.click(prepareBtn(J1)!);
     });
     expect(text()).toContain("هذا النموذج غير مثبَّت، فلم تُنشأ المهمة");
+  });
+});
+
+/* ═══════════ (٢′) الجاهزية ═══════════ */
+
+describe("★ (٢′) الجاهزية — تُعرض ولا تُحسب هنا", () => {
+  it("★ ★ ★ المُجهَّزة تعرض «غير جاهزة» و«١ / ١٠٠ عينة»", () => {
+    /**
+     * فمشرفٌ يقرأ العددين يعرف ما ينقصه ويعرف ماذا يفعل: يجمع عيّناتٍ
+     * أكثر. و«غير جاهزة» وحدها تُقرأ عطلًا.
+     */
+    mount();
+    const row = document.querySelector(`[data-job-readiness="${J2}"]`)!;
+    expect(row.textContent).toContain("غير جاهزة للتنفيذ");
+    expect(row.textContent).toContain("1 / 100");
+    expect(row.textContent).toContain("عدد بيانات التدريب غير كافٍ بعد");
+  });
+
+  it("★ ★ والعتاد المستهدَف يُقال", () => {
+    mount();
+    expect(text()).toContain("RunPod / A100 80GB");
+  });
+
+  it("★ ★ ★ ولا زرَّ «تشغيل» ولا «تدريب» ولا «إطلاق»", () => {
+    /**
+     * ── وهذا أهمّ ما في هذه الشاشة ──
+     *
+     * لا يوجد ما يُنفَّذ: لا زرّ، ولا مسار، ولا مفتاح مزوّد. والمعاينة
+     * قراءةٌ لِما **سيقع لو**.
+     */
+    mount();
+    for (const attr of ["data-job-start", "data-job-run", "data-job-launch", "data-job-train"]) {
+      expect(document.querySelector(`[${attr}]`)).toBeNull();
+    }
+    expect(text()).not.toMatch(/ابدأ التدريب|تشغيل التدريب|Start training|Launch|Run GPU/i);
+  });
+
+  it("★ ★ والمسوَّدة لا تُسأل عن جاهزية", () => {
+    mount();
+    expect(document.querySelector(`[data-job-readiness="${J1}"]`)).toBeNull();
+    expect(document.querySelector(`[data-job-plan="${J1}"]`)).toBeNull();
+  });
+});
+
+/* ═══════════ (٢″) خطّة التنفيذ ═══════════ */
+
+describe("★ (٢″) الخطّة — قراءةٌ بلا تنفيذ", () => {
+  const PLAN = {
+    ok: true,
+    readyForExecution: false,
+    reason: "insufficient_training_data",
+    sampleCount: 1,
+    minimumSamples: 100,
+    plan: {
+      provider: "runpod", gpuProfile: "A100-80GB", gpuCount: 1,
+      baseModel: "openai/gpt-oss-20b", method: "lora_sft", preset: "ysd-lora-v1",
+      runtimeStackVersion: "ysd-training-runtime-v1",
+      dependencyVersions: { torch: "2.13.0", trl: "1.10.0" },
+      expectedOutputType: "lora_adapter", executable: false,
+    },
+    planHash: "a".repeat(64),
+    costEstimate: { binding: false, a100PcieUsdPerHour: 1.19 },
+  };
+
+  it("★ ★ المعاينة تُرسل `GET` وتعرض العتاد والمكدّس", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body(PLAN));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(`/api/admin/training-jobs/${J2}/execution-plan`);
+    expect((call[1] as RequestInit | undefined)?.method).toBeUndefined();
+    expect(text()).toContain("A100-80GB");
+    expect(text()).toContain("torch 2.13.0");
+    expect(text()).toContain("ysd-training-runtime-v1");
+  });
+
+  it("★ ★ ★ وتقول إن لا تنفيذ في هذه المرحلة", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body(PLAN));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    expect(text()).toContain("لا يوجد تنفيذ في هذه المرحلة: لا GPU، ولا مزوّد، ولا تكلفة");
+    expect(text()).toContain("غير جاهزة للتنفيذ");
+  });
+
+  it("★ ★ وتشرح أن الحدّ أرضيةٌ لا ضمان", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body(PLAN));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    expect(text()).toContain("أرضية تشغيلية لا ضمان جودة");
+    expect(text()).toContain("استظهارًا للعينات لا تعلّمًا منها");
+  });
+
+  it("★ ★ والسعرُ موسومٌ بأنه تقدير غير مُلزم", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body(PLAN));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    expect(text()).toContain("غير مُلزم ويتغيّر");
+  });
+
+  it("★ ★ ولا مسارَ تخزينٍ ولا رابطَ ولا بصمة", async () => {
+    mount();
+    fetchMock.mockResolvedValueOnce(body(PLAN));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    for (const leak of ["releases/", ".jsonl", "signed", "http", "aaaaaaaa"]) {
+      expect(text().toLowerCase()).not.toContain(leak.toLowerCase());
+    }
+  });
+
+  it("★ وتعذّرُ العرض رسالةٌ عامّة", async () => {
+    mount();
+    fetchMock.mockRejectedValueOnce(new Error("ECONNRESET"));
+    await act(async () => {
+      fireEvent.click(document.querySelector(`[data-job-plan="${J2}"]`) as HTMLElement);
+    });
+    expect(text()).toContain("تعذّر عرض الخطة");
+    expect(text()).not.toContain("ECONNRESET");
   });
 });
 

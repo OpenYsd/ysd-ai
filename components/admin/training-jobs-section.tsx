@@ -29,6 +29,16 @@ export interface TrainingJobRow {
   sampleCount: number | null;
   createdAt: string;
   preparedAt: string | null;
+  /**
+   * ★ حكمُ الجاهزية — يُحسب في الخادم ويُمرَّر وصفًا.
+   *
+   * ولا تُحسب في المتصفّح: الحدّ سياسةٌ يملكها الخادم، وحسابُه هنا يجعله
+   * رقمًا يستطيع من يفتح الأدوات أن يبدّله فيرى «جاهزة».
+   */
+  readyForExecution?: boolean;
+  readinessReason?: string | null;
+  sampleCount2?: number | null;
+  minimumSamples?: number | null;
 }
 
 export interface ArtifactChoice {
@@ -44,7 +54,21 @@ export interface BaseModelChoice {
   pinned: boolean;
 }
 
-type Dialog = { phase: "closed" } | { phase: "confirm"; artifactId: string };
+type Dialog =
+  | { phase: "closed" }
+  | { phase: "confirm"; artifactId: string }
+  | { phase: "plan"; id: string }
+  | { phase: "planLoading"; id: string }
+  | { phase: "planFailed" };
+
+interface PlanBody {
+  readyForExecution?: unknown;
+  reason?: unknown;
+  sampleCount?: unknown;
+  minimumSamples?: unknown;
+  plan?: Record<string, unknown>;
+  costEstimate?: Record<string, unknown>;
+}
 
 type Action =
   | { phase: "idle" }
@@ -55,6 +79,19 @@ type Action =
   | { phase: "failed"; reason: string };
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** سببٌ معروفٌ يُترجَم، وغيره يُقال عامًّا — ولا رمزَ خامّ يصل قارئًا */
+const KNOWN_REASONS = new Set([
+  "insufficient_training_data",
+  "dependency_stack_unverified",
+  "execution_invalid",
+]);
+function reasonText(t: (k: never) => string, reason: unknown): string {
+  const key = typeof reason === "string" && KNOWN_REASONS.has(reason)
+    ? `jobsReason_${reason}`
+    : "jobsReason_other";
+  return t(key as never);
+}
 const stamp = (iso: string | null) =>
   iso === null ? "—" : new Date(iso).toISOString().slice(0, 16).replace("T", " ");
 
@@ -77,6 +114,7 @@ export function TrainingJobsSection({
   );
   const [presetId, setPresetId] = useState(presets[0] ?? "");
   const [moved, setMoved] = useState<Record<string, string>>({});
+  const [planData, setPlanData] = useState<PlanBody | null>(null);
 
   const busy = action.phase === "busy";
 
@@ -115,6 +153,19 @@ export function TrainingJobsSection({
     },
     [baseModelId, presetId],
   );
+
+  const openPlan = useCallback(async (id: string) => {
+    setPlanData(null);
+    setDialog({ phase: "planLoading", id });
+    try {
+      const res = await fetch(`/api/admin/training-jobs/${id}/execution-plan`);
+      if (!res.ok) throw new Error("plan_failed");
+      setPlanData((await res.json()) as PlanBody);
+      setDialog({ phase: "plan", id });
+    } catch {
+      setDialog({ phase: "planFailed" });
+    }
+  }, []);
 
   const act = useCallback(async (id: string, what: "prepare" | "cancel") => {
     setAction({ phase: "busy" });
@@ -264,6 +315,30 @@ export function TrainingJobsSection({
                     <span>· {t("jobsCreated")}: {stamp(j.createdAt)}</span>
                     {j.preparedAt && <span>· {t("jobsPrepared")}: {stamp(j.preparedAt)}</span>}
                   </div>
+                  {status === "prepared" && j.readyForExecution !== undefined && (
+                    <div
+                      className="text-[11.5px] mt-1 flex flex-wrap gap-x-2"
+                      data-job-readiness={j.id}
+                    >
+                      <span className={j.readyForExecution ? "text-emerald-400" : "text-amber-400"}>
+                        {j.readyForExecution ? t("jobsReady") : t("jobsNotReady")}
+                      </span>
+                      {typeof j.sampleCount2 === "number" &&
+                        typeof j.minimumSamples === "number" && (
+                          <span className="text-ink-faint tabular-nums">
+                            · {j.sampleCount2} / {j.minimumSamples} {t("jobsSamplesOf")}
+                          </span>
+                        )}
+                      {!j.readyForExecution && (
+                        <span className="text-ink-faint">
+                          · {reasonText(t, j.readinessReason)}
+                        </span>
+                      )}
+                      <span className="text-ink-faint">
+                        · {t("jobsTarget")}: RunPod / A100 80GB
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="shrink-0 flex items-center gap-2">
                   {status === "draft" && (
@@ -277,6 +352,25 @@ export function TrainingJobsSection({
                                  focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
                     >
                       {t("jobsPrepareAction")}
+                    </button>
+                  )}
+                  {/**
+                    * ★ ولا زرَّ «تشغيل» ولا «تدريب» ولا «إطلاق».
+                    *
+                    * فالمعاينة قراءةٌ لِما **سيقع لو**، ولا يوجد ما يجعله
+                    * يقع: لا مسار، ولا مزوّد، ولا مفتاح.
+                    */}
+                  {status === "prepared" && (
+                    <button
+                      type="button"
+                      data-job-plan={j.id}
+                      disabled={busy}
+                      onClick={() => void openPlan(j.id)}
+                      className="rounded-lg px-3 py-1.5 text-[12.5px] text-ink bg-raised border border-line
+                                 hover:border-primary/40 transition-colors focus:outline-none
+                                 focus:ring-2 focus:ring-primary/50 disabled:opacity-50"
+                    >
+                      {t("jobsPlanView")}
                     </button>
                   )}
                   {status !== "cancelled" && (
@@ -297,6 +391,84 @@ export function TrainingJobsSection({
             );
           })}
         </ul>
+      )}
+
+      {(dialog.phase === "plan" || dialog.phase === "planLoading" || dialog.phase === "planFailed") && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label={t("jobsPlanClose")}
+            tabIndex={-1}
+            onClick={() => setDialog({ phase: "closed" })}
+            className="absolute inset-0 bg-night/60 backdrop-blur-[2px] cursor-default"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="job-plan-title"
+            className="relative w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl border border-line
+                       bg-surface p-5 shadow-2xl"
+          >
+            <h2 id="job-plan-title" className="text-[14px] font-medium text-ink-strong">
+              {t("jobsPlanTitle")}
+            </h2>
+            <p className="text-[12px] text-ink-faint mt-2.5 leading-relaxed">
+              {t("jobsPlanMeaning")}
+            </p>
+
+            {dialog.phase === "planFailed" && (
+              <p role="alert" className="text-[12.5px] text-red-400 mt-3">{t("jobsPlanFailed")}</p>
+            )}
+
+            {dialog.phase === "plan" && planData && (
+              <div className="mt-4 space-y-3" data-plan-body="">
+                <p
+                  role="status"
+                  className={`text-[12.5px] ${planData.readyForExecution ? "text-emerald-400" : "text-amber-400"}`}
+                >
+                  {planData.readyForExecution ? t("jobsReady") : t("jobsNotReady")}
+                  {typeof planData.sampleCount === "number" &&
+                    typeof planData.minimumSamples === "number" && (
+                      <span className="tabular-nums">
+                        {" "}· {planData.sampleCount} / {planData.minimumSamples} {t("jobsSamplesOf")}
+                      </span>
+                    )}
+                </p>
+                {!planData.readyForExecution && (
+                  <p className="text-[12px] text-ink-dim">{reasonText(t, planData.reason)}</p>
+                )}
+                <p className="text-[11.5px] text-ink-faint leading-relaxed">{t("jobsMinimumNote")}</p>
+
+                <div className="rounded-xl border border-line/60 bg-raised/40 p-3 text-[12px] text-ink-dim">
+                  <div>{t("jobsTarget")}: {str(planData.plan?.provider)} / {str(planData.plan?.gpuProfile)}</div>
+                  <div className="mt-1">{t("jobsBaseModel")}: {str(planData.plan?.baseModel)}</div>
+                  <div className="mt-1">{t("jobsMethod")}: {str(planData.plan?.method)} · {t("jobsPreset")}: {str(planData.plan?.preset)}</div>
+                  <div className="mt-1">{t("jobsPlanStack")}: {str(planData.plan?.runtimeStackVersion)}</div>
+                  <ul className="mt-1 text-[11.5px] text-ink-faint">
+                    {Object.entries((planData.plan?.dependencyVersions ?? {}) as Record<string, string>)
+                      .map(([name, ver]) => (
+                        <li key={name} className="tabular-nums">{name} {ver}</li>
+                      ))}
+                  </ul>
+                </div>
+
+                <p className="text-[11px] text-ink-faint">{t("jobsPlanCost")}</p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <button
+                type="button"
+                data-job-plan-close=""
+                onClick={() => setDialog({ phase: "closed" })}
+                className="rounded-lg px-3 py-1.5 text-[12.5px] text-ink-dim hover:text-ink hover:bg-raised
+                           transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                {t("jobsPlanClose")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {dialog.phase === "confirm" && (

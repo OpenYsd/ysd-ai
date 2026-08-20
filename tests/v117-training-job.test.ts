@@ -885,10 +885,18 @@ describe("★ (٨) المساران — للمشرف وحده", () => {
 
 describe("★ (٩) الحدود — لا تدريب", () => {
   it("★ ★ ★ ولا نداءَ شبكةٍ إلى مزوّدِ عتاد", () => {
+    /**
+     * ★ والقياس على **النداء** لا على الاسم.
+     *
+     * فالواجهة تعرض «RunPod / A100 80GB» بوصفه العتاد المستهدَف — وذلك
+     * معلومةٌ للمشرف لا نداءٌ لأحد. وحارسٌ يمنع الاسم يمنع أن يُقال للناس
+     * ما يجري، ولا يمنع شيئًا مما يقع فعلًا.
+     */
     for (const src of [JOB_SRC, CONFIG_SRC, BASE_SRC, CREATE_ROUTE, ACT_ROUTE, SECTION]) {
       const s = stripComments(src);
-      expect(s).not.toMatch(/runpod|modal\.com|replicate|together\.ai|huggingface\.co|api\.groq/i);
+      expect(s).not.toMatch(/https?:\/\/(api\.)?(runpod|modal|replicate|together)/i);
       expect(s).not.toMatch(/fetch\(\s*["'`]https?:/);
+      expect(s).not.toMatch(/createPod|deployPod|allocateGpu|createEndpoint/i);
     }
   });
 

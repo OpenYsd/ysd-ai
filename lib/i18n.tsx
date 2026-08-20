@@ -429,6 +429,61 @@ const dict = {
     ar: "هذا النموذج غير مثبَّت، فلم تُنشأ المهمة.",
     en: "This model is unpinned, so the job was not created.",
   },
+
+  /* ── جاهزية التنفيذ وخطّته (v0.9.10، المرحلة 4B-1) ── */
+  jobsNotReady: { ar: "غير جاهزة للتنفيذ", en: "Not ready for execution" },
+  jobsReady: { ar: "جاهزة للتنفيذ", en: "Ready for execution" },
+  jobsSamplesOf: { ar: "عينة", en: "samples" },
+  /**
+   * ★ ونصٌّ يقول ما ينقص لا ما عُطِل.
+   *
+   * «غير جاهزة» وحدها تُقرأ عطلًا. و«١ / ١٠٠ عينة» تقول للمشرف ما يفعله:
+   * يجمع عيّناتٍ أكثر — لا يُصلح شيئًا.
+   */
+  jobsReason_insufficient_training_data: {
+    ar: "عدد بيانات التدريب غير كافٍ بعد.",
+    en: "There is not enough training data yet.",
+  },
+  jobsReason_dependency_stack_unverified: {
+    ar: "لم يُتحقَّق بعد من توافق نسخ مكدّس التدريب.",
+    en: "The training runtime stack has not been verified yet.",
+  },
+  jobsReason_execution_invalid: {
+    ar: "لم تعد بيانات هذه المهمة صالحة.",
+    en: "This job's data is no longer valid.",
+  },
+  jobsReason_other: { ar: "لا يمكن التنفيذ الآن.", en: "Execution is not possible right now." },
+  /**
+   * ★ و«أرضية تشغيلية» لا «ضمان جودة».
+   *
+   * فمن يقرأ «١٠٠» يظنّها العدد الذي يصير عنده النموذج جيّدًا. وما تعنيه
+   * أن ما دونها استظهارٌ لا تعلّم — وعيّناتنا كلامُ أناسٍ أذنوا بأن
+   * يُتعلَّم منه لا بأن يُستظهَر.
+   */
+  jobsMinimumNote: {
+    ar: "الحد الأدنى أرضية تشغيلية لا ضمان جودة: أقل منه يجعل التدريب استظهارًا للعينات لا تعلّمًا منها.",
+    en: "The minimum is an operational floor, not a quality guarantee: below it, training memorizes samples instead of learning from them.",
+  },
+  jobsTarget: { ar: "العتاد المستهدف", en: "Target hardware" },
+  jobsPlanView: { ar: "معاينة خطة التنفيذ", en: "Execution plan" },
+  jobsPlanTitle: { ar: "خطة التنفيذ", en: "Execution plan" },
+  /**
+   * ★ والخطّة وصفٌ لا أمر.
+   *
+   * فمن يفتح شاشةً اسمها «خطة التنفيذ» قد يظنّ أن ثمّة ما يُنفَّذ. ولا
+   * يوجد: لا زرّ، ولا مسار، ولا مفتاح مزوّد.
+   */
+  jobsPlanMeaning: {
+    ar: "الخطة وصف لما سيجري لو نُفِّذ التدريب مستقبلًا. لا يوجد تنفيذ في هذه المرحلة: لا GPU، ولا مزوّد، ولا تكلفة.",
+    en: "The plan describes what would happen if training were run later. There is no execution in this phase: no GPU, no provider, no cost.",
+  },
+  jobsPlanStack: { ar: "مكدّس التشغيل", en: "Runtime stack" },
+  jobsPlanCost: {
+    ar: "تقدير تكلفة إرشادي فقط — غير مُلزم ويتغيّر.",
+    en: "Indicative cost estimate only — not binding and subject to change.",
+  },
+  jobsPlanClose: { ar: "إغلاق", en: "Close" },
+  jobsPlanFailed: { ar: "تعذّر عرض الخطة.", en: "Could not show the plan." },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

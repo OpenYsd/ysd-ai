@@ -10,6 +10,7 @@ import {
 } from "@/components/admin/training-jobs-section";
 import { describeBaseModel, listBaseModels } from "@/lib/training/base-models";
 import { listTrainingPresets } from "@/lib/training/job-config";
+import { validateTrainingReadiness } from "@/lib/training/readiness";
 import {
   TrainingReviewView,
   type CandidateSummary,
@@ -155,6 +156,29 @@ export default async function AdminTrainingPage() {
             ? null : String(j.prepared_at),
         };
       });
+
+      /**
+       * ★ الجاهزية تُحسب في الخادم — للمُجهَّزة وحدها.
+       *
+       * ولا تُحسب في المتصفّح: الحدّ سياسةٌ يملكها الخادم، وحسابُه هناك
+       * يجعله رقمًا يبدّله من يفتح الأدوات فيرى «جاهزة».
+       *
+       * وللمُجهَّزة وحدها: مسوَّدةٌ لم تُجهَّز لا معنى لسؤالها، وكل نداءٍ
+       * يقرأ الأثر والمجموعة ويُعيد فحص العيّنات.
+       */
+      jobs = await Promise.all(
+        jobs.map(async (j) => {
+          if (j.status !== "prepared") return j;
+          const verdict = await validateTrainingReadiness(j.id);
+          return {
+            ...j,
+            readyForExecution: verdict.ready,
+            readinessReason: verdict.ready ? null : verdict.reason,
+            sampleCount2: verdict.facts?.sampleCount ?? null,
+            minimumSamples: verdict.facts?.minimumSamples ?? null,
+          };
+        }),
+      );
     }
   } catch {
     /* لوحةٌ فارغة خيرٌ من صفحةٍ ساقطة — والأعداد تبقى أصفارًا */
