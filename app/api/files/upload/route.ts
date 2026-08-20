@@ -1,6 +1,10 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { rateLimit } from "@/lib/rate-limit";
+import {
+  BUCKET_UPLOAD,
+  consumeRateLimit,
+  rateLimitHeaders,
+} from "@/lib/rate-limit-distributed";
 import { uploadFieldsSchema } from "@/lib/validation/files";
 import {
   buildStoragePath,
@@ -29,9 +33,19 @@ export async function POST(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "غير مصرح | Unauthorized" }, 401);
 
-  // Rate limiting للرفع: 10 عمليات في الدقيقة
-  if (!rateLimit(`upload:${user.id}`, 10, 60_000))
-    return json({ error: "عمليات رفع كثيرة — انتظر قليلًا | Too many uploads" }, 429);
+  /**
+   * حدّ الرفع: ١٠ عمليات في الدقيقة — **موزّع في القاعدة** (المرحلة 6C).
+   *
+   * كان العدّاد في ذاكرة العملية: نسختان تعنيان عشرين، وإعادةُ تشغيلٍ تعني
+   * صفرًا. والقيمة نفسها لم تتغيّر.
+   */
+  const uploadRate = await consumeRateLimit(user.id, BUCKET_UPLOAD, 10, 60);
+  if (!uploadRate.allowed)
+    return json(
+      { error: "عمليات رفع كثيرة — انتظر قليلًا | Too many uploads" },
+      429,
+      { "Retry-After": String(uploadRate.retryAfterSec), ...rateLimitHeaders(uploadRate) },
+    );
 
   let form: FormData;
   try {
@@ -151,9 +165,9 @@ export async function POST(req: NextRequest) {
   return json({ file: fresh }, 201);
 }
 
-function json(body: unknown, status: number) {
+function json(body: unknown, status: number, extra: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...extra },
   });
 }

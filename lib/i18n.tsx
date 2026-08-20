@@ -788,6 +788,35 @@ const dict = {
   },
   supportBack: { ar: "العودة إلى YSD AI", en: "Back to YSD AI" },
 
+  /* ═══════════ المرحلة 6C — تصليب ما قبل التجربة العامّة ═══════════ */
+
+  /**
+   * ★ ما هو النموذج فعلًا — تحت اسمه مباشرةً.
+   *
+   * الاسم وحده («YSD مجاني») كان يُقرأ على أن YSD تملك النموذج وتُدرّبه.
+   * وما تملكه فعلًا كثير — التشغيل والتوجيه والاسترجاع والأمان وتجربة
+   * المنتج — وما لا تملكه أوزانٌ دُرِّبت من الصفر. والسطر يقول ذلك بلا
+   * تسمية مزوّد ولا تفصيلِ بنية.
+   */
+  modelNoteFree: {
+    ar: "تشغيل مجاني عبر نماذج مفتوحة مختارة، مع طبقات YSD.",
+    en: "Free access through selected open models, with YSD's layers.",
+  },
+  modelNoteAlpha: {
+    ar: "بيئة تشغيل تجريبية من YSD فوق نماذج مفتوحة الأوزان.",
+    en: "An experimental YSD runtime over open-weight models.",
+  },
+
+  reportProblem: { ar: "الإبلاغ عن مشكلة", en: "Report a problem" },
+  supportTopicBadAnswer: {
+    ar: "بلاغ عن ردّ غير مناسب",
+    en: "Reporting an unhelpful answer",
+  },
+  supportTopicBadAnswerHint: {
+    ar: "صِف ما سألت عنه وما توقّعته — ولا تُرفق نصّ المحادثة إن كان يحوي ما لا تريد مشاركته.",
+    en: "Describe what you asked and what you expected — and skip the transcript if it holds anything you would rather not share.",
+  },
+
   /* ═══════════ المرحلة 6B — صفحة التعريف العامّة ═══════════ */
 
   navFeatures: { ar: "المزايا", en: "Features" },

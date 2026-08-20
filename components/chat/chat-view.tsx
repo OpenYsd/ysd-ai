@@ -20,12 +20,14 @@ import {
   Loader2,
   Paperclip,
   Pencil,
+  Flag,
   RefreshCw,
   RotateCw,
   Square,
   X,
 } from "lucide-react";
 import { uploadWithProgress } from "@/components/files/upload";
+import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
 import {
   type ChatErrorCode,
@@ -935,6 +937,17 @@ export function ChatView({
                     <span className="truncate">{locale === "ar" ? m.nameAr : m.nameEn}</span>
                     {m.id === modelId && <Check size={13} className="text-primary-glow shrink-0" />}
                   </div>
+                  {/*
+                    ★ ما هو النموذج — تحت اسمه مباشرةً (المرحلة 6C).
+
+                    الاسم وحده كان يُقرأ على أن YSD تملك النموذج وتُدرّبه.
+                    والسطر يقول ما هو فعلًا قبل أن يختار أحدٌ على انطباع.
+                  */}
+                  {modelNoteKey(m.id) && (
+                    <p data-model-note={m.id} className="mt-1 text-[11px] leading-relaxed text-ink-faint">
+                      {t(modelNoteKey(m.id)!)}
+                    </p>
+                  )}
                   {m.provider && (
                     <span className="inline-block mt-1 rounded px-1.5 py-0.5 text-[10px] leading-none bg-raised border border-line text-ink-faint">
                       {m.provider}
@@ -1254,6 +1267,29 @@ export function ChatView({
                                 disabled={generating}
                               />
                             )}
+                            {/*
+                              ★ بلاغٌ يصل إنسانًا — لا إبهامٌ لا يُخزَّن.
+
+                              زرُّ تقييمٍ لا يحفظ شيئًا يُوهم صاحبه أنه أُبلغ
+                              فيصمت، ولا يُبلَّغ أحد. وهذا رابطٌ إلى `/support`
+                              حيث قناةُ تواصلٍ حقيقية.
+
+                              والرابط **لا يحمل من المحادثة شيئًا**: لا نصًّا
+                              ولا معرّف رسالة ولا محادثة ولا نموذجًا. رمزُ
+                              موضوعٍ من مجموعةٍ مغلقة وحده — فما لا يُوضع في
+                              العنوان لا يُسجَّل في وكيلٍ ولا في سجلّ خادم.
+                            */}
+                            <Link
+                              href="/support?topic=bad-answer"
+                              data-report-problem=""
+                              aria-label={t("reportProblem")}
+                              className="flex items-center gap-1 text-[11.5px] px-2 py-1 rounded-md text-ink-faint
+                                         hover:text-ink hover:bg-raised transition-colors
+                                         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-glow"
+                            >
+                              <Flag size={12} aria-hidden />
+                              {t("reportProblem")}
+                            </Link>
                           </div>
                         )}
                         {/*

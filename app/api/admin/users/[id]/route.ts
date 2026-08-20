@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { getAdminContext, forbidden, writeAudit } from "@/lib/admin/guard";
+import { aggregateUsageEvents, countUsageEvents } from "@/lib/usage/aggregate";
 import { adminRpc, mapRpcResult, adminJson as json } from "@/lib/admin/rpc";
 
 export const runtime = "nodejs";
@@ -31,17 +32,22 @@ export async function GET(
   dayStart.setHours(0, 0, 0, 0);
 
   const s = ctx.supabase;
-  const [sub, convs, projects, files, usageMonth, usageDay] = await Promise.all([
+  /**
+   * ★ لا تُجمَع من صفوفٍ تُجلب (المرحلة 6C).
+   *
+   * PostgREST يقصّ عند ألف صفٍّ بلا خطأ، فكان الرقم يتوقّف عند ألفٍ
+   * ويبدو رقمًا صحيحًا. راجع `lib/usage/aggregate`.
+   */
+  const [sub, convs, projects, files, usageMonth, dayMessages] = await Promise.all([
     s.from("subscriptions").select("tier, current_period_end").eq("user_id", id).maybeSingle(),
     s.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", id).is("deleted_at", null),
     s.from("projects").select("id", { count: "exact", head: true }).eq("user_id", id).is("deleted_at", null),
     s.from("files").select("size_bytes, status").eq("user_id", id).is("deleted_at", null),
-    s.from("usage_events").select("input_tokens, output_tokens").eq("user_id", id).gte("created_at", monthStart.toISOString()),
-    s.from("usage_events").select("id", { count: "exact", head: true }).eq("user_id", id).gte("created_at", dayStart.toISOString()),
+    aggregateUsageEvents(s, { userId: id, since: monthStart.toISOString() }),
+    countUsageEvents(s, { userId: id, since: dayStart.toISOString() }),
   ]);
 
   const fileRows = files.data ?? [];
-  const usageRows = usageMonth.data ?? [];
   return json(
     {
       profile: { ...profile, tier: sub.data?.tier ?? "free" },
@@ -53,9 +59,10 @@ export async function GET(
         storageBytes: fileRows.reduce((a, f) => a + (f.size_bytes ?? 0), 0),
       },
       usage: {
-        monthMessages: usageRows.length,
-        monthTokens: usageRows.reduce((a, u) => a + (u.input_tokens ?? 0) + (u.output_tokens ?? 0), 0),
-        dayMessages: usageDay.count ?? 0,
+        monthMessages: usageMonth.events,
+        monthTokens: usageMonth.tokens,
+        monthTokensApproximate: usageMonth.truncated,
+        dayMessages,
       },
     },
     200,

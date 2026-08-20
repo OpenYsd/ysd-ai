@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { getAdminClient } from "@/lib/supabase/admin";
-import { rateLimit } from "@/lib/rate-limit";
+import { clientIpFrom } from "@/lib/http/client-ip";
+import { consumeKeyedRate } from "@/lib/rate-limit-keyed";
 import {
   AUTHORIZATION_TTL_SECONDS,
   emailHash,
@@ -45,12 +46,22 @@ const schema = z.object({
  * ولا يُسجَّل بريد ولا كود ولا تصريح — رموز وعدّادات فقط.
  */
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
+  /**
+   * ★ العنوان من `clientIpFrom` لا من **أوّل** عنصر في `x-forwarded-for`.
+   *
+   * تلك الترويسة تُلحَق لا تُستبدل، فيسارُها بيد العميل. وأخذُ أوّل عنصر —
+   * وهو ما كان هنا — يعني أن من يريد تجاوز الحدّ يكتب رقمًا جديدًا في كل
+   * طلب فيحصل على دلوٍ جديد، أو ينتحل عنوان ضحيةٍ فيستنفد حدَّها.
+   *
+   * وقد أُصلح المسار نفسه في `/api/invite/verify` و`/api/invite/claim`
+   * سابقًا، وبقي هذا. راجع `lib/http/client-ip`.
+   */
+  const ip = clientIpFrom(req.headers);
 
-  if (!rateLimit(`gsa-ip:${ip}`, 10, 60_000)) return tooMany();
+  /** وموزّعٌ في القاعدة لا في ذاكرة العملية — نفس القيم */
+  if (!(await consumeKeyedRate("gsa-ip", ip, 10, 60, "google-invite")).allowed) {
+    return tooMany();
+  }
 
   const parsed = schema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return refuse();
@@ -66,8 +77,12 @@ export async function POST(req: NextRequest) {
    * قائم بذاته: الأول يُستخدم لإزعاج مالك بريد بعينه، والثاني لاستنزاف مقاعد
    * دعوة بعينها. ونستعمل الهاش مفتاحًا فلا يظهر البريد ولا الكود في الذاكرة.
    */
-  if (!rateLimit(`gsa-email:${emailHash(email)}`, 5, 300_000)) return tooMany();
-  if (!rateLimit(`gsa-code:${emailHash(code)}`, 15, 300_000)) return tooMany();
+  if (!(await consumeKeyedRate("gsa-email", emailHash(email), 5, 300, "google-invite")).allowed) {
+    return tooMany();
+  }
+  if (!(await consumeKeyedRate("gsa-code", emailHash(code), 15, 300, "google-invite")).allowed) {
+    return tooMany();
+  }
 
   /**
    * غياب مفتاح الخدمة عطلٌ في الإعداد لا حالةٌ يُتعامل معها بهدوء: بدونه لا

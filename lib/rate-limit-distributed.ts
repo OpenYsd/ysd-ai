@@ -28,6 +28,15 @@ export interface RateLimitDecision {
 
 /** أسماء الدلاء المسموحة — تطابق قيد القاعدة (^[a-z][a-z0-9_-]{2,31}$) */
 export const BUCKET_CHAT = "chat";
+/**
+ * دلاءُ المرحلة 6C — كانت عدّاداتها في ذاكرة العملية.
+ *
+ * ومع نسختين يصير الحدّ ضعف المقصود، ويُصفَّر عند كل إعادة تشغيل. والقيم
+ * لم تتغيّر — تغيّر **أين تُعدّ**.
+ */
+export const BUCKET_UPLOAD = "upload";
+export const BUCKET_RAG_RUN = "rag-run";
+export const BUCKET_RAG_PROCESS = "rag-process";
 
 /** رمز غياب الدالة — يعني أن migration 0019 لم تُطبَّق بعد */
 const UNDEFINED_FUNCTION = "42883";

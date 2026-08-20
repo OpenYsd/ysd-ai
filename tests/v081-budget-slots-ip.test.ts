@@ -460,23 +460,39 @@ describe("★ مفتاح HMAC — مطلوب ولا يُشتقّ من غيره",
     withSecret(undefined, () => expect(isRateSecretConfigured()).toBe(false));
   });
 
-  /** خلط الأسرار يجعل تدوير أحدهما يكسر الآخر صامتًا، وتسريبَ أحدهما يفضح الاثنين */
+  /**
+   * ★ الحارس يتبع الاشتقاق حيث هو (المرحلة 6C).
+   *
+   * انتقل اشتقاق السرّ إلى `lib/rate-limit-keyed` حين احتاجه مسارٌ عامّ
+   * ثانٍ (تفويض الجهاز) — والبديل كان نسخةً ثانية منه، أي **مصدرين للسرّ**
+   * يفترقان يوم يُدوَّر أحدهما. والثابت المحروس هو هو: لا خلطَ أسرار،
+   * ورميٌ في الإنتاج عند الغياب.
+   *
+   * وخلط الأسرار يجعل تدوير أحدهما يكسر الآخر صامتًا، وتسريبَ أحدهما
+   * يفضح الاثنين.
+   */
+  const SECRET_OWNER = "lib/rate-limit-keyed.ts";
+
   it("★ لا يُشتقّ من SUPABASE_SERVICE_ROLE_KEY", () => {
-    const src = read("lib/auth/invite-guard.ts");
+    const src = read(SECRET_OWNER);
     // الاستعمال البرمجي هو المقصود — ذكرُه في شرحٍ يوضّح لماذا لا يُستعمل
     expect(src).not.toMatch(/process\.env\.SUPABASE_SERVICE_ROLE_KEY/);
     expect(src).toMatch(/process\.env\.RATE_LIMIT_HMAC_SECRET/);
+    /** ولا اشتقاقَ ثانٍ في موضعٍ آخر */
+    expect(read("lib/auth/invite-guard.ts")).not.toMatch(/createHmac|RATE_LIMIT_HMAC_SECRET/);
   });
 
   it("★ يرمي في الإنتاج عند غيابه — لا احتياطي معلوم", () => {
-    const src = read("lib/auth/invite-guard.ts");
+    const src = read(SECRET_OWNER);
     expect(src).toMatch(/NODE_ENV === "production"[\s\S]{0,220}throw new Error/);
   });
 
   it("★ الوحدة server-only ولا تُطبع القيمة", () => {
-    const src = read("lib/auth/invite-guard.ts");
-    expect(src.split(/\r?\n/)[0]).toBe('import "server-only";');
-    expect(src).not.toMatch(/console\.[a-z]+\([^)]*rateSecret\(\)/);
+    for (const f of [SECRET_OWNER, "lib/auth/invite-guard.ts"]) {
+      const src = read(f);
+      expect(src.split(/\r?\n/)[0], f).toBe('import "server-only";');
+      expect(src, f).not.toMatch(/console\.[a-z]+\([^)]*rateSecret\(\)/);
+    }
   });
 
   /** الفحص الصحي يقول «موجود» لا أكثر — الطول وحده يضيّق مجال التخمين */

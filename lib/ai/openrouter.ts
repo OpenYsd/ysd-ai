@@ -343,7 +343,14 @@ export class OpenRouterProvider implements AIProviderAdapter {
       {
         id: YSD_FREE_MODEL_ID,
         providerId: this.id,
-        displayNameAr: "YSD مجاني",
+        /**
+         * ★ اسمُ **مستوى وصولٍ** لا اسمُ نموذجٍ مملوك (المرحلة 6C).
+         *
+         * «YSD مجاني» تُقرأ بالعربية على أن النموذج نفسه لـYSD. والاسم
+         * الآن واحدٌ في اللغتين — علامةُ باقةٍ لا ادّعاءَ ملكية — والشرح
+         * تحته في القائمة يقول ما هو فعلًا. راجع `lib/ai/model-notes`.
+         */
+        displayNameAr: "YSD Free",
         displayNameEn: "YSD Free",
         contextWindow: 131_072,
         enabled: true,

@@ -3,6 +3,7 @@ import { getAdminContext } from "@/lib/admin/guard";
 import { StatCard, StatusPill } from "@/components/admin/stat-card";
 import { AdminRangeFilter } from "@/components/admin/range-filter";
 import { BetaReport } from "@/components/admin/beta-report";
+import { aggregateUsageEvents } from "@/lib/usage/aggregate";
 
 export const dynamic = "force-dynamic";
 
@@ -56,20 +57,19 @@ export default async function AdminOverview({
     s.from("files").select("id", { count: "exact", head: true }).eq("status", "ready_for_rag").is("deleted_at", null),
     s.from("files").select("id", { count: "exact", head: true }).eq("status", "rag_failed").is("deleted_at", null),
     s.from("files").select("size_bytes").is("deleted_at", null),
-    sinceIso
-      ? s.from("usage_events").select("model_id, input_tokens, output_tokens").gte("created_at", sinceIso)
-      : s.from("usage_events").select("model_id, input_tokens, output_tokens"),
+    aggregateUsageEvents(s, { since: sinceIso ?? null }, { withModels: true }),
     s.from("rag_jobs").select("status"),
   ]);
   void countIn;
 
-  const storageBytes = (allFiles.data ?? []).reduce((a, f) => a + (f.size_bytes ?? 0), 0);
-  const tokens = (usageRows.data ?? []).reduce((a, u) => a + (u.input_tokens ?? 0) + (u.output_tokens ?? 0), 0);
-  const modelUse = new Map<string, number>();
-  for (const u of usageRows.data ?? []) {
-    const k = (u.model_id as string) ?? "unknown";
-    modelUse.set(k, (modelUse.get(k) ?? 0) + 1);
-  }
+  const storageBytes = ((allFiles.data ?? []) as { size_bytes: number | null }[]).reduce(
+    (a, f) => a + (f.size_bytes ?? 0),
+    0,
+  );
+  const tokens = usageRows.tokens;
+  const modelUse = new Map<string, number>(
+    [...usageRows.byModel].map(([model, v]) => [model, v.requests]),
+  );
   const jobsBy: Record<string, number> = {};
   for (const r of ragStatuses.data ?? []) jobsBy[r.status] = (jobsBy[r.status] ?? 0) + 1;
   const jobsTotal = Object.values(jobsBy).reduce((a, b) => a + b, 0);

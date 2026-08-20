@@ -48,6 +48,18 @@ vi.mock("@/lib/supabase/admin", () => ({
 const { POST } = await import("../app/api/auth/google-invite/route");
 
 /**
+ * ★ نداءات **العمل** وحدها (المرحلة 6C).
+ *
+ * صار حدّ المعدّل موزّعًا في القاعدة، فيمرّ هو أيضًا بعميل الخدمة المموَّه
+ * ويُسجَّل في `state.calls`. والمقيس في هذه المجموعة أيُّ نداءِ عملٍ وقع —
+ * لا كم نداءً وقع إجمالًا. فيُرشَّح عدّاد الحدّ ويبقى العقد كما هو:
+ * «مدخلٌ فاسد ⇒ لا نداءَ عمل إطلاقًا».
+ */
+const RATE_LIMIT_RPC = "consume_invite_rate_limit";
+const businessCalls = () => state.calls.filter((c) => c.fn !== RATE_LIMIT_RPC);
+
+
+/**
  * عنوان وبريد مختلفان لكل حالة كي لا يتسرّب حدّ المعدّل بين الاختبارات.
  * الحدود حقيقية هنا (لا تُموَّه)، فاختبارٌ يعيد استعمال البريد نفسه يستهلك
  * حصّته ثم يفشل التالي بـ429 لسببٍ لا علاقة له بما يقيسه.
@@ -90,13 +102,13 @@ describe("★ إنشاء التصريح", () => {
 
   it("★ البريد يُطبَّع قبل أن يصل القاعدة", async () => {
     await post({ code: "INVITE-1234", email: "  Tester@GMAIL.com  " });
-    expect(state.calls[0]!.args.p_email).toBe("tester@gmail.com");
+    expect(businessCalls()[0]!.args.p_email).toBe("tester@gmail.com");
   });
 
   it("★ يُستدعى google_signup_authorize بالأجل المعتمد", async () => {
     await post({ code: "INVITE-1234", email: uniqEmail() });
-    expect(state.calls[0]!.fn).toBe("google_signup_authorize");
-    expect(state.calls[0]!.args.p_ttl_seconds).toBe(AUTHORIZATION_TTL_SECONDS);
+    expect(businessCalls()[0]!.fn).toBe("google_signup_authorize");
+    expect(businessCalls()[0]!.args.p_ttl_seconds).toBe(AUTHORIZATION_TTL_SECONDS);
   });
 
   /** الكوكي علامة فقط — لا بريد ولا كود ولا معرّف تصريح */
@@ -129,7 +141,7 @@ describe("★ الرفض لا يفصح", () => {
       state.calls = [];
       const res = await post({ code: "INVITE-1234", email: bad });
       expect(res.status, bad).toBe(400);
-      expect(state.calls, bad).toHaveLength(0);
+      expect(businessCalls(), bad).toHaveLength(0);
     }
   });
 
@@ -137,7 +149,7 @@ describe("★ الرفض لا يفصح", () => {
     for (const body of [{}, { code: "short", email: uniqEmail() }, { code: "INVITE-1234" }]) {
       state.calls = [];
       expect((await post(body)).status).toBe(400);
-      expect(state.calls).toHaveLength(0);
+      expect(businessCalls()).toHaveLength(0);
     }
   });
 
@@ -147,7 +159,7 @@ describe("★ الرفض لا يفصح", () => {
     expect(res.status).toBe(503);
     const body = JSON.stringify(await res.json());
     expect(body).not.toMatch(/SERVICE_ROLE|service_role|KEY|مفتاح/);
-    expect(state.calls).toHaveLength(0);
+    expect(businessCalls()).toHaveLength(0);
   });
 
   it("★ عطل القاعدة ⇒ 500 بلا نصّ قاعدة", async () => {

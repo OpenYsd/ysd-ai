@@ -216,8 +216,15 @@ export class YSDProvider implements AIProviderAdapter {
       {
         id: YSD_ALPHA_MODEL_ID,
         providerId: YSD_PROVIDER_ID,
-        displayNameAr: "نموذج YSD (ألفا)",
-        displayNameEn: "YSD Model (Alpha)",
+        /**
+         * ★ «نموذج YSD» ادّعاءٌ لا يصحّ (المرحلة 6C).
+         *
+         * ما تملكه YSD طبقاتُ التشغيل والتوجيه والاسترجاع والأمان وتجربة
+         * المنتج — لا أوزانٌ دُرِّبت من الصفر. والاسم الآن `YSD Alpha`
+         * كما في صفحة التعريف، والشرح تحته يقول ما هو.
+         */
+        displayNameAr: "YSD Alpha",
+        displayNameEn: "YSD Alpha",
         contextWindow: CONTRACT_PLACEHOLDER_CONTEXT_WINDOW,
         /**
          * ★ مفتاح الإذن وحده — لا التهيئة ولا الجاهزية.

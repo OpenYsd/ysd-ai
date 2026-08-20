@@ -78,3 +78,33 @@ export function isSupportConfigured(
 ): boolean {
   return readSupportContact(raw).configured;
 }
+
+/**
+ * مواضيع الدعم — **مجموعة مغلقة** (v0.9.14، المرحلة 6C).
+ *
+ * ── لماذا لا نصّ حرّ ──
+ *
+ * `?topic=` يكتبه من يفتح الرابط. وعرضُه كما جاء يجعل الصفحة تردّد كلامَ
+ * الغريب — وهي صفحةٌ عامّة يصل إليها من أُوقف حسابه، أي أخصبُ أرضٍ لرسالة
+ * احتيالٍ مزروعة في رابط.
+ *
+ * فالقيمة تُطابَق بهذه القائمة، وتُترجم إلى نصٍّ من القاموس. وما لا يطابق
+ * يصير `null` — ولا يُعكَس منه حرف.
+ *
+ * ── ولا يحمل الرابط من المحادثة شيئًا ──
+ *
+ * لا نصّ رسالة، ولا معرّف رسالة أو محادثة أو مستخدم، ولا اسم نموذج. ما
+ * يُوضع في عنوانٍ يُسجَّل في وكلاء وسجلّاتِ خوادم لا نملكها.
+ */
+export const SUPPORT_TOPICS = ["bad-answer"] as const;
+
+export type SupportTopic = (typeof SUPPORT_TOPICS)[number];
+
+/** يطابق الرمز بالقائمة — أو `null`، ولا يُعيد ما وصله أبدًا */
+export function normalizeSupportTopic(raw: unknown): SupportTopic | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim().toLowerCase();
+  return (SUPPORT_TOPICS as readonly string[]).includes(value)
+    ? (value as SupportTopic)
+    : null;
+}

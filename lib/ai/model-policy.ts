@@ -70,7 +70,7 @@ export interface ResolvedModel {
  * تفسير يظنّ المنصّة معطوبة، لا أن خطته لا تشمله.
  */
 export const TIER_DOWNGRADE_MESSAGE =
-  "هذا النموذج يتطلب خطة Plus، تم استخدام YSD مجاني.";
+  "هذا النموذج يتطلب خطة Plus — استُخدم YSD Free بدلًا منه.";
 
 /** سقف افتراضي حين تتعذّر قراءة الحدود — الأقلّ كلفةً لا الأكثر */
 export const FALLBACK_MAX_OUTPUT_TOKENS = 1024;

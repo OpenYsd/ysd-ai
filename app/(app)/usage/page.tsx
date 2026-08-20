@@ -1,9 +1,20 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { UsageView } from "@/components/usage/usage-view";
+import { aggregateUsageEvents, countUsageEvents } from "@/lib/usage/aggregate";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * صفحة الاستهلاك.
+ *
+ * ── ما صُحّح في المرحلة 6C ──
+ *
+ * كان الشهر يُحسب من صفوفٍ تُجلب كلّها: `rows.length` للعدد و`reduce` للرموز.
+ * و PostgREST يقصّ عند ألف صفٍّ بلا خطأ — فمن تجاوزها رأى `1000` مهما بلغ،
+ * ومجموعَ رموزٍ يخصّ أوّل ألفٍ فقط. والعدد يُقرأ الآن عدًّا خادميًّا دقيقًا،
+ * والمجموع بترقيمٍ محدود ومحدَّد. راجع `lib/usage/aggregate`.
+ */
 export default async function UsagePage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -15,13 +26,15 @@ export default async function UsagePage() {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
 
-  const [{ data: sub }, { data: monthRows }, { count: dayCount }, { data: files }] =
-    await Promise.all([
-      supabase.from("subscriptions").select("tier").eq("user_id", user.id).maybeSingle(),
-      supabase.from("usage_events").select("input_tokens, output_tokens").eq("user_id", user.id).gte("created_at", monthStart.toISOString()),
-      supabase.from("usage_events").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("created_at", dayStart.toISOString()),
-      supabase.from("files").select("size_bytes, status").eq("user_id", user.id).is("deleted_at", null),
-    ]);
+  const [{ data: sub }, month, dayMessages, { data: files }] = await Promise.all([
+    supabase.from("subscriptions").select("tier").eq("user_id", user.id).maybeSingle(),
+    aggregateUsageEvents(supabase, {
+      userId: user.id,
+      since: monthStart.toISOString(),
+    }),
+    countUsageEvents(supabase, { userId: user.id, since: dayStart.toISOString() }),
+    supabase.from("files").select("size_bytes, status").eq("user_id", user.id).is("deleted_at", null),
+  ]);
 
   const tier = sub?.tier ?? "free";
   const { data: limits } = await supabase
@@ -31,16 +44,16 @@ export default async function UsagePage() {
     .maybeSingle();
 
   const fileRows = files ?? [];
-  const monthMessages = monthRows?.length ?? 0;
-  const monthTokens = (monthRows ?? []).reduce((a, u) => a + (u.input_tokens ?? 0) + (u.output_tokens ?? 0), 0);
   const ragReady = fileRows.filter((f) => f.status === "ready_for_rag").length;
 
   return (
     <UsageView
       tier={tier}
-      dayMessages={dayCount ?? 0}
-      monthMessages={monthMessages}
-      monthTokens={monthTokens}
+      dayMessages={dayMessages}
+      monthMessages={month.events}
+      monthTokens={month.tokens}
+      /** المجموع ناقصٌ حين يتجاوز العدد سقف المسح — يُقال ولا يُخفى */
+      tokensApproximate={month.truncated}
       filesCount={fileRows.length}
       storageBytes={fileRows.reduce((a, f) => a + (f.size_bytes ?? 0), 0)}
       ragReady={ragReady}

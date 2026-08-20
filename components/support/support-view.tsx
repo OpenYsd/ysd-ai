@@ -17,9 +17,16 @@
 
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n";
-import type { SupportContact } from "@/lib/public-support";
+import type { SupportContact, SupportTopic } from "@/lib/public-support";
 
-export function SupportView({ contact }: { contact: SupportContact }) {
+export function SupportView({
+  contact,
+  topic = null,
+}: {
+  contact: SupportContact;
+  /** رمزٌ من مجموعةٍ مغلقة — تُرجمه الصفحة ولا تعكسه */
+  topic?: SupportTopic | null;
+}) {
   const { t } = useI18n();
 
   return (
@@ -28,6 +35,23 @@ export function SupportView({ contact }: { contact: SupportContact }) {
         <h1 className="text-lg font-semibold text-ink-strong">{t("supportTitle")}</h1>
         <p className="text-[13px] text-ink-dim leading-relaxed">{t("supportIntro")}</p>
       </header>
+
+      {/*
+        سياقُ البلاغ — نصٌّ من القاموس اختاره الرمز، لا شيءٌ وصل في الرابط.
+      */}
+      {topic === "bad-answer" && (
+        <div
+          data-support-topic="bad-answer"
+          className="rounded-xl border border-primary/30 bg-primary/10 px-4 py-3"
+        >
+          <p className="text-[13px] font-medium text-primary-glow">
+            {t("supportTopicBadAnswer")}
+          </p>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink-dim">
+            {t("supportTopicBadAnswerHint")}
+          </p>
+        </div>
+      )}
 
       {/* ═══ قناة التواصل ═══ */}
       <section className="space-y-2" data-support-channel="">

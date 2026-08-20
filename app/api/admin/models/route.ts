@@ -5,6 +5,7 @@ import { adminRpc, mapRpcResult, adminJson as json } from "@/lib/admin/rpc";
 import { getConfiguredProviders } from "@/lib/ai/registry";
 import { YSD_ALPHA_MODEL_ID } from "@/lib/ai/ysd";
 import { stageYSDDatabaseEligibility } from "@/lib/ai/ysd-rollout";
+import { aggregateUsageEvents } from "@/lib/usage/aggregate";
 
 export const runtime = "nodejs";
 
@@ -27,17 +28,14 @@ export async function GET() {
   }));
 
   // إحصاء الاستخدام لكل نموذج فعلي من usage_events
-  const { data: usage } = await ctx.supabase
-    .from("usage_events")
-    .select("model_id, input_tokens, output_tokens");
-  const stats = new Map<string, { requests: number; tokens: number }>();
-  for (const u of usage ?? []) {
-    const key = (u.model_id as string) ?? "unknown";
-    const cur = stats.get(key) ?? { requests: 0, tokens: 0 };
-    cur.requests += 1;
-    cur.tokens += (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
-    stats.set(key, cur);
-  }
+  /**
+   * ★ لا تُجمَع من صفوفٍ تُجلب (المرحلة 6C).
+   *
+   * PostgREST يقصّ عند ألف صفٍّ بلا خطأ، فكان الرقم يتوقّف عند ألفٍ
+   * ويبدو رقمًا صحيحًا. راجع `lib/usage/aggregate`.
+   */
+  const usage = await aggregateUsageEvents(ctx.supabase, {}, { withModels: true });
+  const stats = usage.byModel;
 
   return json(
     {

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { rateLimit } from "@/lib/rate-limit";
+import { BUCKET_RAG_PROCESS, consumeRateLimit } from "@/lib/rate-limit-distributed";
 import { processFile, PUBLIC_FILE_FIELDS } from "@/lib/files/service";
 
 export const runtime = "nodejs";
@@ -21,7 +21,9 @@ export async function POST(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "غير مصرح | Unauthorized" }, 401);
 
-  if (!rateLimit(`process:${user.id}`, 15, 60_000))
+  /** موزّع في القاعدة (المرحلة 6C) — نفس القيمة، ومكانُ العدّ هو ما تغيّر */
+  const rate = await consumeRateLimit(user.id, BUCKET_RAG_PROCESS, 15, 60);
+  if (!rate.allowed)
     return json({ error: "محاولات كثيرة — انتظر قليلًا | Too many attempts" }, 429);
 
   const { data: row } = await supabase

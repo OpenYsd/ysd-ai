@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { rateLimit } from "@/lib/rate-limit";
+import { BUCKET_RAG_RUN, consumeRateLimit } from "@/lib/rate-limit-distributed";
 import { contentHash } from "@/lib/rag/chunking";
 import { enqueueRagJob, getLatestJobForFile } from "@/lib/rag/jobs";
 import { drainOwnJobs, LEASE_SECONDS } from "@/lib/rag/worker";
@@ -29,7 +29,9 @@ export async function POST(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "غير مصرح | Unauthorized" }, 401);
 
-  if (!rateLimit(`rag:${user.id}`, 10, 60_000))
+  /** موزّع في القاعدة (المرحلة 6C) — نفس القيمة، ومكانُ العدّ هو ما تغيّر */
+  const rate = await consumeRateLimit(user.id, BUCKET_RAG_RUN, 10, 60);
+  if (!rate.allowed)
     return json({ error: "محاولات تجهيز كثيرة — انتظر قليلًا | Too many attempts" }, 429);
 
   const { data: row } = await supabase

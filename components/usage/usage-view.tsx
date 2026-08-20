@@ -9,6 +9,13 @@ interface UsageViewProps {
   dayMessages: number;
   monthMessages: number;
   monthTokens: number;
+  /**
+   * هل المجموع ناقصٌ لأن العدد تجاوز سقف المسح؟
+   *
+   * رقمٌ ناقص يُعرض كأنه تامّ هو العطل الذي أُصلح — فلا يُعاد إنتاجه بصمت.
+   * والعلامة «+» تقول إنه حدٌّ أدنى لا قيمةٌ نهائية.
+   */
+  tokensApproximate?: boolean;
   filesCount: number;
   storageBytes: number;
   ragReady: number;
@@ -29,7 +36,7 @@ export function UsageView(props: UsageViewProps) {
   const bars = [
     { label: t("dailyMessages"), used: props.dayMessages, limit: props.limits.dailyMessages },
     { label: t("monthlyMessages"), used: props.monthMessages, limit: props.limits.monthlyMessages },
-    { label: t("tokens"), used: props.monthTokens, limit: props.limits.monthlyTokens },
+    { label: t("tokens"), used: props.monthTokens, limit: props.limits.monthlyTokens, approximate: props.tokensApproximate },
     { label: t("files"), used: props.filesCount, limit: props.limits.maxFiles },
     { label: t("storageUsage") + " (MB)", used: Math.round(storageMb), limit: props.limits.maxStorageMb },
   ];
@@ -49,7 +56,10 @@ export function UsageView(props: UsageViewProps) {
           <div className="grid grid-cols-3 gap-2 text-center">
             <MiniStat label={t("ragOps")} value={fmt(props.ragReady)} />
             <MiniStat label={t("files")} value={fmt(props.filesCount)} />
-            <MiniStat label={t("tokens")} value={fmt(props.monthTokens)} />
+            <MiniStat
+              label={t("tokens")}
+              value={fmt(props.monthTokens) + (props.tokensApproximate ? "+" : "")}
+            />
           </div>
 
           <div className="rounded-2xl border border-line bg-surface/60 p-5 space-y-4">
@@ -73,10 +83,10 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 }
 
 function UsageBar({
-  label, used, limit, fmt, tRemaining, tNear, tAt,
+  label, used, limit, fmt, tRemaining, tNear, tAt, approximate,
 }: {
   label: string; used: number; limit: number; fmt: (n: number) => string;
-  tRemaining: string; tNear: string; tAt: string;
+  tRemaining: string; tNear: string; tAt: string; approximate?: boolean;
 }) {
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const remaining = Math.max(0, limit - used);
@@ -89,7 +99,7 @@ function UsageBar({
       <div className="flex items-center justify-between text-[12.5px] mb-1.5">
         <span className="text-ink-dim">{label}</span>
         <span className="text-ink tabular-nums" dir="ltr">
-          {fmt(used)} {limit > 0 ? `/ ${fmt(limit)}` : ""}
+          {fmt(used)}{approximate ? "+" : ""} {limit > 0 ? `/ ${fmt(limit)}` : ""}
         </span>
       </div>
       <div className="h-2 rounded-full bg-raised overflow-hidden">
