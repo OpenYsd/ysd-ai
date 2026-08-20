@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getAdminContext } from "@/lib/admin/guard";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { countTrainingCandidates } from "@/lib/training/decision";
+import type { DatasetRelease } from "@/components/admin/training-datasets-section";
 import {
   TrainingReviewView,
   type CandidateSummary,
@@ -23,6 +24,8 @@ export const dynamic = "force-dynamic";
  */
 
 const LIST_COLUMNS = "id, created_at, status, privacy_status, quality_status, source";
+/** ★ ولا `manifest_hash` ولا `manifest` ولا `created_by` — لا تُفيد قارئًا */
+const RELEASE_COLUMNS = "id, version, status, sample_count, created_at, frozen_at";
 const PAGE_SIZE = 50;
 
 export default async function AdminTrainingPage() {
@@ -31,6 +34,7 @@ export default async function AdminTrainingPage() {
 
   let counts: Record<string, number> = {};
   let pending: CandidateSummary[] = [];
+  let releases: DatasetRelease[] = [];
 
   try {
     const counted = await countTrainingCandidates();
@@ -52,10 +56,24 @@ export default async function AdminTrainingPage() {
         qualityStatus: String(r.quality_status),
         source: String(r.source),
       }));
+
+      const { data: rel } = await db
+        .from("training_dataset_releases")
+        .select(RELEASE_COLUMNS)
+        .order("created_at", { ascending: false })
+        .limit(PAGE_SIZE);
+      releases = ((rel ?? []) as Record<string, unknown>[]).map((r) => ({
+        id: String(r.id),
+        version: String(r.version),
+        status: String(r.status),
+        sampleCount: Number(r.sample_count ?? 0),
+        createdAt: String(r.created_at),
+        frozenAt: r.frozen_at === null || r.frozen_at === undefined ? null : String(r.frozen_at),
+      }));
     }
   } catch {
     /* لوحةٌ فارغة خيرٌ من صفحةٍ ساقطة — والأعداد تبقى أصفارًا */
   }
 
-  return <TrainingReviewView counts={counts} pending={pending} />;
+  return <TrainingReviewView counts={counts} pending={pending} releases={releases} />;
 }

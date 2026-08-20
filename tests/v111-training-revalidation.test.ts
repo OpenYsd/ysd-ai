@@ -612,9 +612,15 @@ describe("★ (٨) المساران — للمشرف وحده، ولا يقبل�
 /* ═══════════ (٩) الحدود ═══════════ */
 
 describe("★ (٩) الحدود — الاعتماد ليس تدريبًا", () => {
-  it("★ ★ لا تصدير ولا مجموعة ولا أوزان في هذه الطبقة", () => {
-    for (const src of [REVALIDATE_SRC, DECISION_SRC, REVIEW_ROUTE, DECISION_ROUTE,
-                       readSrc("app/admin/training/page.tsx")]) {
+  it("★ ★ لا تصدير ولا تدريب ولا أوزان في طبقة المراجعة", () => {
+    /**
+     * ★ والقياس على طبقة المراجعة وحدها.
+     *
+     * فاللوحة تستضيف قسم الإصدارات بالتصميم (المرحلة 3A)، وذكرُ «مجموعة»
+     * فيها ليس خرقًا. أما ما يحرسه هذا الملفّ فهو أن **قرار المراجعة**
+     * لا يمسّ تصديرًا ولا تدريبًا.
+     */
+    for (const src of [REVALIDATE_SRC, DECISION_SRC, REVIEW_ROUTE, DECISION_ROUTE]) {
       expect(src).not.toMatch(/jsonl|dataset|fine_?tune|LoRA|weights|train_job|gpu/i);
     }
   });
@@ -634,9 +640,16 @@ describe("★ (٩) الحدود — الاعتماد ليس تدريبًا", () 
     );
   });
 
-  it("★ ★ ولا ترحيلة جديدة — 0040 و0041 تكفيان", () => {
+  it("★ ★ ولا ترحيلة للمراجعة — 0040 و0041 تكفيان", () => {
+    /**
+     * ★ والثابت أن **المراجعة** لم تحتج ترحيلة.
+     *
+     * فحالاتُ القرار الثلاث كلّها في `0040`، والقيدُ الذي يشترط بوّابتين
+     * مفتوحتين كذلك. وما يُضاف بعدها من ترحيلاتٍ لأغراضٍ أخرى لا يخصّ هذا.
+     */
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(41);
+    expect(files.filter((f) => /review|decision|candidate_status/i.test(f))).toHaveLength(0);
+    expect(MIGRATION).toMatch(/'rejected_privacy', 'rejected_quality'/);
   });
 
   it("★ ★ ولا يُساء استعمال `revoked` — فهي سحبُ إذنٍ لا تغيّرُ مصدر", () => {

@@ -265,6 +265,54 @@ const dict = {
   trainingBankQuality_unknown: { ar: "جودة: غير محكوم", en: "Quality: unknown" },
   trainingBankQuality_passed: { ar: "جودة: مرّت", en: "Quality: passed" },
   trainingBankQuality_rejected: { ar: "جودة: مرفوضة", en: "Quality: rejected" },
+
+  /* ── إصدارات مجموعة التدريب (v0.9.6، المرحلة 3A) ── */
+  datasetsSection: { ar: "إصدارات المجموعة", en: "Dataset releases" },
+  /**
+   * ★ ونصٌّ يقول ما ليس بعد.
+   *
+   * «إصدار» تُقرأ في سياق النماذج على أنها شيءٌ نُشر. وما يقع هنا أن
+   * عيّناتٍ جُمعت وثُبّتت — ولا تدريب ولا تصدير ولا نموذج.
+   */
+  datasetsMeaning: {
+    ar: "الإصدار مجموعة عيّنات مثبَّتة ببصمة. لا تصدير، ولا تدريب، ولا نموذج — وصلاحيته تُفحص من جديد قبل أي استخدام.",
+    en: "A release is a fixed, hashed set of samples. No export, no training, no model — and its validity is rechecked before any use.",
+  },
+  datasetsEmpty: { ar: "لا إصدارات بعد.", en: "No releases yet." },
+  datasetsVersion: { ar: "الإصدار", en: "Version" },
+  datasetsStatus: { ar: "الحالة", en: "Status" },
+  datasetsSamples: { ar: "العيّنات", en: "Samples" },
+  datasetsCreated: { ar: "أُنشئ", en: "Created" },
+  datasetsFrozen: { ar: "جُمّد", en: "Frozen" },
+  datasetStatus_draft: { ar: "مسوَّدة", en: "Draft" },
+  datasetStatus_frozen: { ar: "مجمَّد", en: "Frozen" },
+  datasetStatus_invalidated: { ar: "مُبطَل", en: "Invalidated" },
+  datasetsPreview: { ar: "معاينة المؤهَّلين", en: "Preview eligible" },
+  datasetsCreateDraft: { ar: "إنشاء مسوَّدة", en: "Create draft" },
+  datasetsFreeze: { ar: "تجميد", en: "Freeze" },
+  datasetsEligible: { ar: "مؤهَّلة الآن", en: "Eligible now" },
+  datasetsSkipped: { ar: "مستبعَدة", en: "Skipped" },
+  datasetsNoEligible: {
+    ar: "لا توجد عيّنات مؤهَّلة الآن. لا تُنشأ مسوَّدة فارغة.",
+    en: "No eligible samples right now. An empty draft is not created.",
+  },
+  datasetsCreated_ok: {
+    ar: "أُنشئت المسوَّدة. لم يُصدَّر شيء ولم يُدرَّب نموذج.",
+    en: "Draft created. Nothing was exported and no model was trained.",
+  },
+  datasetsFrozen_ok: {
+    ar: "جُمّد الإصدار. ما زال يُفحص من جديد قبل أي استخدام.",
+    en: "Release frozen. It is still revalidated before any use.",
+  },
+  datasetsRevalidationFailed: {
+    ar: "لم تعد بعض العيّنات صالحة، فلم يُجمَّد الإصدار.",
+    en: "Some samples are no longer valid, so the release was not frozen.",
+  },
+  datasetsConflict: {
+    ar: "تغيّرت حالة الإصدار. حدّث الصفحة.",
+    en: "The release state changed. Refresh the page.",
+  },
+  datasetsFailed: { ar: "تعذّرت العملية. حاول مرة أخرى.", en: "Operation failed. Please try again." },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

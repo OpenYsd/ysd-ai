@@ -20,6 +20,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import {
+  TrainingDatasetsSection,
+  type DatasetRelease,
+} from "./training-datasets-section";
 
 export interface CandidateSummary {
   id: string;
@@ -65,9 +69,11 @@ const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeo
 export function TrainingReviewView({
   counts,
   pending,
+  releases = [],
 }: {
   counts: Record<string, number>;
   pending: CandidateSummary[];
+  releases?: DatasetRelease[];
 }) {
   const { t, locale } = useI18n();
   const ar = locale === "ar";
@@ -168,6 +174,14 @@ export function TrainingReviewView({
         * وما لم يُقل بجواره ما يعنيه، قرأه على معناه في اللغة العامّة.
         */}
       <p className="text-[11.5px] text-ink-faint">{t("trainingBankApprovedMeaning")}</p>
+
+      {/**
+        * ★ الإصدارات بعد المرشّحين — والترتيب معنًى.
+        *
+        * فالمجموعة تُبنى ممّا رُوجع، لا العكس. ومن يقرأ الصفحة من أعلى
+        * يرى المصدر قبل ما بُني منه.
+        */}
+      <TrainingDatasetsSection releases={releases} />
 
       <div className="rounded-xl border border-line/60 bg-surface/40 overflow-hidden">
         <div className="px-4 py-2.5 border-b border-line/50 text-[13px] font-medium">

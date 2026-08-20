@@ -815,8 +815,16 @@ describe("★ (١٠) التشديد — صلاحيات وأداءٌ لا سلو�
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0041_ysd_training_bank_hardening.sql");
     const numbers = files.map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...numbers)).toBe(41);
+    /**
+     * ★ ولا يملك هذا الملفّ «أحدث رقم».
+     *
+     * فكلّ ترحيلةٍ تُضاف بعده كانت تُسقطه وهو لا يحرس شيئًا يخصّها.
+     * والملكيّة لأحدث حزمة؛ ويبقى هنا ما يخصّ هذه: أنّ الترقيم لا يتكرّر،
+     * وأنّ 0041 تلي 0040 فعلًا.
+     */
     expect(new Set(numbers).size).toBe(numbers.length);
+    expect(numbers).toContain(40);
+    expect(numbers).toContain(41);
   });
 });
 

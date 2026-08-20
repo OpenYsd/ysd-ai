@@ -675,10 +675,18 @@ describe("★ (١٠) الحدود — لا التقاط تلقائيّ", () => {
     }
   });
 
-  it("★ ★ ولا ترحيلة جديدة — 0040 و0041 تكفيان", async () => {
+  it("★ ★ ولا ترحيلة للمشاركة — 0040 و0041 تكفيان", async () => {
+    /**
+     * ★ والثابت أن **المشاركة** لم تحتج ترحيلة — لا أن لا ترحيلة بعدها.
+     *
+     * فالأول يخصّ هذه الرقعة ويبقى صادقًا أبدًا؛ والثاني يملك «أحدث رقم»
+     * فيسقط مع كل ترحيلةٍ لاحقة لا شأن لها به.
+     */
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    expect(Math.max(...files.map((f) => Number(f.slice(0, 4))))).toBe(41);
+    expect(files.filter((f) => /share|conversation_share/i.test(f))).toHaveLength(0);
+    expect(files).toContain("0040_ysd_training_bank.sql");
+    expect(files).toContain("0041_ysd_training_bank_hardening.sql");
   });
 
   it("★ ★ ولا تصدير ولا اعتماد ولا تدريب في هذه الطبقة", () => {
