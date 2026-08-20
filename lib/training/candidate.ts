@@ -1,9 +1,9 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { getAdminClient } from "@/lib/supabase/admin";
+import { computeContentFingerprint } from "./fingerprint";
 import { isConsentActive, readTrainingConsent } from "./consent";
 import { screenPrivacy, type PrivacyReasonCode } from "./privacy";
 import { screenQuality, type QualityReasonCode } from "./quality";
@@ -64,47 +64,6 @@ const DEFAULTS: CandidateDependencies = {
   getAdminClient,
   readConsent: readTrainingConsent,
 };
-
-/**
- * ★ التطبيع قبل البصمة — كي يُكشف التكرار الحقيقيّ.
- *
- * فمسافةٌ زائدة أو سطرٌ مختلف لا يجعلان السؤال سؤالًا آخر. والتطبيع
- * متحفّظ: يوحّد المسافات وحالة الأحرف اللاتينية ويقصّ الأطراف — ولا يمسّ
- * ترتيبًا ولا ترقيمًا، فذانك قد يغيّران المعنى.
- */
-function normalizeForFingerprint(text: string): string {
-  return text.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-/**
- * ★ البصمة تُحسب ولا يُخزَّن أصلها.
- *
- * وظيفتها أن تقول «رأينا هذا»، لا أن تحفظه. فلا يُكتب النصّ في سجلٍّ ولا
- * في عمود، ولا تُعاد البصمة إلى عميل.
- */
-function fingerprint(userText: string, assistantText: string): string {
-  /**
-   * ★ الفاصل بايتٌ صفريّ — لا مسافة.
-   *
-   * ── لماذا فاصلٌ لا يظهر في النصّ ──
-   *
-   * لأن الوصل بمسافةٍ يجعل («س ص»، «ع») و(«س»، «ص ع») مادّةً واحدة، فتخرج
-   * لهما بصمةٌ واحدة ويُحسب أحدهما تكرارًا للآخر. والمسافة تنجو من التطبيع،
-   * فهي داخل النصّ كما هي بين النصّين. أما البايت الصفريّ فلا يقع في كلامٍ
-   * يكتبه إنسان، فيفصل فصلًا لا يُلتبَس.
-   *
-   * ── ولماذا مُهرَّبًا لا حرفيًّا ──
-   *
-   * كان يُكتب في المصدر بايتًا خامًّا. فكان git يقرأ الملفّ ثنائيًّا:
-   * «Bin 11081 -> 15179 bytes» بدل فروقٍ تُقرأ. وملفٌّ لا يُرى فيه الفرق
-   * لا يُراجَع — وهذا ملفّ البوّابة التي يمرّ منها كلامُ الناس.
-   *
-   * والمُهرَّب يُنتج البايت نفسه: المادّة المُعمّاة لم تتغيّر، والبصمات
-   * المحسوبة قبل هذا السطر وبعده متطابقة.
-   */
-  const material = `${normalizeForFingerprint(userText)}\u0000${normalizeForFingerprint(assistantText)}`;
-  return createHash("sha256").update(material, "utf8").digest("hex");
-}
 
 interface MessageRow {
   id: string;
@@ -295,7 +254,7 @@ export async function createTrainingCandidate(
   }
 
   // ── (٧) البصمة ثم الكتابة ──
-  const digest = fingerprint(userMsg.content, assistantMsg.content);
+  const digest = computeContentFingerprint(userMsg.content, assistantMsg.content);
 
   try {
     const { data, error } = await db

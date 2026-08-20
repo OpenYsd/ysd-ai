@@ -110,3 +110,47 @@ export function screenPrivacy(text: string): PrivacyVerdict {
    */
   return { status: "needs_review", reasonCodes: [] };
 }
+
+/**
+ * ── التنقيح للمراجعة (v0.9.5) ──
+ *
+ * ★ ما يُخفى وما يُترك — والفرق مقصود.
+ *
+ * المراجِع يقرأ ليحكم، فإخفاءُ ما جاء ليحكم عليه يجعل المراجعة تمثيلًا:
+ * بريدٌ أو هاتفٌ مطموس يمنعه من أن يرى **لماذا** تُرفض العيّنة، وقد
+ * يوافق على ما ظنّه نظيفًا.
+ *
+ * أما المفتاح والرمز وبطاقة الدفع فليست موضع حكم: وجودها وحده يرفض،
+ * ولا يزيد عرضُها كاملةً المراجِعَ علمًا — ويضعها على شاشةٍ ثانية، وفي
+ * لقطةٍ ربما، وفي ذاكرة متصفّح. فتُطمس، ويبقى نوعُها ظاهرًا في الرموز.
+ *
+ * ولا يُسجَّل شيء من هذا ولا من ذاك في سجلّ.
+ */
+const REDACTED = "[محجوب]";
+
+/** ما يُطمس: الأسرار والاعتمادات والبطاقات — لا البريد والهاتف */
+const REDACT_CODES: ReadonlySet<PrivacyReasonCode> = new Set([
+  "secret_token",
+  "url_with_credentials",
+  "credit_card",
+]);
+
+export function redactForReview(text: string): { text: string; redacted: boolean } {
+  if (typeof text !== "string" || text.length === 0) return { text: "", redacted: false };
+  let out = text;
+  let redacted = false;
+  for (const [code, pattern] of PATTERNS) {
+    if (!REDACT_CODES.has(code)) continue;
+    /**
+     * أنماطُ الوحدة بلا `g` — فهي تُستعمل للفحص لا للاستبدال. ونُعيد
+     * بناءها هنا بالراية بدل تعديل الأصل: تعبيرٌ عامّ يحمل حالةً
+     * (`lastIndex`) يجعل `test` يتخطّى مطابقاتٍ بين النداءات.
+     */
+    const global = new RegExp(pattern.source, `${pattern.flags}g`);
+    out = out.replace(global, () => {
+      redacted = true;
+      return REDACTED;
+    });
+  }
+  return { text: out, redacted };
+}

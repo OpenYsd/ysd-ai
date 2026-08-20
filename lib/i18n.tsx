@@ -191,6 +191,80 @@ const dict = {
     ar: "تعذّرت المشاركة. حاول مرة أخرى.",
     en: "Could not share the conversation. Please try again.",
   },
+
+  /* ── مراجعة بنك تحسين YSD (v0.9.5) ── */
+  trainingBankTitle: { ar: "بنك تحسين YSD", en: "YSD Training Bank" },
+  trainingBankSubtitle: {
+    ar: "مراجعة يدوية للعيّنات التي شاركها المستخدمون. يُعاد التحقّق من المصدر قبل كل قرار.",
+    en: "Manual review of samples users shared. The source is revalidated before every decision.",
+  },
+  /**
+   * ★ «معتمَدة» ليست «مُدرَّبة» — والنصّ يقولها حيث يُقرأ الرقم.
+   *
+   * فمن يرى عمودًا اسمه «معتمَدة» يقرأه على معناه في اللغة العامّة: أن
+   * شيئًا صار نافذًا. وما يقع فعلًا أن العيّنة صارت مؤهَّلةً للنظر.
+   */
+  trainingBankApprovedMeaning: {
+    ar: "«معتمَدة» تعني مؤهَّلة للنظر في مجموعة تدريب مستقبلية. لا تصدير، ولا تدريب، ولا تحديث نموذج.",
+    en: "“Approved” means eligible for consideration in a future training set. No export, no training, no model update.",
+  },
+  trainingBankCount_pending: { ar: "قيد المراجعة", en: "Pending" },
+  trainingBankCount_approved: { ar: "معتمَدة", en: "Approved" },
+  trainingBankCount_rejected_privacy: { ar: "مرفوضة — خصوصية", en: "Rejected — Privacy" },
+  trainingBankCount_rejected_quality: { ar: "مرفوضة — جودة", en: "Rejected — Quality" },
+  trainingBankCount_revoked: { ar: "مُبطَلة", en: "Revoked" },
+  trainingBankPendingList: { ar: "العيّنات قيد المراجعة", en: "Pending samples" },
+  trainingBankEmpty: { ar: "لا عيّنات تنتظر المراجعة.", en: "No samples awaiting review." },
+  trainingBankReview: { ar: "مراجعة", en: "Review" },
+  trainingBankReviewTitle: { ar: "مراجعة عيّنة", en: "Review sample" },
+  trainingBankLoading: { ar: "جارٍ التحقّق من المصدر…", en: "Revalidating the source…" },
+  trainingBankUserMessage: { ar: "رسالة المستخدم", en: "User message" },
+  trainingBankAssistantMessage: { ar: "رد المساعد", en: "Assistant response" },
+  trainingBankPrivacyWarning: {
+    ar: "قد تحتوي العينة على بيانات شخصية. راجعها قبل الاعتماد.",
+    en: "This sample may contain personal information. Review it before approval.",
+  },
+  trainingBankRedacted: {
+    ar: "حُجبت أجزاء تبدو مفاتيح أو اعتمادات أو أرقام بطاقات.",
+    en: "Parts that look like keys, credentials, or card numbers were masked.",
+  },
+  trainingBankPrivacyBlocked: {
+    ar: "وجد الفحص بيانات يقينية في هذه العيّنة، فلا يمكن اعتمادها.",
+    en: "The scanner found definite personal data in this sample, so it cannot be approved.",
+  },
+  trainingBankQualityBlocked: {
+    ar: "لم تعد هذه العيّنة تجتاز فحص الجودة، فلا يمكن اعتمادها.",
+    en: "This sample no longer passes the quality gate, so it cannot be approved.",
+  },
+  trainingBankSourceChanged: {
+    ar: "تم تغيير مصدر هذه العينة بعد مشاركتها، فلا يمكن اعتمادها.",
+    en: "This sample's source changed after it was shared, so it cannot be approved.",
+  },
+  trainingBankSourceUnavailable: {
+    ar: "لم يعد مصدر هذه العينة متاحًا.",
+    en: "This sample's source is no longer available.",
+  },
+  trainingBankApprove: { ar: "اعتماد", en: "Approve" },
+  trainingBankRejectPrivacy: { ar: "رفض — خصوصية", en: "Reject — Privacy" },
+  trainingBankRejectQuality: { ar: "رفض — جودة", en: "Reject — Quality" },
+  trainingBankClose: { ar: "إغلاق", en: "Close" },
+  trainingBankApproved: {
+    ar: "تم اعتماد العيّنة للنظر مستقبلًا. لم يُدرَّب نموذج ولم يُصدَّر شيء.",
+    en: "The sample was approved for future consideration. No model was trained and nothing was exported.",
+  },
+  trainingBankRejected: { ar: "تم رفض العيّنة.", en: "The sample was rejected." },
+  trainingBankConflict: {
+    ar: "تم حسم هذه العيّنة بالفعل. حدّث الصفحة.",
+    en: "This sample was already decided. Refresh the page.",
+  },
+  trainingBankFailed: { ar: "تعذّر تنفيذ القرار. حاول مرة أخرى.", en: "Could not apply the decision. Please try again." },
+  trainingBankPrivacy_unknown: { ar: "خصوصية: غير محكوم", en: "Privacy: unknown" },
+  trainingBankPrivacy_needs_review: { ar: "خصوصية: تحتاج مراجعة", en: "Privacy: needs review" },
+  trainingBankPrivacy_passed: { ar: "خصوصية: مرّت", en: "Privacy: passed" },
+  trainingBankPrivacy_rejected: { ar: "خصوصية: مرفوضة", en: "Privacy: rejected" },
+  trainingBankQuality_unknown: { ar: "جودة: غير محكوم", en: "Quality: unknown" },
+  trainingBankQuality_passed: { ar: "جودة: مرّت", en: "Quality: passed" },
+  trainingBankQuality_rejected: { ar: "جودة: مرفوضة", en: "Quality: rejected" },
   profile: { ar: "الملف الشخصي", en: "Profile" },
   plan: { ar: "الباقة", en: "Plan" },
   comingSoonPage: {

@@ -687,7 +687,7 @@ describe("★ (١٠) الحدود — لا التقاط تلقائيّ", () => {
     }
   });
 
-  it("★ ★ ولا بايت صفريّ خامّ في مصدرٍ يُراجَع", () => {
+  it("★ ★ ولا بايت صفريّ خامّ في مصدرٍ يُراجَع", async () => {
     /**
      * ── عيبٌ سابقٌ لهذه الرقعة، وُجد أثناءها ──
      *
@@ -701,10 +701,17 @@ describe("★ (١٠) الحدود — لا التقاط تلقائيّ", () => {
      *
      * والتهريب يُنتج البايت نفسه، فالبصمات المحسوبة قبله وبعده متطابقة.
      */
-    const raw = readFileSync("lib/training/candidate.ts");
-    expect(raw.includes(0)).toBe(false);
-    const src = readSrc("lib/training/candidate.ts");
-    expect(src).toContain("(userText)}" + ESCAPED_NUL + "${normalizeForFingerprint(assistantText)}");
+    const { readdirSync } = await import("node:fs");
+    /**
+     * والقياس على **كل** ملفّات الطبقة لا على ملفٍّ بعينه: حارسٌ يملك
+     * موقعًا يسقط أوّل ما يُنقل الكود، فيسكت عن العيب في مكانه الجديد.
+     */
+    for (const f of readdirSync("lib/training")) {
+      expect([f, readFileSync(`lib/training/${f}`).includes(0)]).toEqual([f, false]);
+    }
+    expect(readSrc("lib/training/fingerprint.ts")).toContain(
+      "(userText)}" + ESCAPED_NUL + "${normalizeForFingerprint(assistantText)}",
+    );
   });
 
   it("★ ولا نصَّ في طبقة المشاركة — الهيكل وحده", () => {
