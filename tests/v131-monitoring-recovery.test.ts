@@ -30,6 +30,24 @@ const WORKFLOW = readSrc(WORKFLOW_PATH);
  * واستعمالُ مِصفاةِ SQL هنا يبتلع `--max-time` فيقرأ الحارس ملفًّا
  * منقوصًا ويشتكي من غياب ما هو موجود — حارسٌ يقرأ غير ما يُقاس.
  */
+/**
+ * ★ يستخرج كتلةَ خطوةٍ بعينها.
+ *
+ * ومطابقةُ الملفّ كلِّه تجعل شرطًا في خطوةٍ يبدو كأنه في أخرى — فالحارس
+ * يمرّ ولو انتقل الشرط إلى موضعٍ لا يحرس شيئًا.
+ */
+const stepBlock = (src: string, name: string): string => {
+  const lines = src.split("\n");
+  const start = lines.findIndex((l) => l.includes(`- name: ${name}`));
+  if (start < 0) return "";
+  const out = [lines[start]!];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^      - name:/.test(lines[i]!)) break;
+    out.push(lines[i]!);
+  }
+  return out.join("\n");
+};
+
 const stripYaml = (src: string) =>
   src.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
 const RUNBOOK = readSrc("docs/OPERATIONS.md");
@@ -64,9 +82,17 @@ describe("★ (١) المراقبة — إلى الإنتاج لا إلى غير
      *
      * وصحّةُ المزوّد تُقرأ من تِلِمترية الطلبات الحقيقية لا من طلبٍ مُصطنع.
      */
+    /**
+     * ★ يُقاس شكلُ النداء لا الكلمةُ الإنجليزية.
+     *
+     * «generated» في وصفٍ نثريّ ليس توليدَ نصّ، و`workflow_dispatch` تحوي
+     * «patch». وحارسٌ يمنع الكلمة يمنع شرحًا مشروعًا ويترك النداء يمرّ لو
+     * كُتب بصيغةٍ أخرى — يقيس الاسم بدل الشيء.
+     */
     const body = stripYaml(WORKFLOW);
-    expect(body).not.toMatch(/\/api\/chat|completions|messages|prompt|generate/i);
-    expect(body).not.toMatch(/POST/);
+    expect(body).not.toMatch(/\/api\/chat|\/v1\/(chat|completions|messages)/);
+    expect(body).not.toMatch(/-X\s*(POST|PUT|PATCH|DELETE)/i);
+    expect(body).not.toMatch(/--data|-d\s+['"]\{/);
     expect(body).not.toMatch(/openrouter|groq|anthropic/i);
   });
 
@@ -123,6 +149,103 @@ describe("★ (١) المراقبة — إلى الإنتاج لا إلى غير
     expect(body).toMatch(/--max-time \d+/);
     expect(body).toMatch(/--connect-timeout \d+/);
     expect(body).toMatch(/timeout-minutes:/);
+  });
+});
+
+/* ═══════════ (١ب) اختبارُ وصولِ التنبيه — يدويٌّ فقط ═══════════ */
+
+describe("★ (١ب) اختبارُ التنبيه — يدويٌّ لا مجدول", () => {
+  const FORCED = stepBlock(WORKFLOW, "Intentional alert-delivery test (manual only)");
+
+  it("★ ★ ★ المُدخَل موجودٌ وافتراضُه زائف", () => {
+    /**
+     * ★ افتراضٌ صحيحٌ هو الفرق بين أداةٍ وفخّ.
+     *
+     * `default: true` يجعل كل تشغيلٍ يدويّ يفشل عمدًا — فيصير الفشل عادةً
+     * تُتجاهَل، ويضيع التنبيه الحقيقيّ بينها.
+     */
+    expect(WORKFLOW).toMatch(/force_alert_test:/);
+    expect(WORKFLOW).toMatch(/type:\s*boolean/);
+    expect(WORKFLOW).toMatch(/default:\s*false/);
+    expect(WORKFLOW).not.toMatch(/default:\s*true/);
+  });
+
+  it("★ ★ ★ والوصفُ يقول إن الإنتاج لا يتأثّر", () => {
+    /** من يقرأ الزرّ قبل ضغطه يجب أن يعرف ما لا يفعله */
+    const desc = /description: >-\n([\s\S]*?)\n\s*type:/.exec(WORKFLOW)?.[1] ?? "";
+    expect(desc).toMatch(/verify GitHub alert delivery/i);
+    expect(desc).toMatch(/NOT affected|not affected/);
+  });
+
+  it("★ ★ ★ ★ ولا يُفعّله جدولٌ أبدًا", () => {
+    /**
+     * ★ أخطرُ طفرةٍ ممكنة هنا.
+     *
+     * لو فُعّل على الجدول لفشل السير كل ربع ساعة عمدًا — فيصير التنبيه
+     * ضجيجًا دائمًا، ويُدرَّب صاحبه على تجاهله، ثم يقع انقطاعٌ حقيقيّ فلا
+     * ينظر إليه أحد. وهو تعطيلُ المراقبة بصيغةٍ تبدو كأنها تعمل.
+     *
+     * فيُحرَس الشرطان معًا: نوعُ الحدث **و** المُدخَل.
+     */
+    expect(FORCED, "الخطوة موجودة").not.toBe("");
+    const cond = /if:\s*(.+)/.exec(FORCED)?.[1] ?? "";
+    expect(cond).toContain("github.event_name == 'workflow_dispatch'");
+    expect(cond).toContain("inputs.force_alert_test");
+    expect(cond).toContain("&&");
+    /** ولا يُقبل شرطٌ يعتمد على المُدخَل وحده */
+    expect(cond).not.toMatch(/^\s*inputs\.force_alert_test\s*$/);
+    /** ولا `schedule` في شرطه بحالٍ */
+    expect(cond).not.toMatch(/schedule/);
+  });
+
+  it("★ ★ ★ ويقع **آخرًا** بعد فحص الإنتاج", () => {
+    /**
+     * ★ الترتيب يمنع اختلاطًا خطِرًا.
+     *
+     * لو سبق الفحصَ لفشل السير قبل أن يُسأل الإنتاج أصلًا — فلا يُعرف
+     * أكان الإنتاج سليمًا أم لا، ويصير الاختبار حجابًا على الحقيقة.
+     */
+    const probeAt = WORKFLOW.indexOf("- name: Probe liveness and readiness");
+    const forcedAt = WORKFLOW.indexOf("- name: Intentional alert-delivery test");
+    expect(probeAt).toBeGreaterThan(-1);
+    expect(forcedAt).toBeGreaterThan(probeAt);
+    /** وهي الخطوة الأخيرة فعلًا */
+    const names = [...WORKFLOW.matchAll(/^      - name: (.+)$/gm)].map((m) => m[1]!);
+    expect(names[names.length - 1]).toContain("Intentional alert-delivery test");
+  });
+
+  it("★ ★ ★ ورسالتُه تقول ما هي صراحةً", () => {
+    expect(FORCED).toMatch(/Intentional YSD alert-delivery test/);
+    expect(FORCED).toMatch(/::error::/);
+    expect(FORCED).toMatch(/exit 1/);
+  });
+
+  it("★ ★ ★ ولا يمسّ الإنتاج بشيء", () => {
+    /**
+     * ★ الفشلُ داخل GitHub وحده.
+     *
+     * لا طلبَ يُرسل، ولا عنوانَ يتغيّر، ولا قاعدةَ تُكتب، ولا إعدادَ يُبدَّل.
+     */
+    expect(FORCED).not.toMatch(/curl|fetch\(|https?:\/\/|BASE_URL/i);
+    /** طرائقُ HTTP تُقاس بشكل استعمالها — و`workflow_dispatch` تحوي «patch» */
+    expect(FORCED).not.toMatch(/-X\s*(POST|PUT|PATCH|DELETE)/i);
+    expect(FORCED).not.toMatch(/railway|supabase/i);
+    expect(FORCED).not.toMatch(/secrets\./);
+    expect(FORCED).not.toMatch(/user_id|email|token|API_KEY/i);
+  });
+
+  it("★ ★ ★ والسلوك المعتاد لم يتغيّر", () => {
+    /** ما كان في 6H يبقى كما كان — الجدولُ والفحوصُ والمحاولات */
+    const probe = stepBlock(WORKFLOW, "Probe liveness and readiness");
+    expect(probe).toContain("/api/live");
+    expect(probe).toContain("/api/health");
+    expect(probe).toMatch(/attempt \/ 200/);
+    expect(probe).toMatch(/for i in 1 2 3/);
+    expect(probe).toMatch(/exit \$failed/);
+    const cron = /cron:\s*"([^"]+)"/.exec(WORKFLOW)?.[1] ?? "";
+    expect(cron).toBe("*/15 * * * *");
+    /** ولا اختبارَ تنبيهٍ داخل خطوة الفحص */
+    expect(probe).not.toMatch(/force_alert_test/);
   });
 });
 
@@ -245,7 +368,18 @@ describe("★ (٤) دليلُ التشغيل", () => {
      *
      * فصار المكتوب: تحقّق من وسمِ النشر ولا تفترض.
      */
-    expect(RUNBOOK).toMatch(/ولا تفترض أنهما يُحدَّثان معًا/);
+    /**
+     * ★ عاد النشرُ التلقائيّ — والدرسُ لا يعود معه.
+     *
+     * أُصلح السبب وأُثبت أن `6bfd511` بلغ البيئتين. فتغيّرت الحالة من تحذيرٍ
+     * إلى «مُستعادٌ ومُتحقَّق» — وهذا صواب.
+     *
+     * والمحروس هو ما لا يتغيّر: أن الوثيقة **لا تعود** إلى الادّعاء الذي
+     * كذّبته الملاحظة، وأنها تُبقي على «تحقّق بعد كل دفعة». فالافتراض هو
+     * ما أخفى العطل أوّل مرّة، لا غيابُ الإصلاح.
+     */
+    expect(RUNBOOK).toMatch(/مُستعادٌ ومُتحقَّق/);
+    expect(RUNBOOK).toMatch(/ومع ذلك تحقّق بعد كل دفعة/);
     expect(RUNBOOK).toMatch(/railway status --json/);
     expect(RUNBOOK).not.toMatch(/فدفعةٌ واحدة تُحدّث الاثنتين معًا/);
   });
@@ -276,6 +410,25 @@ describe("★ (٤) دليلُ التشغيل", () => {
      */
     expect(RUNBOOK).toMatch(/وصولُ التنبيه — \*\*غير مُتحقَّق\*\*/);
     expect(RUNBOOK).toMatch(/يحتاج تأكيدًا من المالك/);
+  });
+
+  it("★ ★ ★ ويشرح كيف يُثبَت وصولُ التنبيه — ولا يدّعيه", () => {
+    /**
+     * ★ التعليماتُ جزءٌ من الأمان.
+     *
+     * فآليّةٌ لا يعرف صاحبُها كيف يُشغّلها آليّةٌ معطّلة. والوثيقة تُعطيه
+     * المسار خطوةً خطوة — وتقول صراحةً إن الحالة لا تصير «مُتحقَّقة» حتى
+     * يؤكّد هو وصولَ الإشعار.
+     */
+    expect(RUNBOOK).toMatch(/force_alert_test/);
+    expect(RUNBOOK).toMatch(/Run workflow/);
+    expect(RUNBOOK).toMatch(/Actions/);
+    /** والإنتاج يبقى سليمًا — يُقال صراحةً */
+    expect(RUNBOOK).toMatch(/والإنتاج\s*\*\*يبقى سليمًا\*\*/);
+    /** ★ ولا يُعلن الوصولَ مُثبتًا قبل تأكيد المالك */
+    expect(RUNBOOK).toMatch(/وصولُ التنبيه — \*\*غير مُتحقَّق\*\*/);
+    expect(RUNBOOK).toMatch(/ولا تُحدَّث قبل ذلك/);
+    expect(RUNBOOK).not.toMatch(/وصولُ التنبيه — \*\*مُتحقَّق\*\*/);
   });
 
   it("★ ★ ★ ويمنع «احذف auth.users يدويًّا»", () => {

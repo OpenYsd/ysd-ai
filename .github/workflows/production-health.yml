@@ -35,6 +35,15 @@ on:
     # كل ربع ساعة — يكفي لاكتشاف انقطاعٍ حقيقيّ بلا إغراق
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      force_alert_test:
+        description: >-
+          Intentionally fail this workflow to verify GitHub alert delivery.
+          Production health is checked first and is NOT affected — the failure
+          is generated inside GitHub Actions only.
+        type: boolean
+        required: false
+        default: false
 
 # تشغيلٌ واحدٌ في كل لحظة: تراكمُ التشغيلات عند بطءٍ يُنتج ضجيجًا مضاعفًا
 concurrency:
@@ -99,3 +108,42 @@ jobs:
           attempt / 200 || failed=1
 
           exit $failed
+
+      # ============================================================
+      # ★ اختبارُ وصولِ التنبيه — يدويٌّ فقط
+      #
+      # ── لماذا يلزم أصلًا ──
+      #
+      # المراقبةُ تعمل منذ 6H، ولم يصل بريدٌ **أُثبت وصولُه**. ومراقبةٌ
+      # تصرخ في غرفةٍ فارغة ليست مراقبة — وقولُ «عندنا تنبيه» قبل أن يراه
+      # أحدٌ ادّعاءٌ لا دليلَ عليه.
+      #
+      # وإثباتُه يحتاج فشلًا حقيقيًّا. والفشلُ الحقيقيّ الوحيد المسموح هو
+      # فشلٌ **مُصطنَع داخل GitHub** — لا كسرُ الإنتاج.
+      #
+      # ── وشرطان لا واحد ──
+      #
+      # `github.event_name == 'workflow_dispatch'` **و** المُدخَل صحيحًا.
+      # والأوّل وحده هو الحارس: المُدخَل غائبٌ في التشغيل المجدول، والغائب
+      # في GitHub Actions يُقيَّم فارغًا — أي زائفًا. فيستحيل أن يُفعّله
+      # جدولٌ ولو أراد.
+      #
+      # وبلا الشرط الأوّل لبقي السلوك صحيحًا، لكنه يعتمد على تفصيلٍ في
+      # تقييم السياق — والأمان الذي يعتمد على تفصيلٍ ضمنيّ أضعف من أمانٍ
+      # مكتوبٍ صراحةً.
+      #
+      # ── ويقع آخرًا ──
+      #
+      # فحصُ الإنتاج يمرّ أوّلًا ويجب أن ينجح. فلو كان الإنتاج معتلًّا فعلًا
+      # لفشل السير قبل بلوغ هذه الخطوة — ولَما اختلط تنبيهٌ حقيقيّ باختبار.
+      #
+      # ولا يمسّ شيئًا: لا عنوانَ يتغيّر، ولا طلبَ يُرسل، ولا قاعدةَ تُكتب،
+      # ولا إعدادَ إنتاجٍ يُبدَّل. سطرُ خروجٍ في مُشغّلٍ مؤقّت لا أكثر.
+      # ============================================================
+      - name: Intentional alert-delivery test (manual only)
+        if: github.event_name == 'workflow_dispatch' && inputs.force_alert_test
+        shell: bash
+        run: |
+          echo "Production health checks passed above — Production is healthy."
+          echo "::error::Intentional YSD alert-delivery test. Production is NOT affected; this failure was generated inside GitHub Actions only."
+          exit 1
