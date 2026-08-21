@@ -11,13 +11,13 @@ Preparation-only, zero-cost gate. No Production database, Auth, SMTP, variables,
 - Browser baseline: `fd1ad9ed0a013b4b1e5f99282d560d8de9b55289`
 - Browser candidate: `bd97c9c0d04e2ef2847f16df24c0eb011d8203f7`
 - Browser version: `0.8.3-dev.3`
-- Isolated framework branch: `hardening/framework-major-upgrade` at `1307a2a091c3dd50345cd8c8dd6b33fe16733383`; not merged
+- Isolated framework branch: `hardening/framework-major-upgrade` at `b7518a7895c80606590c599a7756e853d67e36e8`; not merged
 
 ## Verification summary
 
 - Browser clean clone: Release build with warnings-as-errors PASS; 93/93 SessionTests PASS; clean tracked state.
 - Backend candidate: typecheck PASS; Next 15 lint PASS with no warnings; 130/130 test files PASS, 3,488 tests PASS, 6 optional live tests skipped; production build PASS.
-- Runtime dependency audit after safe PostCSS override: 5 HIGH, 0 CRITICAL; no demonstrated current Browser Assistant or Production exploit path. The separate Next 16 branch removes the Next finding and reports 4 HIGH.
+- Runtime dependency audit after safe PostCSS and dev-tool patch upgrades: 5 HIGH, 0 CRITICAL; no demonstrated current Browser Assistant or Production exploit path. The full developer tree has 6 HIGH and 1 CRITICAL (Vitest UI server), which is development-only and requires a separately reviewed major toolchain upgrade. The separate Next 16 branch removes the Next runtime finding.
 - Combined representative-clone migration rehearsal: all three migrations and immediate rerun PASS; data/checksum preserved, HNSW index valid, authenticated RAG PASS, anonymous RAG rejected, no lingering locks, feature disabled.
 - Zero-cost manual monitoring and Railway branch-name transition procedures are operationally documented.
 
@@ -36,8 +36,8 @@ The read-only database inventory still reports 39 applied migrations, 14 Auth us
 | Browser Git Repository | PASS | Dedicated local Git repository; no public remote. |
 | Browser Immutable Candidate | PASS | `bd97c9c0d04e2ef2847f16df24c0eb011d8203f7`. |
 | Full-System Reproducibility | PASS | Backend and Browser clean-checkout gates documented and passed. |
-| Dependency Audit | READY WITH ACTION | 5 HIGH, 0 CRITICAL on the release candidate. |
-| High Vulnerabilities Remaining | READY WITH ACTION | Five classified findings remain; upstream/major work tracked. |
+| Dependency Audit | READY WITH ACTION | Runtime: 5 HIGH, 0 CRITICAL. Full dev tree: 6 HIGH, 1 CRITICAL. |
+| High Vulnerabilities Remaining | READY WITH ACTION | Five runtime and one development-only HIGH remain; major/upstream work tracked. |
 | High Vulnerability Exploitability | PASS | No reachable vulnerable operation demonstrated in current request graph. |
 | Safe Dependency Upgrades | PASS | PostCSS 8.5.26 override removes one HIGH without regression. |
 | Framework Upgrade Feasibility | READY WITH ACTION | Next 16 branch passes build/tests but needs lint-contract and Staging review before merge. |
