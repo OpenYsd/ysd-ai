@@ -10,11 +10,16 @@ interface UsageViewProps {
   monthMessages: number;
   monthTokens: number;
   /**
-   * هل المجموع ناقصٌ لأن العدد تجاوز سقف المسح؟
+   * ★ تعذّر الحصول على مجموعٍ موثوق (المرحلة 6G).
    *
-   * رقمٌ ناقص يُعرض كأنه تامّ هو العطل الذي أُصلح — فلا يُعاد إنتاجه بصمت.
-   * والعلامة «+» تقول إنه حدٌّ أدنى لا قيمةٌ نهائية.
+   * لم يعد المجموع يُقصّ: `usage_totals_*` تجمعه في القاعدة دقيقًا مهما بلغ
+   * العدد، فذهبت «+» لأنها صارت كذبًا في الاتجاه الآخر — إيحاءً بنقصٍ لا وجود له.
+   *
+   * وما بقي حالةُ تعذّر: تُعرض «—» لا رقم. فرقمٌ خاطئ يبدو صحيحًا هو العطل
+   * الذي أُغلق، وعرضُ صفرٍ مكانه إعادةُ إنتاجه بصيغةٍ أسوأ.
    */
+  tokensUnavailable?: boolean;
+  /** المجموع حدٌّ أدنى (الترحيل 0047 لم يُطبَّق بعد) — تُكتب «+» */
   tokensApproximate?: boolean;
   filesCount: number;
   storageBytes: number;
@@ -36,7 +41,13 @@ export function UsageView(props: UsageViewProps) {
   const bars = [
     { label: t("dailyMessages"), used: props.dayMessages, limit: props.limits.dailyMessages },
     { label: t("monthlyMessages"), used: props.monthMessages, limit: props.limits.monthlyMessages },
-    { label: t("tokens"), used: props.monthTokens, limit: props.limits.monthlyTokens, approximate: props.tokensApproximate },
+    {
+      label: t("tokens"),
+      used: props.monthTokens,
+      limit: props.limits.monthlyTokens,
+      unavailable: props.tokensUnavailable,
+      approximate: props.tokensApproximate,
+    },
     { label: t("files"), used: props.filesCount, limit: props.limits.maxFiles },
     { label: t("storageUsage") + " (MB)", used: Math.round(storageMb), limit: props.limits.maxStorageMb },
   ];
@@ -58,7 +69,11 @@ export function UsageView(props: UsageViewProps) {
             <MiniStat label={t("files")} value={fmt(props.filesCount)} />
             <MiniStat
               label={t("tokens")}
-              value={fmt(props.monthTokens) + (props.tokensApproximate ? "+" : "")}
+              value={
+                props.tokensUnavailable
+                  ? "—"
+                  : fmt(props.monthTokens) + (props.tokensApproximate ? "+" : "")
+              }
             />
           </div>
 
@@ -83,15 +98,22 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 }
 
 function UsageBar({
-  label, used, limit, fmt, tRemaining, tNear, tAt, approximate,
+  label, used, limit, fmt, tRemaining, tNear, tAt, unavailable, approximate,
 }: {
   label: string; used: number; limit: number; fmt: (n: number) => string;
-  tRemaining: string; tNear: string; tAt: string; approximate?: boolean;
+  tRemaining: string; tNear: string; tAt: string;
+  unavailable?: boolean; approximate?: boolean;
 }) {
-  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  /**
+   * ★ وحين يتعذّر الرقم لا يُرسم شريطٌ بطول صفر.
+   *
+   * شريطٌ فارغٌ يقول «لم تستهلك شيئًا» — وهو ادّعاءٌ لا نملكه. والفراغ
+   * المعلَن أصدق من امتلاءٍ مُخمَّن أو خواءٍ كاذب.
+   */
+  const pct = !unavailable && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const remaining = Math.max(0, limit - used);
-  const near = limit > 0 && pct >= 80 && pct < 100;
-  const at = limit > 0 && used >= limit;
+  const near = !unavailable && limit > 0 && pct >= 80 && pct < 100;
+  const at = !unavailable && limit > 0 && used >= limit;
   const color = at ? "#ef4444" : near ? "#f59e0b" : "#8B6CF6";
 
   return (
@@ -99,14 +121,17 @@ function UsageBar({
       <div className="flex items-center justify-between text-[12.5px] mb-1.5">
         <span className="text-ink-dim">{label}</span>
         <span className="text-ink tabular-nums" dir="ltr">
-          {fmt(used)}{approximate ? "+" : ""} {limit > 0 ? `/ ${fmt(limit)}` : ""}
+          {unavailable ? "—" : fmt(used) + (approximate ? "+" : "")}{" "}
+          {limit > 0 ? `/ ${fmt(limit)}` : ""}
         </span>
       </div>
       <div className="h-2 rounded-full bg-raised overflow-hidden">
         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
       </div>
       <div className="flex items-center justify-between mt-1">
-        <span className="text-[10.5px] text-ink-faint">{tRemaining}: {fmt(remaining)}</span>
+        <span className="text-[10.5px] text-ink-faint">
+          {tRemaining}: {unavailable ? "—" : fmt(remaining)}
+        </span>
         {(near || at) && (
           <span className={`flex items-center gap-1 text-[10.5px] ${at ? "text-red-400" : "text-amber-400"}`}>
             <AlertTriangle size={11} /> {at ? tAt : tNear}

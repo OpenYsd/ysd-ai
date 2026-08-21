@@ -44,7 +44,7 @@ const AGGREGATE = readSrc("lib/usage/aggregate.ts");
  * لا تُعيد أكثر من `PAGE_SIZE` صفًّا مهما طُلب — وهو بالضبط ما يفعله
  * PostgREST بلا خطأ. ولو حاكينا قاعدةً بلا سقف لَما أثبت الاختبار شيئًا.
  */
-function fakeDb(total: number, tokensPerEvent = 10, model = "ysd/free") {
+function fakeDb(total: number, tokensPerEvent = 10, model = "ysd/free", rpcFails = false) {
   const rangeCalls: [number, number][] = [];
   let headCount = 0;
 
@@ -82,79 +82,140 @@ function fakeDb(total: number, tokensPerEvent = 10, model = "ysd/free") {
       return q;
     },
   };
-  return { client: client as unknown as SupabaseClient, rangeCalls, heads: () => headCount };
+  /**
+   * ★ ودالّةُ القاعدة تُحاكى بمجاميعَ دقيقة (المرحلة 6G).
+   *
+   * انتقل الجمع إلى `usage_totals_*`، فصار هذا الوهميّ يردّ ما تردّه: عددًا
+   * ومجاميعَ بلا سقف. والمسحُ لم يعد يُستدعى إلا لتفصيل «لكل نموذج».
+   */
+  const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
+  (client as Record<string, unknown>).rpc = (fn: string, args: Record<string, unknown>) => {
+    rpcCalls.push({ fn, args });
+    if (rpcFails) return Promise.resolve({ data: null, error: { message: "unavailable" } });
+    return Promise.resolve({
+      data: [
+        {
+          event_count: total,
+          input_tokens: total * tokensPerEvent,
+          output_tokens: 0,
+          total_tokens: total * tokensPerEvent,
+        },
+      ],
+      error: null,
+    });
+  };
+
+  return {
+    client: client as unknown as SupabaseClient,
+    rangeCalls,
+    rpcCalls,
+    heads: () => headCount,
+  };
 }
 
-describe("★ (١) الاستهلاك — لا يتوقّف عند ألف", () => {
+describe("★ (١) الاستهلاك — دقيقٌ في القاعدة", () => {
   /**
    * ★ الحالات التي كان العطل يختبئ خلفها.
    *
-   * `999` كانت تمرّ، و`1000` كانت تمرّ بالصدفة، و`1001` هي أوّل كذبة.
+   * `999` كانت تمرّ، و`1000` بالصدفة، و`1001` أوّل كذبة. وبعد 6G صار
+   * المجموع من دالّة القاعدة، فالحدّ الأعلى ذهب — ويبقى الحارس على الحالات
+   * نفسها لأنها التي كشفت العطل أوّلًا.
    */
-  const cases = [0, 200, 999, 1000, 1001, 2000, 10_000];
+  const cases = [0, 200, 999, 1000, 1001, 2000, 10_000, 30_001, 100_000];
 
   for (const total of cases) {
-    it(`★ ★ ★ ${total} حدثًا ⇒ العدد والمجموع صحيحان`, async () => {
+    it(`★ ★ ★ ${total} حدثًا ⇒ العدد والمجموع دقيقان`, async () => {
       const { client } = fakeDb(total, 7);
       const agg = await aggregateUsageEvents(client, { userId: "u1", since: "2026-08-01" });
       expect(agg.events, "count").toBe(total);
       expect(agg.tokens, "tokens").toBe(total * 7);
-      expect(agg.truncated).toBe(false);
+      expect(agg.unavailable).toBe(false);
     });
   }
 
-  it("★ ★ ★ والعدد يُقرأ عدًّا خادميًّا لا بطول مصفوفة", () => {
+  it("★ ★ ★ والمجموع يأتي من دالّة القاعدة لا من مسح صفوف", async () => {
     /**
-     * `head: true` يجعل PostgREST يردّ الترويسة وحدها — فلا صفوف تعود ولا
-     * سقف يقصّها. وأي عودةٍ إلى `rows.length` تُعيد العطل.
-     */
-    const body = stripComments(AGGREGATE);
-    expect(body).toMatch(/count:\s*"exact"/);
-    expect(body).toMatch(/head:\s*true/);
-  });
-
-  it("★ ★ ★ والترقيم مرتَّبٌ صراحةً — وإلا تكرّر صفٌّ وسقط آخر", () => {
-    const body = stripComments(AGGREGATE);
-    expect(body).toMatch(/\.order\("created_at", \{ ascending: true \}\)/);
-    expect(body).toMatch(/\.order\("id", \{ ascending: true \}\)/);
-  });
-
-  it("★ ★ ★ ويُطلب من الصفحات بقدر ما يلزم لا أكثر", async () => {
-    const { client, rangeCalls } = fakeDb(2500);
-    await aggregateUsageEvents(client, { userId: "u1" });
-    expect(rangeCalls).toHaveLength(3);
-    expect(rangeCalls[0]).toEqual([0, 999]);
-    expect(rangeCalls[1]).toEqual([1000, 1999]);
-    expect(rangeCalls[2]).toEqual([2000, 2999]);
-  });
-
-  it("★ ★ ★ ولا رحلةَ صفوفٍ أصلًا حين لا أحداث", async () => {
-    const { client, rangeCalls } = fakeDb(0);
-    const agg = await aggregateUsageEvents(client, { userId: "u1" });
-    expect(agg).toMatchObject({ events: 0, tokens: 0, truncated: false });
-    expect(rangeCalls).toHaveLength(0);
-  });
-
-  it("★ ★ ★ وما تجاوز سقف المسح يُعلَن — ولا يُعرض كأنه تامّ", () => {
-    /**
-     * ★ الحدّ يُقال.
+     * ★ الفرق الذي تُغلقه هذه المرحلة.
      *
-     * وضعُ سقفٍ صامتٍ مكان سقفٍ صامت هو العطل نفسه باسمٍ آخر. فالمجموع
-     * الناقص يخرج بعَلَمٍ، والواجهة تكتب «+».
+     * جمعٌ في التطبيق يعني جلبَ كل صفّ — وهو ما كان يُقصّ. والحارس يتأكّد
+     * أن **لا رحلةَ صفوفٍ واحدة** تقع في مسار المجاميع.
      */
-    expect(USAGE_SCAN.MAX_PAGES).toBeGreaterThanOrEqual(10);
+    const { client, rangeCalls, rpcCalls } = fakeDb(100_000, 3);
+    const agg = await aggregateUsageEvents(client, { userId: "u1" });
+    expect(agg.tokens).toBe(300_000);
+    expect(rangeCalls, "لا صفوف تُجلب للمجاميع").toHaveLength(0);
+    expect(rpcCalls).toHaveLength(1);
+  });
+
+  it("★ ★ ★ ومسارُ المستخدم لا يمرّر معرّفًا أصلًا", async () => {
+    /**
+     * ★ أمانٌ بالبنية لا بالفحص.
+     *
+     * `usage_totals_self` تشتقّ الهوية من `auth.uid()` داخل القاعدة. فلا
+     * وسيطَ يُدسّ فيه معرّف ضحية — لأنه غير موجود.
+     */
+    const { client, rpcCalls } = fakeDb(10);
+    await aggregateUsageEvents(client, { since: "2026-08-01" }, { scope: "self" });
+    expect(rpcCalls[0]!.fn).toBe("usage_totals_self");
+    expect(Object.keys(rpcCalls[0]!.args)).not.toContain("p_user_id");
+  });
+
+  it("★ ★ ★ ومسارُ الإدارة يمرّره — و RLS هو من يحسم", async () => {
+    const { client, rpcCalls } = fakeDb(10);
+    await aggregateUsageEvents(client, { userId: "victim" }, { scope: "any" });
+    expect(rpcCalls[0]!.fn).toBe("usage_totals_for");
+    expect(rpcCalls[0]!.args.p_user_id).toBe("victim");
+  });
+
+  it("★ ★ ★ وتعذّرُ الدالّة يُعلَن ولا يُلفَّق", async () => {
+    /**
+     * ★ التوازن الذي استقرّ عليه الأمر.
+     *
+     * ثلاثةُ سلوكياتٍ ممكنة حين تغيب الدالّة، واثنان منها خطأ:
+     *
+     *   • مجموعٌ مقصوصٌ بلا علامة ⇒ العطل الأصليّ يعود.
+     *   • «—» دائمًا ⇒ مستخدمٌ كان يرى رقمًا يفقده لأننا نشرنا قبل الترحيل.
+     *   • مجموعٌ **معلَنٌ** حدًّا أدنى («+») ⇒ سلوك 6C الذي سبق أن شُحن.
+     *
+     * فالثالث. والعدد دقيقٌ في كل حال.
+     */
+    const { client } = fakeDb(5000, 9, "m", true);
+    const agg = await aggregateUsageEvents(client, { userId: "u1" });
+    expect(agg.events, "العدد يبقى دقيقًا").toBe(5000);
+    expect(agg.unavailable, "ورقمٌ موجودٌ لا «—»").toBe(false);
+    expect(agg.tokens).toBe(45_000);
+    expect(agg.truncated, "وتحت السقف فهو دقيقٌ بلا «+»").toBe(false);
+  });
+
+  it("★ ★ ★ والواجهة تفرّق بين الرقم و«+» و«—»", () => {
+    /**
+     * ★ ثلاث حالاتٍ لا اثنتان.
+     *
+     * «+» لم تذهب: هي لغةُ التراجع المُعلَن حين تغيب الدالّة. وما أُضيف هو
+     * «—» لحالةٍ ثالثة — تعذّرٌ تامّ لا رقمَ فيه أصلًا. وخلطُ الثلاث في
+     * علامةٍ واحدة يجعل إحداها تكذب.
+     */
     const view = readSrc("components/usage/usage-view.tsx");
+    expect(view).toMatch(/tokensUnavailable/);
     expect(view).toMatch(/tokensApproximate/);
+    expect(view).toMatch(/"—"/);
     expect(view).toMatch(/approximate \? "\+" : ""/);
   });
 
-  it("★ ★ ★ وتجاوزُ السقف يُبلَّغ لا يُبتلع", async () => {
+  it("★ ★ ★ وتفصيلُ «لكل نموذج» يحمل عَلَمَ قصٍّ خاصًّا به", async () => {
+    /**
+     * ★ عَلَمان لا واحد.
+     *
+     * المجاميع دقيقةٌ دائمًا؛ والتفصيل الإداريّ ما زال مسحًا محدودًا لأن
+     * الدالّة لا تُرجع `model_id`. وعَلَمٌ واحد يصف الاثنين يجعل دقيقًا
+     * يبدو مقصوصًا — أو الأسوأ، مقصوصًا يبدو دقيقًا.
+     */
     const beyond = (USAGE_SCAN.MAX_PAGES + 5) * USAGE_SCAN.PAGE_SIZE;
     const { client } = fakeDb(beyond, 1);
-    const agg = await aggregateUsageEvents(client, { userId: "u1" });
-    expect(agg.events).toBe(beyond);
-    expect(agg.truncated).toBe(true);
-    expect(agg.tokens).toBe(USAGE_SCAN.MAX_PAGES * USAGE_SCAN.PAGE_SIZE);
+    const agg = await aggregateUsageEvents(client, { userId: "u1" }, { withModels: true });
+    expect(agg.unavailable, "المجاميع دقيقة").toBe(false);
+    expect(agg.tokens, "ولا تُقصّ").toBe(beyond);
+    expect(agg.modelsTruncated, "والتفصيل وحده مقصوص").toBe(true);
   });
 
   it("★ ★ والعدّ وحده رحلةٌ واحدة", async () => {

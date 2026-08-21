@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { purgeUserData } from "@/lib/account/purge";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -60,8 +61,12 @@ export async function POST(req: NextRequest) {
   const result = await purgeUserData(supabase, user.id);
 
   if (!result.ok) {
-    // رمزٌ فقط في السجلّ — لا اسم جدول ولا مسار تخزين ولا نصّ قاعدة
-    console.error(`[purge] incomplete step=${result.failedAt ?? "?"}`);
+    /** حدثٌ منظَّم بنفس مفردات حذف الحساب — رمزٌ ومعرّفُ طلبٍ لا أكثر */
+    logger.error({
+      event: "account_purge_incomplete",
+      code: result.failedAt ?? "unknown",
+      correlation: req.headers.get("x-ysd-request-id") ?? undefined,
+    });
     return json(
       {
         ok: false,

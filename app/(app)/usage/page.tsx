@@ -28,10 +28,13 @@ export default async function UsagePage() {
 
   const [{ data: sub }, month, dayMessages, { data: files }] = await Promise.all([
     supabase.from("subscriptions").select("tier").eq("user_id", user.id).maybeSingle(),
-    aggregateUsageEvents(supabase, {
-      userId: user.id,
-      since: monthStart.toISOString(),
-    }),
+    /**
+      * ★ `scope: "self"` — ولا معرّف يُمرَّر.
+      *
+      * `usage_totals_self` تشتقّ الهوية من `auth.uid()` داخل القاعدة، فلا
+      * يملك هذا السطر — ولا المتصفّح — أن يُسمّي غير صاحب الجلسة.
+      */
+    aggregateUsageEvents(supabase, { since: monthStart.toISOString() }, { scope: "self" }),
     countUsageEvents(supabase, { userId: user.id, since: dayStart.toISOString() }),
     supabase.from("files").select("size_bytes, status").eq("user_id", user.id).is("deleted_at", null),
   ]);
@@ -52,7 +55,14 @@ export default async function UsagePage() {
       dayMessages={dayMessages}
       monthMessages={month.events}
       monthTokens={month.tokens}
-      /** المجموع ناقصٌ حين يتجاوز العدد سقف المسح — يُقال ولا يُخفى */
+      /**
+       * ★ لم يعد «تقريبيًّا» — صار «غيرَ متاح» أو دقيقًا.
+       *
+       * المجموع يأتي من `usage_totals_*` فهو دقيقٌ مهما بلغ العدد. وما بقي
+       * هو حالةُ تعذّرٍ: لا رقمَ يُعرض حينها، لأن رقمًا خاطئًا يبدو صحيحًا
+       * هو العطل الذي أُغلق.
+       */
+      tokensUnavailable={month.unavailable}
       tokensApproximate={month.truncated}
       filesCount={fileRows.length}
       storageBytes={fileRows.reduce((a, f) => a + (f.size_bytes ?? 0), 0)}

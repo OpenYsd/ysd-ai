@@ -43,7 +43,7 @@ export async function GET(
     s.from("conversations").select("id", { count: "exact", head: true }).eq("user_id", id).is("deleted_at", null),
     s.from("projects").select("id", { count: "exact", head: true }).eq("user_id", id).is("deleted_at", null),
     s.from("files").select("size_bytes, status").eq("user_id", id).is("deleted_at", null),
-    aggregateUsageEvents(s, { userId: id, since: monthStart.toISOString() }),
+    aggregateUsageEvents(s, { userId: id, since: monthStart.toISOString() }, { scope: "any" }),
     countUsageEvents(s, { userId: id, since: dayStart.toISOString() }),
   ]);
 
@@ -61,7 +61,7 @@ export async function GET(
       usage: {
         monthMessages: usageMonth.events,
         monthTokens: usageMonth.tokens,
-        monthTokensApproximate: usageMonth.truncated,
+        monthTokensUnavailable: usageMonth.unavailable,
         dayMessages,
       },
     },

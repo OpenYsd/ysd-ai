@@ -272,7 +272,15 @@ describe("★ (٣) المسار — هوّيةٌ من الجلسة وحدها", 
   it("★ ★ ★ ولا اسم جدولٍ ولا مسار تخزينٍ يصل المتصفّح", () => {
     const body = stripComments(PURGE_ROUTE);
     /** الرمز يُسجَّل ولا يُعرض */
-    expect(body).toMatch(/console\.error\(`\[purge\] incomplete step=/);
+    /**
+     * ★ الحارس يتبع الرمز حيث انتقل (المرحلة 6G).
+     *
+     * كان يخرج سطرَ نصٍّ بـ`console.error`، وصار حدثًا منظَّمًا باسمٍ ثابت
+     * كي يصلح بُعدًا لتنبيه. والثابت المحروس هو هو: الرمز **يُسجَّل** ولا
+     * **يُعرض** — واسمُ الجدول لا يبلغ المتصفّح.
+     */
+    expect(body).toMatch(/event: "account_purge_incomplete"/);
+    expect(body).toMatch(/logger\.error\(\{/);
     /**
      * ★ الحارس على ما **يُعرض** لا على ما يُكتب.
      *

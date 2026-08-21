@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { deleteAccountForUser, type IdentityAdmin } from "@/lib/account/delete-account";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -67,8 +68,21 @@ export async function POST(req: NextRequest) {
   const result = await deleteAccountForUser(supabase, admin, user.id);
 
   if (!result.ok) {
-    // رمزٌ فقط — لا اسم جدول ولا مسار تخزين ولا نصّ قاعدة
-    console.error(`[delete-account] incomplete step=${result.failedAt ?? "?"}`);
+    /**
+     * ★ حدثٌ يُنبَّه عليه — لا سطرَ نصٍّ يضيع في السجلّ.
+     *
+     * حذفٌ لم يكتمل يترك حسابًا قائمًا وصاحبَه يظنّ أنه انصرف. فيخرج باسمٍ
+     * ثابت (`account_delete_incomplete`) ورمزِ خطوةٍ من مجموعةٍ مغلقة
+     * ومعرّفِ طلب — وهي أبعادٌ تكفي للتنبيه والتتبّع.
+     *
+     * ولا بريد، ولا معرّف مستخدم، ولا مسار تخزين، ولا نصّ قاعدة. فالسجلّ
+     * الذي يحمل هويّةً يصير هو نفسه تسريبًا يوم يُصدَّر إلى خدمةٍ خارجية.
+     */
+    logger.error({
+      event: "account_delete_incomplete",
+      code: result.failedAt ?? "unknown",
+      correlation: req.headers.get("x-ysd-request-id") ?? undefined,
+    });
     return json(
       {
         ok: false,

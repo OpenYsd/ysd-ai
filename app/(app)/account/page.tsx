@@ -21,10 +21,7 @@ export default async function AccountPage() {
   const [{ data: profile }, { data: sub }, month] = await Promise.all([
     supabase.from("profiles").select("display_name").eq("id", user.id).maybeSingle(),
     supabase.from("subscriptions").select("tier").eq("user_id", user.id).maybeSingle(),
-    aggregateUsageEvents(supabase, {
-      userId: user.id,
-      since: monthStart.toISOString(),
-    }),
+    aggregateUsageEvents(supabase, { since: monthStart.toISOString() }, { scope: "self" }),
   ]);
 
   const tier = sub?.tier ?? "free";

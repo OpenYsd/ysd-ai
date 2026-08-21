@@ -1,6 +1,7 @@
 import { getAdminContext } from "@/lib/admin/guard";
 import { logger, newCorrelationId } from "@/lib/logger";
 import { runHealthChecks } from "@/lib/health/checks";
+import { checkTrainingInvariants } from "@/lib/ops/training-invariants";
 import { APP_VERSION } from "@/lib/version";
 
 export const runtime = "nodejs";
@@ -25,7 +26,16 @@ export async function GET() {
   }
 
   const correlation = newCorrelationId();
-  const result = await runHealthChecks();
+  /**
+   * ★ تشخيصُ ثوابت التدريب — يُقرأ حين يفتح إداريٌّ اللوحة، لا دوريًّا.
+   *
+   * لا عمليةَ خلفية ولا إصلاحَ تلقائيّ: يعدّ الحالات المستحيلة ويُبلّغ.
+   * فحالةٌ مستحيلة دليلٌ على كسرٍ في موضعٍ آخر، ومحوُها يُخفي السبب.
+   */
+  const [result, invariants] = await Promise.all([
+    runHealthChecks(),
+    checkTrainingInvariants(ctx.supabase),
+  ]);
 
   logger.info({
     correlation,
@@ -46,6 +56,8 @@ export async function GET() {
       invalidFormat: result.env.invalidFormat,
     },
     checks: result.checks,
+    /** أسماءٌ وأعداد — لا معرّفات ولا محتوى */
+    trainingInvariants: invariants,
     ms: result.ms,
   };
 

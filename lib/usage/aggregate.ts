@@ -3,70 +3,84 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * تجميع `usage_events` — **بلا سقفِ صفوفٍ صامت** (v0.9.14، المرحلة 6C).
+ * تجميع `usage_events` — **دقيقٌ في القاعدة** (v0.9.18، المرحلة 6G).
  *
- * ── العطل ──
+ * ── العطل الأصليّ (6C) ──
  *
- * كانت خمسة أسطحَ تحسب استهلاك الشهر هكذا:
+ * كانت خمسة أسطحَ تحسب استهلاك الشهر بجلب الصفوف ثم جمعها في التطبيق.
+ * و PostgREST يقصّ عند `max-rows` (ألفٌ على Supabase) **بلا خطأ وبلا إشارة**،
+ * فمن تجاوز ألف حدثٍ يرى `1000` مهما بلغ. والرقم لا يبدو معطوبًا — يبدو رقمًا.
  *
- *     const rows = await db.from("usage_events").select("input_tokens, …");
- *     const messages = rows.length;
- *     const tokens   = rows.reduce(…);
+ * ── وما فعلته 6C ──
  *
- * و PostgREST يقصّ الاستجابة عند `max-rows` (ألفٌ على Supabase) **بلا خطأ
- * وبلا إشارة**. فمن تجاوز ألف حدثٍ في الشهر يرى `1000` مهما بلغ، ومجموعَ
- * رموزٍ يخصّ أوّل ألفٍ فقط. والرقم لا يبدو معطوبًا — يبدو رقمًا.
+ * عدًّا خادميًّا دقيقًا (`count: exact, head: true`) للعدد، وترقيمًا محدودًا
+ * للمجموع بسقفٍ **معلَن** (ثلاثون ألفًا) يظهر «+» عند تجاوزه. صدقٌ، لكنه
+ * ليس رقمًا: صاحبُ `business` (١٠٠٬٠٠٠ شهريًّا) لا يرى مجموعه أبدًا.
  *
- * وأخطرُ ما فيه أنه يظهر **عند المستخدم الأكثر استعمالًا وحده**: صاحب
- * الباقة المجانية (٢٠٠ شهريًّا) لا يبلغه أبدًا، فيمرّ العيب في كل اختبارٍ
- * يدويّ.
+ * ── وما تفعله هذه المرحلة ──
  *
- * ── العلاج ──
+ * الجمعُ ينتقل إلى موضعه: `usage_totals_self` و`usage_totals_for` (الترحيل
+ * 0047). رحلةٌ واحدة، ومجموعٌ دقيقٌ مهما بلغ العدد. أُثبت على PostgreSQL
+ * حقيقي عند 0 و1 و999 و1000 و1001 و30٬000 و30٬001 و**100٬000**.
  *
- * (أ) **العدد** يُقرأ عدًّا خادميًّا دقيقًا: `count: "exact", head: true`.
- *     لا صفوف تعود أصلًا، فلا سقف يقصّها. رحلةٌ واحدة مهما بلغ العدد.
+ * ── والتفويض ليس هنا ──
  *
- * (ب) **المجموع** يحتاج القيم، فيُقرأ بترقيمٍ **محدود ومحدَّد**: نعرف العدد
- *     من (أ)، فنحسب عدد الصفحات ونطلبها **متوازيةً** بدل تسلسلٍ يضاعف
- *     زمن الصفحة.
+ * الدالّتان `security invoker`، فـRLS يعمل كما يعمل على أي استعلام. ومسارُ
+ * المستخدم `usage_totals_self` لا يأخذ معرّفًا أصلًا: المتصفّح لا يملك أن
+ * يُسمّي غيره ولو أراد.
  *
- * ── ولماذا ترتيبٌ صريح ──
+ * ── وحين تتعذّر الدالّة ──
  *
- * `range()` بلا `order` ليس مضمون الثبات: قد يُعيد المخطِّط الصفَّ نفسه في
- * صفحتين ويُسقط آخر. فالترتيب `(created_at, id)` يجعل النوافذ متقاطعةً
- * تمامًا لا متداخلة — و`id` فاصلٌ نهائيّ حين يتساوى الوقت.
+ * لا يُعرض مجموعٌ مقصوصٌ **كأنه دقيق** أبدًا. لكنه لا يُخفى أيضًا:
  *
- * ── وحدٌّ أعلى يُعلَن ولا يُخفى ──
+ *   • غابت الدالّة (شيفرةٌ نُشرت قبل الترحيل) ⇒ مسحُ 6C المحدود، و`truncated`
+ *     مرفوعة، فتكتب الواجهة «+» كما كانت. سلوكُ الأمس المُعلَن — لا كذبةٌ
+ *     جديدة، ولا فقدانُ رقمٍ كان يراه صاحبه.
+ *   • تعذّر المسح كذلك ⇒ `unavailable`، فتكتب الواجهة «—» ولا رقم.
  *
- * المسحُ مقيَّد بـ`MAX_PAGES`. وما تجاوزه يُعلَن `truncated: true` فتقول
- * الواجهة «+» — لأن رقمًا ناقصًا يُعرض كأنه تامّ هو العيب الذي نُصلحه، ولا
- * يجوز أن نعيد إنتاجه بحدٍّ آخر صامت.
+ * والعدد دقيقٌ في الحالتين: مسارُه مستقلٌّ لا يمرّ بالدالّة.
  */
-
-/** سقف PostgREST على Supabase — حجم الصفحة الواحدة */
-const PAGE_SIZE = 1000;
 
 /**
- * أقصى ما يُمسح: ٣٠ صفحة = ٣٠٬٠٠٠ حدث.
+ * ★ ما بقي من المسح — ولماذا.
  *
- * يغطّي `free` (٢٠٠) و`plus` (٢٠٠٠) و`pro` (١٠٬٠٠٠) بهامش. و`business`
- * (١٠٠٬٠٠٠) يتجاوزه فيُعلَن مقصوصًا — والحلّ الصحيح له دالّة تجميعٍ في
- * القاعدة، وهي تحتاج ترحيلًا فتُؤجَّل بقرار.
+ * تفصيلُ «لكل نموذج» يحتاج `model_id` لكل صفّ، ولا تُرجعه دالّةُ المجاميع.
+ * وهو سطحٌ إداريٌّ وحده، فبقي مسحًا محدودًا — ويحمل **علمَ قصٍّ خاصًّا به**
+ * لا يُخلط بعلم المجاميع. فالمجاميع دقيقةٌ دائمًا الآن، والتفصيل قد يُقصّ،
+ * وقولُ ذلك في حقلين منفصلين أصدق من حقلٍ واحد يصف الاثنين.
  */
+const PAGE_SIZE = 1000;
 const MAX_PAGES = 30;
-
-/** كم صفحةً تُطلب معًا — توازٍ يقصّر الزمن بلا أن يُغرق التجمّع */
 const PARALLEL = 6;
 
 export interface UsageAggregate {
-  /** عدد الأحداث — **دقيقٌ دائمًا** مهما بلغ */
+  /** عدد الأحداث — دقيقٌ دائمًا */
   events: number;
-  /** مجموع رموز الدخل والخرج ضمن ما مُسح */
+  /** مجموع رموز الدخل والخرج — دقيقٌ دائمًا ما لم تُرفع `unavailable` */
   tokens: number;
-  /** هل تجاوز العدد سقف المسح فبقي المجموع ناقصًا؟ */
+  inputTokens: number;
+  outputTokens: number;
+  /**
+   * تعذّر الحصول على مجموعٍ موثوق بأي طريق.
+   *
+   * حين تُرفع: `tokens` بلا معنًى ولا يجوز عرضه رقمًا. والعدد يبقى دقيقًا.
+   */
+  unavailable: boolean;
+  /**
+   * ★ المجموع من المسح المحدود لا من القاعدة — فهو **حدٌّ أدنى**.
+   *
+   * يقع حين لا تكون دالّة 0047 مطبَّقة بعد. والواجهة تكتب «+» كما كانت في
+   * 6C: أسوأُ ما يمكن هنا أن نعود إلى سلوكٍ **مُعلَن** سبق أن شُحن، لا أن
+   * نعرض رقمًا مقصوصًا كأنه تامّ.
+   *
+   * وهذا ما يجعل نشرَ الشيفرة قبل الترحيل آمنًا: لا نافذةَ تعارضٍ يظهر فيها
+   * «—» لمستخدمٍ كان يرى رقمًا.
+   */
   truncated: boolean;
   /** تفصيلٌ لكل نموذج — يُملأ عند طلبه فقط */
   byModel: Map<string, { requests: number; tokens: number }>;
+  /** ★ هل قُصّ **التفصيل** وحده؟ لا علاقة له بدقّة المجاميع أعلاه */
+  modelsTruncated: boolean;
 }
 
 interface UsageRow {
@@ -75,23 +89,12 @@ interface UsageRow {
   output_tokens?: number | null;
 }
 
-/**
- * ★ نوعُ العميل هو نوعُ Supabase نفسه.
- *
- * جرّبتُ واجهةً بنيوية دنيا أوّلًا فلم تنطبق: باني الاستعلام في المكتبة
- * سلسلةُ أنواعٍ معمَّمة، ومطابقتُها بنيويًّا تفشل أو تُجبر على `any`. وحملُ
- * كل مستدعٍ على تحويلٍ صريح ضجيجٌ في شيفرة الإنتاج.
- *
- * فالإنتاج يمرّر عميله كما هو، والاختبار وحده يحوّل قاعدته الوهمية — وهو
- * الموضع الذي يجوز فيه ذلك.
- */
-
 export interface UsageFilter {
   /** حصرُ النتيجة بمستخدم — يُترك فارغًا للمجاميع الإدارية عبر الجميع */
   userId?: string | null;
-  /** بداية المدى (ISO) — يُترك فارغًا للمدى الكامل */
+  /** بداية المدى (ISO) — شاملة */
   since?: string | null;
-  /** نهاية المدى (ISO)، حصريّة */
+  /** نهاية المدى (ISO) — حصرية */
   until?: string | null;
 }
 
@@ -99,9 +102,8 @@ export interface UsageFilter {
  * ★ شكلٌ محلّيٌّ صغير لباني الاستعلام — وتحويلٌ واحد عند الحدّ.
  *
  * تمريرُ باني Supabase المعمَّم عبر دالّةٍ معمَّمة يُفجّر المدقّق
- * (`TS2589: type instantiation is excessively deep`): سلسلةُ أنواعه تتضاعف
- * مع كل حلقة. والشكلُ المحلّيّ يقطع تلك السلسلة، والتحويل يقع **هنا**
- * مرّتين لا في كل مستدعٍ.
+ * (`TS2589`): سلسلةُ أنواعه تتضاعف مع كل حلقة. والشكلُ المحلّيّ يقطعها،
+ * والتحويل يقع **هنا** لا في كل مستدعٍ.
  */
 type Filterable = {
   eq: (column: string, value: unknown) => Filterable;
@@ -131,77 +133,216 @@ export async function countUsageEvents(
   const base = db
     .from("usage_events")
     .select("id", { count: "exact", head: true }) as unknown as Filterable;
-  const res = (await (applyFilter(base, filter) as unknown as PromiseLike<{
+  const res = await (applyFilter(base, filter) as unknown as PromiseLike<{
     count?: number | null;
     error?: unknown;
-  }>));
+  }>);
   if (res.error) return 0;
   return res.count ?? 0;
 }
 
+interface TotalsRow {
+  event_count?: number | string | null;
+  input_tokens?: number | string | null;
+  output_tokens?: number | string | null;
+  total_tokens?: number | string | null;
+}
+
 /**
- * العدد والمجموع معًا.
+ * ★ `bigint` يعبر السلك رقمًا — فيُفحص قبل أن يُصدَّق.
  *
- * `withModels` يضيف `model_id` إلى الأعمدة — لا يُطلب في مسار المستخدم لأنه
- * لا يعرضه، وكلُّ عمودٍ زائد بايتاتٌ على كل صفّ.
+ * PostgREST يُسلّم `bigint` عددًا في JSON، وما تجاوز `Number.MAX_SAFE_INTEGER`
+ * يفقد دقّته صامتًا. وهو بعيدٌ عمليًّا (٩ آلاف تريليون رمز)، لكن «بعيد» ليس
+ * «مستحيل» — والفحص أرخص من رقمٍ كاذبٍ لا يُكتشف.
+ */
+function safeInt(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined) return 0;
+  const n = typeof v === "string" ? Number(v) : v;
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n) || n < 0) return null;
+  return n;
+}
+
+/**
+ * المجاميع الدقيقة عبر دالّة القاعدة.
+ *
+ * `userId` فارغًا في مسار المستخدم يعني «أنا»، فتُستدعى `usage_totals_self`
+ * التي لا تقبل معرّفًا. وما عداه يمرّ بـ`usage_totals_for` — و RLS هو من
+ * يحسم ما يُرى، لا هذا السطر.
+ */
+async function fetchExactTotals(
+  db: SupabaseClient,
+  filter: UsageFilter,
+  scope: "self" | "any",
+): Promise<{ ok: true; row: Required<Pick<UsageAggregate, "events" | "tokens" | "inputTokens" | "outputTokens">> } | { ok: false }> {
+  const args =
+    scope === "self"
+      ? { p_since: filter.since ?? null, p_until: filter.until ?? null }
+      : {
+          p_user_id: filter.userId ?? null,
+          p_since: filter.since ?? null,
+          p_until: filter.until ?? null,
+        };
+  const fn = scope === "self" ? "usage_totals_self" : "usage_totals_for";
+
+  const { data, error } = await db.rpc(fn, args);
+  if (error) return { ok: false };
+
+  const rows = (Array.isArray(data) ? data : data ? [data] : []) as TotalsRow[];
+  const row = rows[0];
+  if (!row) return { ok: false };
+
+  const events = safeInt(row.event_count);
+  const input = safeInt(row.input_tokens);
+  const output = safeInt(row.output_tokens);
+  const total = safeInt(row.total_tokens);
+  if (events === null || input === null || output === null || total === null) {
+    return { ok: false };
+  }
+  return { ok: true, row: { events, tokens: total, inputTokens: input, outputTokens: output } };
+}
+
+/**
+ * العدد والمجاميع — دقيقة.
+ *
+ * `scope: "self"` لأسطح المستخدم: لا معرّف يُمرَّر أصلًا.
+ * `withModels` يضيف مسحَ التفصيل الإداريّ (محدودًا ومُعلَنًا).
  */
 export async function aggregateUsageEvents(
   db: SupabaseClient,
   filter: UsageFilter = {},
-  options: { withModels?: boolean } = {},
+  options: { withModels?: boolean; scope?: "self" | "any" } = {},
 ): Promise<UsageAggregate> {
-  const events = await countUsageEvents(db, filter);
+  const scope = options.scope ?? "any";
   const byModel = new Map<string, { requests: number; tokens: number }>();
 
-  if (events === 0) {
-    return { events: 0, tokens: 0, truncated: false, byModel };
+  const totals = await fetchExactTotals(db, filter, scope);
+
+  if (!totals.ok) {
+    /**
+     * ★ تراجعٌ **مُعلَن** لا رقمٌ مُخمَّن.
+     *
+     * الدالّة قد تغيب لحظةَ نُشرت الشيفرة قبل أن يُطبَّق الترحيل. والسقوطُ
+     * حينها إلى «—» يجعل مستخدمًا كان يرى رقمًا يفقده بلا سبب يفهمه.
+     *
+     * فيُستعمل مسحُ 6C المحدود، ويُعلَن `truncated` فتكتب الواجهة «+» كما
+     * كانت. أسوأُ حالٍ هنا هو سلوكُ الأمس المُعلَن — لا كذبةٌ جديدة.
+     *
+     * وإن تعذّر المسح كذلك، يُرفع `unavailable` ولا يُعرض رقم.
+     */
+    return await boundedScan(db, filter, options.withModels === true, byModel);
   }
 
+  const base: UsageAggregate = {
+    ...totals.row,
+    unavailable: false,
+    truncated: false,
+    byModel,
+    modelsTruncated: false,
+  };
+
+  if (!options.withModels || base.events === 0) return base;
+
+  /* ── التفصيل الإداريّ: مسحٌ محدود، وعلمُ قصٍّ خاصٌّ به ── */
+  const scanned = await scanRows(db, filter, base.events, byModel);
+  base.modelsTruncated = scanned.truncated;
+  return base;
+}
+
+/**
+ * مسحُ الصفوف المحدود — يُستعمل للتفصيل، وللتراجع حين تغيب الدالّة.
+ *
+ * ويعيد المجموع والقصّ معًا كي يقرّر المستدعي ماذا يفعل بهما.
+ */
+async function scanRows(
+  db: SupabaseClient,
+  filter: UsageFilter,
+  events: number,
+  byModel: Map<string, { requests: number; tokens: number }>,
+): Promise<{ tokens: number; inputTokens: number; outputTokens: number; truncated: boolean; failed: boolean }> {
   const neededPages = Math.ceil(events / PAGE_SIZE);
   const pages = Math.min(neededPages, MAX_PAGES);
-  const truncated = neededPages > MAX_PAGES;
-  const columns = options.withModels
-    ? "model_id, input_tokens, output_tokens"
-    : "input_tokens, output_tokens";
-
   let tokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let failed = false;
 
   for (let start = 0; start < pages; start += PARALLEL) {
     const batch = [];
     for (let i = start; i < Math.min(start + PARALLEL, pages); i += 1) {
       /**
-       * ★ ترتيبٌ صريح على عمودين.
-       *
-       * `range()` بلا ترتيبٍ ثابت قد يُعيد صفًّا مرّتين ويُسقط آخر — وهو
-       * عطلٌ أسوأ من الأوّل لأنه غير قابل لإعادة الإنتاج.
+       * ترتيبٌ صريح على عمودين: `range()` بلا ترتيبٍ ثابت قد يُعيد صفًّا
+       * مرّتين ويُسقط آخر — عطلٌ غير قابلٍ لإعادة الإنتاج.
        */
-      const base = db.from("usage_events").select(columns) as unknown as Filterable;
-      const q = applyFilter(base, filter)
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1);
-      batch.push(q);
+      const q = db.from("usage_events").select("model_id, input_tokens, output_tokens") as unknown as Filterable;
+      batch.push(
+        applyFilter(q, filter)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1),
+      );
     }
 
     const results = await Promise.all(batch);
     for (const res of results) {
-      if (res.error) continue;
+      if (res.error) {
+        failed = true;
+        continue;
+      }
       for (const row of (res.data ?? []) as UsageRow[]) {
-        const t = (row.input_tokens ?? 0) + (row.output_tokens ?? 0);
-        tokens += t;
-        if (options.withModels) {
-          const key = row.model_id ?? "unknown";
-          const cur = byModel.get(key) ?? { requests: 0, tokens: 0 };
-          cur.requests += 1;
-          cur.tokens += t;
-          byModel.set(key, cur);
-        }
+        const i = row.input_tokens ?? 0;
+        const o = row.output_tokens ?? 0;
+        inputTokens += i;
+        outputTokens += o;
+        tokens += i + o;
+        const key = row.model_id ?? "unknown";
+        const cur = byModel.get(key) ?? { requests: 0, tokens: 0 };
+        cur.requests += 1;
+        cur.tokens += i + o;
+        byModel.set(key, cur);
       }
     }
   }
 
-  return { events, tokens, truncated, byModel };
+  return { tokens, inputTokens, outputTokens, truncated: neededPages > MAX_PAGES, failed };
+}
+
+/** التراجع المُعلَن — العدد دقيقٌ دائمًا، والمجموع حدٌّ أدنى يُقال */
+async function boundedScan(
+  db: SupabaseClient,
+  filter: UsageFilter,
+  _withModels: boolean,
+  byModel: Map<string, { requests: number; tokens: number }>,
+): Promise<UsageAggregate> {
+  const events = await countUsageEvents(db, filter);
+  if (events === 0) {
+    return {
+      events: 0, tokens: 0, inputTokens: 0, outputTokens: 0,
+      unavailable: false, truncated: false, byModel, modelsTruncated: false,
+    };
+  }
+
+  const scanned = await scanRows(db, filter, events, byModel);
+  if (scanned.failed) {
+    /** لم يُقرأ شيءٌ موثوق — ولا يُعرض رقم */
+    return {
+      events, tokens: 0, inputTokens: 0, outputTokens: 0,
+      unavailable: true, truncated: false, byModel, modelsTruncated: false,
+    };
+  }
+
+  return {
+    events,
+    tokens: scanned.tokens,
+    inputTokens: scanned.inputTokens,
+    outputTokens: scanned.outputTokens,
+    unavailable: false,
+    truncated: scanned.truncated,
+    byModel,
+    modelsTruncated: scanned.truncated,
+  };
 }
 
 /** للاختبارات والتقارير — الثوابت مُعلَنة لا مخفيّة */
 export const USAGE_SCAN = { PAGE_SIZE, MAX_PAGES, PARALLEL } as const;
+/** أسماء دالّتي القاعدة — مصدرٌ واحد يمنع خطأً مطبعيًّا صامتًا */
+export const USAGE_RPC = { self: "usage_totals_self", any: "usage_totals_for" } as const;

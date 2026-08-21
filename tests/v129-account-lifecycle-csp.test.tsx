@@ -341,7 +341,15 @@ describe("★ (٢) المسار — لا معرّف من المتصفّح", () =
 
   it("★ ★ ★ ولا اسم جدولٍ ولا مسار تخزينٍ يصل المتصفّح", () => {
     const body = stripComments(DELETE_ROUTE);
-    expect(body).toMatch(/console\.error\(`\[delete-account\] incomplete step=/);
+    /**
+     * ★ الحارس يتبع الرمز حيث انتقل (المرحلة 6G).
+     *
+     * كان يخرج سطرَ نصٍّ بـ`console.error`، وصار حدثًا منظَّمًا باسمٍ ثابت
+     * كي يصلح بُعدًا لتنبيه. والثابت المحروس هو هو: الرمز **يُسجَّل** ولا
+     * **يُعرض** — واسمُ الجدول لا يبلغ المتصفّح.
+     */
+    expect(body).toMatch(/event: "account_delete_incomplete"/);
+    expect(body).toMatch(/logger\.error\(\{/);
     const shown = body
       .split("\n")
       .filter((l) => !/^\s*(import|export)\b.*from\s/.test(l))
@@ -693,13 +701,23 @@ describe("★ (٧) المخطّط — التعاقب مكتوبٌ في التر�
   });
 
   it("★ ★ ★ ولم يُنشأ ترحيلٌ جديد لهذه المرحلة", () => {
-    /** تناسقُ تاريخٍ معروض لا يحتاج ترحيلًا — و0046 مُسجَّل رسميًّا */
-    const { readdirSync } = require("node:fs") as typeof import("node:fs");
-    const nums = readdirSync("supabase/migrations")
-      .filter((f) => f.endsWith(".sql"))
-      .map((f) => Number(f.slice(0, 4)));
-    expect(Math.max(...nums)).toBe(46);
+    /**
+     * ★ الثابت: لا ترحيلَ لتناسقِ تاريخٍ معروض — ولا تكرار في الترقيم.
+     *
+     * وكان الحارس يملك «أحدث رقم» فسقط مع 0047، لا لأن شيئًا انكسر بل لأن
+     * المشروع تقدّم. وملكيةُ الأحدث تنتقل إلى أحدث مجموعة، والثابتُ هنا أن
+     * 0046 قائمٌ وأن الترقيم فريد.
+     */
+    const { readdirSync, readFileSync: rf } = require("node:fs") as typeof import("node:fs");
+    const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
+    const nums = files.map((f) => Number(f.slice(0, 4)));
+    expect(nums).toContain(46);
     expect(new Set(nums).size).toBe(nums.length);
+    /** ولا ترحيلَ يمسّ نصّ الوثيقة أو تاريخَ قسمها */
+    for (const f of files) {
+      if (Number(f.slice(0, 4)) <= 46) continue;
+      expect(rf(`supabase/migrations/${f}`, "utf8")).not.toMatch(/terms_version|آخر تحديث/);
+    }
   });
 });
 
