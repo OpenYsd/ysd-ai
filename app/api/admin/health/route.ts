@@ -2,6 +2,7 @@ import { getAdminContext } from "@/lib/admin/guard";
 import { logger, newCorrelationId } from "@/lib/logger";
 import { runHealthChecks } from "@/lib/health/checks";
 import { checkTrainingInvariants } from "@/lib/ops/training-invariants";
+import { reconcileFilesStorage } from "@/lib/ops/storage-reconcile";
 import { APP_VERSION } from "@/lib/version";
 
 export const runtime = "nodejs";
@@ -32,9 +33,15 @@ export async function GET() {
    * لا عمليةَ خلفية ولا إصلاحَ تلقائيّ: يعدّ الحالات المستحيلة ويُبلّغ.
    * فحالةٌ مستحيلة دليلٌ على كسرٍ في موضعٍ آخر، ومحوُها يُخفي السبب.
    */
-  const [result, invariants] = await Promise.all([
+  /**
+   * ★ ومطابقةُ التخزين بالقاعدة — تكشف ما لا يكشفه أي فحصٍ صحّيّ.
+   *
+   * التطبيق يعمل والصفوف موجودة والقائمة تُعرض — ثم لا يجد أحدٌ الملفّ.
+   */
+  const [result, invariants, storage] = await Promise.all([
     runHealthChecks(),
     checkTrainingInvariants(ctx.supabase),
+    reconcileFilesStorage(ctx.supabase),
   ]);
 
   logger.info({
@@ -58,6 +65,8 @@ export async function GET() {
     checks: result.checks,
     /** أسماءٌ وأعداد — لا معرّفات ولا محتوى */
     trainingInvariants: invariants,
+    /** أعدادٌ فقط — ولا مسارَ تخزينٍ يخرج (يحمل معرّف المالك في أوّله) */
+    storageReconcile: storage,
     ms: result.ms,
   };
 

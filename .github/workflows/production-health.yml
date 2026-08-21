@@ -1,0 +1,101 @@
+# ============================================================
+# مراقبةُ صحّة الإنتاج — المرحلة 6H
+#
+# ── لماذا هنا ──
+#
+# لم يكن في المشروع تنبيهٌ آليّ واحد. لا Sentry، ولا خطّاف، ولا مراقبَ
+# جهوزية. وإعادةُ تشغيل Railway عند فشل `/api/live` احتواءٌ لا تنبيه: تقع
+# ولا يعلم بها أحد.
+#
+# والمستودع عامّ، فدقائقُ GitHub Actions مجانيةٌ بلا حدّ. وفشلُ سير العمل
+# إشعارٌ **أصليّ** يصل صاحبه بلا حسابٍ خارجيّ ولا اشتراك ولا سرّ.
+#
+# ── ولماذا لا تُفتح مسألة عند كل فشل ──
+#
+# انقطاعٌ ساعتين يعني ثماني مسائل متطابقة. والضجيجُ يُدرّب صاحبه على
+# التجاهل، فيصير التنبيه أسوأ من غيابه. فالإشارةُ هي فشلُ السير نفسه —
+# يُجمّعه GitHub ويعرضه في مكانٍ واحد.
+#
+# ── وثلاث محاولات لا واحدة ──
+#
+# تعثّرُ شبكةٍ لثانية ليس انقطاعًا. فلا يُعلن الفشل إلا بعد ثلاث محاولات
+# متباعدة — وهو الفرق بين مراقبةٍ يُوثق بها وأخرى تصرخ بلا سبب.
+#
+# ── وما لا يفعله ──
+#
+# لا يرسل محادثةً ولا يستهلك رمزًا من مزوّد: مراقبةٌ تولّد نصًّا حركةٌ
+# مدفوعة تعمل إلى الأبد. ولا يحمل سرًّا — المسارات عامّة بلا مصادقة.
+# ولا يمسّ بيانات مستخدم: يقرأ حالةً وزمنًا وعدّادين.
+# ============================================================
+
+name: production-health
+
+on:
+  schedule:
+    # كل ربع ساعة — يكفي لاكتشاف انقطاعٍ حقيقيّ بلا إغراق
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# تشغيلٌ واحدٌ في كل لحظة: تراكمُ التشغيلات عند بطءٍ يُنتج ضجيجًا مضاعفًا
+concurrency:
+  group: production-health
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # ★ الإنتاج صراحةً — ومراقبةُ التجريب بدل الإنتاج تُطمئن على الخطأ
+      BASE_URL: https://ysd-ai-production.up.railway.app
+    steps:
+      - name: Probe liveness and readiness
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # ثلاث محاولات متباعدة — والفشل يُعلَن حين تفشل كلُّها
+          attempt() {
+            local path="$1" want="$2" i code
+            for i in 1 2 3; do
+              code=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+                       --max-time 10 --connect-timeout 5 \
+                       "$BASE_URL$path" || echo "000")
+              if [ "$code" = "$want" ]; then
+                echo "  $path -> $code (attempt $i)"
+                return 0
+              fi
+              echo "  $path -> $code (attempt $i) — retrying"
+              [ "$i" -lt 3 ] && sleep 20
+            done
+            echo "::error::$path returned $code after 3 attempts (expected $want)"
+            return 1
+          }
+
+          failed=0
+
+          echo "== liveness =="
+          attempt /api/live 200 || failed=1
+
+          echo "== readiness =="
+          # /api/health يردّ 503 عند down — وهو ما نريد رصده
+          attempt /api/health 200 || failed=1
+
+          # جسمُ الصحة عدّادان فقط؛ نقرأ failing منه بلا كشف تفاصيل
+          if [ -s /tmp/body.txt ]; then
+            failing=$(grep -o '"failing":[0-9]*' /tmp/body.txt | head -1 | cut -d: -f2 || echo "?")
+            status=$(grep -o '"status":"[a-z]*"' /tmp/body.txt | head -1 | cut -d'"' -f4 || echo "?")
+            echo "  readiness status=$status failing=$failing"
+            if [ "$status" = "down" ]; then
+              echo "::error::readiness reports down"
+              failed=1
+            fi
+          fi
+
+          echo "== landing =="
+          attempt / 200 || failed=1
+
+          exit $failed
