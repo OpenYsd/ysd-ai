@@ -735,7 +735,7 @@ describe("★ (٢٥–٣٠) 0039 وما لا تفعله", () => {
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0039_ysd_release_staging.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     /**
      * ★ حُدِّث في بنك التدريب (0040).
      *

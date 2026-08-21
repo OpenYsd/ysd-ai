@@ -2,11 +2,17 @@ import { NextRequest } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { BUDGET_DENY_MESSAGE, estimateInputTokens, finalizeChatBudget, releaseChatBudget, reserveChatBudget } from "@/lib/ai/budget";
 import { YSD_FREE_MODEL_ID } from "@/lib/ai/free-models";
-import { resolveProviderForModel } from "@/lib/ai/registry";
 import { consumeRateLimit, rateLimitHeaders } from "@/lib/rate-limit-distributed";
 import { browserChatRequestSchema, json, normalizeLegacyChatRequest } from "@/lib/browser/schema";
 import { verifyBrowserAccessToken } from "@/lib/browser/token";
 import { parseStructuredAssistantOutput } from "@/lib/browser/actions";
+import { buildUserContent } from "@/lib/browser/context";
+import { claimRequestDurable, finalizeRequest } from "@/lib/chat/idempotency";
+import { readBoundedJson } from "@/lib/browser/bounded-json";
+import { browserQaFaultResponse } from "@/lib/browser/qa-fault";
+import { browserAssistantDisabledResponse } from "@/lib/browser/feature";
+import { resolveBrowserProvider } from "@/lib/browser/provider-readiness";
+import { browserMetric } from "@/lib/browser/metrics";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -20,14 +26,30 @@ const SYSTEM_PROMPT = [
   "Answer the user directly. Never request cookies, tokens, passwords, localStorage, browsing history, private URLs, or files.",
   "If you propose browser work, emit at most one fenced JSON block tagged ysd-browser-action after the human-readable answer.",
   "Allowed actions only: find_tab, open_tab, create_workspace, move_tabs. Never propose script, shell, filesystem, download_and_run, cookie, or credential access.",
+  "The fenced block must contain exactly this strict envelope: {\"type\":\"browser_action_proposal\",\"action\":\"<allowed action>\",\"arguments\":{...}}.",
+  "Use exactly one arguments schema: find_tab {query}; open_tab {url}; create_workspace {name, query}; move_tabs {query, targetWorkspace}.",
+  "Example fenced proposal:",
+  "```ysd-browser-action",
+  "{\"type\":\"browser_action_proposal\",\"action\":\"find_tab\",\"arguments\":{\"query\":\"Example Domains\"}}",
+  "```",
+  "Arguments are semantic and minimal. Never invent or request tab ids, workspace ids, commands, scripts, headers, cookies, tokens, filesystem paths, or extra fields.",
 ].join("\n");
 
 export async function POST(req: NextRequest) {
+  const disabled = browserAssistantDisabledResponse();
+  if (disabled) return disabled;
+  const startedAt = Date.now();
+  browserMetric("browser.assistant.request");
+
   const token = verifyBrowserAccessToken(req.headers.get("authorization"));
   if (!token.ok) return json({ error: "unauthorized", code: token.reason }, 401);
 
-  const raw = await readBoundedJson(req, 40_000);
-  const parsed = browserChatRequestSchema.safeParse(normalizeLegacyChatRequest(raw));
+  const bounded = await readBoundedJson(req, 40_000);
+  if (!bounded.ok) {
+    const code = bounded.reason === "too_large" ? "request_too_large" : "invalid_request";
+    return json({ error: code, code }, bounded.reason === "too_large" ? 413 : 400);
+  }
+  const parsed = browserChatRequestSchema.safeParse(normalizeLegacyChatRequest(bounded.value));
   if (!parsed.success) return json({ error: "invalid_request", code: "invalid_request" }, 400);
 
   const body = parsed.data;
@@ -36,18 +58,37 @@ export async function POST(req: NextRequest) {
     return json({ error: "private_context_blocked", code: "private_context_blocked" }, 403);
   }
 
+  const qaFault = browserQaFaultResponse(req, token.claims.sub, body.requestId);
+  if (qaFault) return qaFault;
+
+  const supabase = getAdminClient();
+  if (!supabase) return json({ error: "service_unavailable", code: "service_role_unavailable" }, 503);
+  const claim = await claimRequestDurable(supabase as never, token.claims.sub, body.requestId, null, true);
+  if (!claim.ok) {
+    if (claim.duplicate) {
+      return json({ error: "duplicate_request", code: "duplicate_request" }, 409, {
+        "x-ysd-request-id": body.requestId,
+      });
+    }
+    return json({ error: "service_unavailable", code: "idempotency_unavailable" }, 503);
+  }
+
   const rl = await consumeRateLimit(token.claims.sub, "browser_chat", RATE_LIMIT, RATE_WINDOW_SEC);
   if (!rl.allowed) {
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+    browserMetric("browser.rate_limited", "warn", { code: "chat", status: 429 });
     return json({ error: "rate_limit", code: "rate_limit" }, 429, {
       ...rateLimitHeaders(rl),
       "Retry-After": String(rl.retryAfterSec),
     });
   }
 
-  const supabase = getAdminClient();
-  if (!supabase) return json({ error: "service_unavailable", code: "service_role_unavailable" }, 503);
   const { data: allowed } = await supabase.rpc("check_usage_allowed", { p_user_id: token.claims.sub });
-  if (allowed === false) return json({ error: "quota_exceeded", code: "quota_exceeded" }, 403);
+  if (allowed === false) {
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+    browserMetric("browser.quota_rejected", "warn", { code: "usage_quota", status: 403 });
+    return json({ error: "quota_exceeded", code: "quota_exceeded" }, 403);
+  }
 
   const userContent = buildUserContent(body);
   const budget = await reserveChatBudget({
@@ -57,15 +98,20 @@ export async function POST(req: NextRequest) {
     maxOutputTokens: MAX_OUTPUT_TOKENS,
   });
   if (!budget.allowed) {
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
     const reason = budget.reason === "ok" || budget.reason === "already_reserved" ? "unavailable" : budget.reason;
+    browserMetric("browser.quota_rejected", "warn", { code: reason, status: 403 });
     return json({ error: BUDGET_DENY_MESSAGE[reason], code: reason }, 403);
   }
 
-  const provider = resolveProviderForModel(YSD_FREE_MODEL_ID);
-  if (!provider) {
+  const providerReadiness = await resolveBrowserProvider(supabase as never);
+  if (!providerReadiness.ok) {
     await releaseChatBudget(body.requestId);
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+    browserMetric("browser.provider_failure", "error", { code: providerReadiness.code, status: 503 });
     return json({ error: "provider_unavailable", code: "provider_unavailable" }, 503);
   }
+  const provider = providerReadiness.provider;
 
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), STREAM_TIMEOUT_MS);
@@ -94,11 +140,22 @@ export async function POST(req: NextRequest) {
           } else if (chunk.type === "usage" && chunk.usage) {
             usage = chunk.usage;
           } else if (chunk.type === "error") {
-            send({ type: "error", error: chunk.error ?? "generation_failed", code: chunk.errorCode ?? "provider_error" });
+            // Provider errors can contain implementation details. Fail the stream
+            // through the sanitized catch path and never forward provider text.
+            throw new Error("provider_stream_error");
           }
         }
 
-        const parsedOutput = parseStructuredAssistantOutput(text, body.tabSnapshotId);
+        if (timeout.signal.aborted || req.signal.aborted) {
+          throw new Error("browser_stream_aborted");
+        }
+
+        const parsedOutput = parseStructuredAssistantOutput(
+          text,
+          body.tabSnapshotId,
+          body.workspaceSnapshotId,
+          body.requestId,
+        );
         if (parsedOutput.message && parsedOutput.message !== text.trim()) {
           send({ type: "replace", message: parsedOutput.message });
         }
@@ -116,9 +173,17 @@ export async function POST(req: NextRequest) {
         } else {
           await releaseChatBudget(body.requestId);
         }
+        await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "completed", null);
+        browserMetric("browser.assistant.sse_complete", "info", { ms: Date.now() - startedAt });
         send({ type: "done", requestId: body.requestId });
       } catch {
         await releaseChatBudget(body.requestId);
+        await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+        if (req.signal.aborted || timeout.signal.aborted) {
+          browserMetric("browser.assistant.sse_disconnect", "warn", { ms: Date.now() - startedAt });
+        } else {
+          browserMetric("browser.provider_failure", "error", { code: "stream_failed", ms: Date.now() - startedAt });
+        }
         if (!req.signal.aborted) send({ type: "error", error: "stream_failed", code: "stream_failed" });
       } finally {
         clearTimeout(timer);
@@ -137,34 +202,4 @@ export async function POST(req: NextRequest) {
       ...rateLimitHeaders(rl),
     },
   });
-}
-
-function buildUserContent(body: { mode: "chat" | "page" | "selection"; message: string; context?: { pageOrigin?: string; pageText?: string; selectedText?: string } }) {
-  if (body.mode === "selection") {
-    return `Mode: selection\nOrigin: ${sanitizeOrigin(body.context?.pageOrigin)}\nSelected text:\n${body.context?.selectedText ?? ""}\n\nUser request:\n${body.message}`;
-  }
-  if (body.mode === "page") {
-    return `Mode: page\nOrigin: ${sanitizeOrigin(body.context?.pageOrigin)}\nPage text excerpt:\n${body.context?.pageText ?? ""}\n\nUser request:\n${body.message}`;
-  }
-  return `Mode: chat\nUser request:\n${body.message}`;
-}
-
-function sanitizeOrigin(origin?: string) {
-  if (!origin) return "not-sent";
-  try {
-    const url = new URL(origin);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return "invalid";
-  }
-}
-
-async function readBoundedJson(req: NextRequest, maxChars: number) {
-  const raw = await req.text();
-  if (raw.length > maxChars) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }

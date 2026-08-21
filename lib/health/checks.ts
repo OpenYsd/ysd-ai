@@ -4,6 +4,9 @@ import { getEmbeddingModelState } from "@/lib/rag/embeddings";
 import { getRagRuntimeConfig } from "@/lib/rag/runtime-config";
 import { isRateSecretConfigured } from "@/lib/auth/invite-guard";
 import { getAdminClient } from "@/lib/supabase/admin";
+import { browserTokenSecret } from "@/lib/browser/crypto";
+import { isBrowserAssistantEnabled } from "@/lib/browser/feature";
+import { resolveBrowserProvider } from "@/lib/browser/provider-readiness";
 
 /**
  * فحوص التبعيات (readiness) — مستخرَجة من مسار /api/health في v0.7.0.
@@ -144,6 +147,23 @@ export async function runHealthChecks(
   checks.rate_limit_secret = isRateSecretConfigured()
     ? { status: "ok", detail: "configured" }
     : { status: "down", detail: "not_configured" };
+
+  // Browser Assistant: no provider request and no secret value disclosure.
+  if (!isBrowserAssistantEnabled()) {
+    checks.browser_assistant = { status: "skipped", detail: "disabled" };
+  } else if (!browserTokenSecret()) {
+    checks.browser_assistant = { status: "down", detail: "auth_unconfigured" };
+  } else {
+    const admin = getAdminClient();
+    if (!admin) {
+      checks.browser_assistant = { status: "down", detail: "registry_unavailable" };
+    } else {
+      const readiness = await resolveBrowserProvider(admin as never);
+      checks.browser_assistant = readiness.ok
+        ? { status: "ok", detail: "ready" }
+        : { status: "down", detail: readiness.code };
+    }
+  }
 
   // ---- نموذج Embeddings: الحالة فقط (لا يُحمّل هنا) ----
   const emb = getEmbeddingModelState();

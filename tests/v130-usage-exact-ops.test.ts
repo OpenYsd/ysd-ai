@@ -489,12 +489,13 @@ describe("★ (٨) الحدود القائمة", () => {
   });
 
   it("★ ★ ★ وترقيمُ الترحيلات فريدٌ و0047 قائم", () => {
-    const nums = readdirSync("supabase/migrations")
+    const versions = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
-      .map((f) => Number(f.slice(0, 4)));
-    expect(nums).toContain(46);
-    expect(nums).toContain(47);
-    expect(new Set(nums).size).toBe(nums.length);
+      .map((f) => f.slice(0, f.indexOf("_")));
+    const legacyNums = versions.filter((v) => v.length === 4).map(Number);
+    expect(legacyNums).toContain(46);
+    expect(legacyNums).toContain(47);
+    expect(new Set(versions).size).toBe(versions.length);
   });
 
   it("★ ★ ★ وترتيبُ حذف الحساب لم يُمَسّ — الهوية آخرًا", () => {
