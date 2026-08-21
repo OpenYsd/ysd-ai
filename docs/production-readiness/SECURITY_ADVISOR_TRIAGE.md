@@ -8,9 +8,9 @@ Scope: read-only audit of Production project `mnewsldyrrlpmouetyve`; source hard
 - 49 `public` SECURITY DEFINER functions were also inspected directly from `pg_proc`.
 - Every SECURITY DEFINER function has a fixed `search_path`; none contains dynamic `EXECUTE` SQL.
 - `anon` and `authenticated` cannot create objects in `public`, so fixed `public` search paths are not attacker-writable. New Browser functions nevertheless use `search_path = ''`.
-- Four unnecessary anonymous execution surfaces are removed by the forward migration: `claim_rag_job`, `reclaim_expired_rag_jobs`, `match_file_chunks`, and `is_admin`.
+- Four unnecessary anonymous execution surfaces are removed by the separate forward migration `20260821035648_security_definer_least_privilege.sql`: `claim_rag_job`, `reclaim_expired_rag_jobs`, `match_file_chunks`, and `is_admin`.
 - The three remaining anonymously executable Qiyas functions are intentionally public, read-only, fixed-path interfaces. They expose static allowlisted assets or an `auth.uid()`-scoped boolean only.
-- The `vector` extension location remains a real hardening item. Moving an installed type changes a shared database namespace and must be tested as a separate forward migration before Production.
+- The `vector` extension location remains a real live finding. The separate forward migration `20260821035652_harden_vector_extension_schema_v2.sql` is prepared and passed the representative-clone relocation, index, data-integrity, and RAG checks; it remains unapplied under the Production freeze.
 - Leaked-password protection is a real Auth hardening item but is available only on Supabase Pro and above.
 
 Expected post-candidate Advisor delta after the migration is eventually approved and applied: the four `anon_security_definer_function_executable` warnings above disappear; the 12 deny-by-default RLS INFO items and three intentional public Qiyas warnings remain; authenticated SECURITY DEFINER warnings remain where direct signed-in RPC access is the product contract.
@@ -31,11 +31,11 @@ Expected post-candidate Advisor delta after the migration is eventually approved
 | 10 | RLS enabled, no policy | `message_sources` | FALSE POSITIVE / ACCEPTED DESIGN | Read through ownership-checking RPC only. |
 | 11 | RLS enabled, no policy | `ysd_game_static_chunks` | FALSE POSITIVE / ACCEPTED DESIGN | Direct Data API access intentionally denied. |
 | 12 | RLS enabled, no policy | `ysd_game_static_payload` | FALSE POSITIVE / ACCEPTED DESIGN | Direct Data API access intentionally denied. |
-| 13 | Extension in public | `vector` | REQUIRES HARDENING BEFORE PRODUCTION | Separate tested forward migration required; not mixed into the Assistant schema migration. |
-| 14 | Anonymous SECURITY DEFINER | `claim_rag_job(text,integer)` | REAL SECURITY ISSUE | Candidate revokes `PUBLIC`/`anon`; authenticated ownership contract remains. |
-| 15 | Anonymous SECURITY DEFINER | `is_admin()` | REAL SECURITY ISSUE | Candidate revokes `PUBLIC`/`anon`; authenticated RLS helper remains. |
-| 16 | Anonymous SECURITY DEFINER | `match_file_chunks(vector,uuid[],integer,double precision)` | REAL SECURITY ISSUE | Candidate revokes `PUBLIC`/`anon`; authenticated ownership checks remain. |
-| 17 | Anonymous SECURITY DEFINER | `reclaim_expired_rag_jobs(integer)` | REAL SECURITY ISSUE | Candidate revokes `PUBLIC`/`anon`; authenticated ownership contract remains. |
+| 13 | Extension in public | `vector` | REQUIRES HARDENING BEFORE PRODUCTION | Separate migration prepared and clone-tested; intentionally unapplied. |
+| 14 | Anonymous SECURITY DEFINER | `claim_rag_job(text,integer)` | REAL SECURITY ISSUE | SECURITY DEFINER migration revokes `PUBLIC`/`anon`; authenticated ownership contract remains. |
+| 15 | Anonymous SECURITY DEFINER | `is_admin()` | REAL SECURITY ISSUE | SECURITY DEFINER migration revokes `PUBLIC`/`anon`; authenticated RLS helper remains. |
+| 16 | Anonymous SECURITY DEFINER | `match_file_chunks(vector,uuid[],integer,double precision)` | REAL SECURITY ISSUE | SECURITY DEFINER/vector migrations revoke `PUBLIC`/`anon`; authenticated ownership checks remain. |
+| 17 | Anonymous SECURITY DEFINER | `reclaim_expired_rag_jobs(integer)` | REAL SECURITY ISSUE | SECURITY DEFINER migration revokes `PUBLIC`/`anon`; authenticated ownership contract remains. |
 | 18 | Anonymous SECURITY DEFINER | `ysd_qiyas_get_asset(text)` | INTENTIONAL / REQUIRED | Read-only allowlisted public static asset API; no dynamic SQL. |
 | 19 | Anonymous SECURITY DEFINER | `ysd_qiyas_get_text_asset(text)` | INTENTIONAL / REQUIRED | Read-only public static asset API; no dynamic SQL. |
 | 20 | Anonymous SECURITY DEFINER | `ysd_qiyas_is_staff()` | INTENTIONAL / REQUIRED | RLS helper; anonymous result is false because `auth.uid()` is null. |
@@ -77,4 +77,4 @@ For each of these, effective `anon` and `authenticated` execution is false; `ser
 
 ## Roll-forward decision for `vector`
 
-Do not move `vector` as part of the Browser Assistant migration. Prepare and dry-run a separate migration that creates/uses the `extensions` schema, runs `ALTER EXTENSION vector SET SCHEMA extensions`, verifies all vector columns/indexes and the `match_file_chunks` RPC signature, regenerates types, and performs the RAG regression suite. If any dependent function or client signature changes unexpectedly, abort and forward-fix; do not `DROP EXTENSION`.
+Do not move `vector` as part of the Browser Assistant migration. Sprint 2 prepared and dry-ran the separate migration that creates/uses the `extensions` schema, runs `ALTER EXTENSION vector SET SCHEMA extensions`, verifies the vector column/index and `match_file_chunks` RPC signature, and passes a RAG smoke test. A future controlled window must still repeat the Production preflight before applying it. If any dependent function or client signature changes unexpectedly, abort and forward-fix; do not `DROP EXTENSION`.
