@@ -15,10 +15,12 @@
  * الحدّ والمخزن مُموَّهان. والمقيس سلوكُ المسار لا سلوكُ Supabase.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const state = {
   allowed: true,
+  backend: "distributed" as "distributed" | "memory_fallback",
+  throws: false,
   calls: [] as { bucket: string; value: string; limit: number; window: number }[],
   created: 0,
 };
@@ -31,7 +33,8 @@ vi.mock("@/lib/rate-limit-keyed", () => ({
     window: number,
   ) => {
     state.calls.push({ bucket, value, limit, window });
-    return { allowed: state.allowed, backend: "distributed" as const };
+    if (state.throws) throw new Error("simulated backend failure");
+    return { allowed: state.allowed, backend: state.backend };
   },
 }));
 
@@ -71,9 +74,17 @@ function request(ip: string) {
 }
 
 beforeEach(() => {
+  process.env.YSD_BROWSER_ASSISTANT_ENABLED = "1";
   state.allowed = true;
+  state.backend = "distributed";
+  state.throws = false;
   state.calls = [];
   state.created = 0;
+});
+
+afterEach(() => {
+  delete process.env.YSD_BROWSER_ASSISTANT_ENABLED;
+  delete process.env.YSD_DEPLOYMENT_ENVIRONMENT;
 });
 
 describe("★ حدّ تفويض الجهاز — مسارٌ عامّ يكتب حالة", () => {
@@ -160,5 +171,33 @@ describe("★ حدّ تفويض الجهاز — مسارٌ عامّ يكتب ح
     for (let i = 0; i < 4; i += 1) await POST(request("203.0.113.9"));
     expect(state.calls).toHaveLength(4);
     for (const c of state.calls) expect(c.value).toBe("203.0.113.9");
+  });
+
+  it("★ ★ ★ يفشل مغلقًا في Production إذا لم يكن الحدّ موزّعًا", async () => {
+    process.env.YSD_DEPLOYMENT_ENVIRONMENT = "production";
+    state.backend = "memory_fallback";
+    const res = await POST(request("203.0.113.9"));
+    expect(res.status).toBe(503);
+    expect(state.created).toBe(0);
+    await expect(res.json()).resolves.toMatchObject({ code: "service_unavailable" });
+  });
+
+  it("★ ★ ★ يفشل مغلقًا عند هوية نشر صريحة غير معروفة", async () => {
+    process.env.YSD_DEPLOYMENT_ENVIRONMENT = "production-typo";
+    state.backend = "memory_fallback";
+    const res = await POST(request("203.0.113.9"));
+    expect(res.status).toBe(503);
+    expect(state.created).toBe(0);
+  });
+
+  it("★ ★ ★ يخفي عطل مخزن الحدّ ويردّ عقدًا عامًا", async () => {
+    state.throws = true;
+    const res = await POST(request("203.0.113.9"));
+    expect(res.status).toBe(503);
+    expect(state.created).toBe(0);
+    await expect(res.json()).resolves.toEqual({
+      error: "service_unavailable",
+      code: "service_unavailable",
+    });
   });
 });
