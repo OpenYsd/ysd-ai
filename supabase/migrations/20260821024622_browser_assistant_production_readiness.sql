@@ -225,23 +225,3 @@ begin
   end if;
 end
 $cleanup_grants$;
-
--- Current Security Advisor triage: these caller-owned RAG/admin helpers enforce
--- auth.uid(), but anonymous execution is unnecessary. Keep authenticated access
--- where the product contract requires it and remove the anonymous surface.
-do $least_privilege$
-declare
-  v_function record;
-begin
-  for v_function in
-    select p.oid::regprocedure as signature
-      from pg_catalog.pg_proc p
-      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-     where n.nspname = 'public'
-       and p.prosecdef
-       and p.proname in ('claim_rag_job', 'reclaim_expired_rag_jobs', 'match_file_chunks', 'is_admin')
-  loop
-    execute pg_catalog.format('revoke execute on function %s from public, anon', v_function.signature);
-  end loop;
-end
-$least_privilege$;
