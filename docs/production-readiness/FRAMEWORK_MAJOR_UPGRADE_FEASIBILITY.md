@@ -1,6 +1,6 @@
 # Next 16 Major Upgrade Feasibility
 
-The upgrade was implemented only on the isolated local branch `hardening/framework-major-upgrade`, commit `1307a2a091c3dd50345cd8c8dd6b33fe16733383`. It was not merged, pushed, deployed, or applied to the release candidate.
+The upgrade was implemented only on the isolated local branch `hardening/framework-major-upgrade`, head commit `b7518a7895c80606590c599a7756e853d67e36e8` (framework implementation `1307a2a091c3dd50345cd8c8dd6b33fe16733383`, followed by safe dev-tool patches). It was not merged, pushed, deployed, or applied to the release candidate.
 
 ## Required version and changes
 
@@ -21,7 +21,7 @@ The project had already migrated request APIs (`params`, `searchParams`, `cookie
 - ESLint: PASS with 40 newly surfaced advisory warnings and no errors
 - Tests: 130/130 files; 3,488 passed; 6 optional live tests skipped
 - Production build: PASS on Next 16.3.1/Turbopack, 62 generated pages, Proxy recognized
-- Runtime audit: reduced from 5 HIGH to 4 HIGH; the Next aggregate finding is removed
+- Runtime audit: reduced from 5 HIGH to 4 HIGH; the Next aggregate finding is removed. The full developer tree remains 5 HIGH and 1 CRITICAL because the separately deferred Vitest 4 major is also required.
 
 Next 16's ESLint preset also enables React Compiler advisory rules that identify 18 pre-existing effect/ref/purity patterns. This feasibility branch disables only those four new behavior-sensitive rules and two test-only compatibility rules so the historical lint contract can run. The 40 non-blocking warnings remain visible. Promotion requires review/refactoring of those patterns or an explicit team decision to retain the compatibility layer; it must not be silently merged.
 
