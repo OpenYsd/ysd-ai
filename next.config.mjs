@@ -1,83 +1,25 @@
 /** @type {import('next').NextConfig} */
 
 /**
- * سياسة أمن المحتوى (v0.9.14، المرحلة 6C).
+ * ترويسات الأمن الساكنة (v0.9.17، المرحلة 6F).
  *
- * ── ما تحرسه ──
+ * ── وأين ذهبت سياسة أمن المحتوى ──
  *
- * أهمُّ ما فيها ليس `script-src`: هو `object-src 'none'` و`base-uri 'self'`
- * و`frame-ancestors 'none'` و`form-action 'self'`. تلك تمنع إدراج مُشغّلٍ
- * قديم، وإعادةَ توجيه كل الروابط النسبية بوسم `<base>` مزروع، وتأطيرَ
- * الصفحة لسرقة النقر، وتحويلَ نموذجٍ إلى مضيفٍ غريب.
+ * إلى `lib/csp.ts` والوسيط. `headers()` تُبنى مرّةً عند البناء، فلا تحمل
+ * قيمةً تتغيّر مع كل طلب — و`nonce` ثابتٌ ليس nonce بل كلمةُ سرٍّ يقرؤها
+ * أوّلُ من يفتح «مصدر الصفحة».
  *
- * ── ولماذا `'unsafe-inline'` في `script-src` — ويُقال صراحةً ──
+ * وتُضبط هناك **وحدها**: ترويستا CSP على استجابةٍ واحدة تُنفَّذان معًا،
+ * فتصير السياسة الفعلية تقاطعَهما — ويقرأ الفاحص `'unsafe-inline'` في
+ * الترويسة فيظنّ الحماية أضعف ممّا هي، أو أقوى. وواحدةٌ أصدق من اثنتين.
  *
- * Next.js يحقن حمولة RSC في وسوم `<script>` سطرية. وإزالتُها تحتاج `nonce`
- * يُولَّد في الوسيط ويُمرَّر إلى Next عبر ترويسة الطلب. وذلك هو الصواب،
- * لكنه يحتاج تحقّقًا حيًّا قبل النشر — ولا `.env.local` في هذه البيئة، فلا
- * سبيل إلى تشغيل بناءٍ إنتاجيّ محليًّا وإثباته. وسياسةٌ تُنشر بلا إثبات
- * تُسقط التطبيق كلَّه بلا JavaScript.
- *
- * فالمرحلة تُثبّت ما يُثبَت، ويبقى `nonce` بندًا معلنًا في التقرير — لا
- * ادّعاءً بأن الحماية أقوى ممّا هي.
- *
- * وسطحُ الحقن هنا ضيّقٌ أصلًا: لا `dangerouslySetInnerHTML` في المشروع،
- * ولا `rehype-raw`، وMarkdown يُصيَّر بلا HTML خام.
- *
- * ── و`'unsafe-eval'` للتطوير وحده ──
- *
- * إعادةُ التحميل الساخنة تحتاجه؛ والبناء الإنتاجيّ لا. فلا يُمنح للإنتاج
- * «احتياطًا» — الاحتياط هنا ثغرة.
+ * ولا تمرّ المسارات المستثناة من مُطابِق الوسيط (`_next/static` والأصول
+ * ذات الامتدادات) بسياسة — وهي ليست مستنداتٍ تُنفَّذ فيها شيفرة، فالسياسة
+ * عليها بلا أثر.
  */
 const isDev = process.env.NODE_ENV !== "production";
 
-/**
- * مضيف Supabase — يُقرأ من الإعداد، ويسقط إلى نطاق المزوّد.
- *
- * المتصفّح يخاطب GoTrue وPostgREST والتخزين مباشرةً، فبلا هذا المصدر تسقط
- * المصادقة كلُّها. والنطاق البديل محصورٌ بالمزوّد لا مفتوحًا.
- */
-function supabaseSources() {
-  const raw = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const out = new Set(["https://*.supabase.co", "wss://*.supabase.co"]);
-  try {
-    if (raw) {
-      const { origin, host } = new URL(raw);
-      out.add(origin);
-      out.add(`wss://${host}`);
-    }
-  } catch {
-    /* إعدادٌ فاسد لا يُوسّع السياسة — يبقى نطاق المزوّد وحده */
-  }
-  return [...out].join(" ");
-}
-
-function contentSecurityPolicy() {
-  const supabase = supabaseSources();
-  return [
-    "default-src 'self'",
-    // الأساس والكائنات والتأطير — أعلى قيمة أمنية في هذه السياسة
-    "base-uri 'self'",
-    "object-src 'none'",
-    "frame-ancestors 'none'",
-    "frame-src 'none'",
-    "form-action 'self'",
-    `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
-    // خطوط Google تُستورَد من `globals.css` بـ@import
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com data:",
-    // data: للصور المضمّنة، blob: لمعاينة ما يرفعه المستخدم قبل الحفظ
-    `img-src 'self' data: blob: ${supabase}`,
-    `connect-src 'self' ${supabase}`,
-    "manifest-src 'self'",
-    "worker-src 'self' blob:",
-    "media-src 'self'",
-    ...(isDev ? [] : ["upgrade-insecure-requests"]),
-  ].join("; ");
-}
-
 const securityHeaders = [
-  { key: "Content-Security-Policy", value: contentSecurityPolicy() },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

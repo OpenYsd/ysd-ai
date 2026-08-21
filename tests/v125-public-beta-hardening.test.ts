@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
+import { buildContentSecurityPolicy } from "@/lib/csp";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
@@ -345,11 +346,20 @@ describe("★ (٣) بلاغٌ يصل إنسانًا — بلا تسريب", () =
 /* ═══════════ (٤) ترويسات الأمن ═══════════ */
 
 describe("★ (٤) سياسة أمن المحتوى", () => {
-  const csp = () => {
-    const m = /"default-src 'self'"[\s\S]*?\]\.join\("; "\)/.exec(NEXT_CONFIG);
-    expect(m, "CSP block not found").not.toBeNull();
-    return m![0];
-  };
+  /**
+   * ★ الحارس يبني السياسة ويقرؤها — لا يقرأ الشيفرة التي تبنيها.
+   *
+   * انتقلت في المرحلة 6F من `next.config` إلى `lib/csp.ts` والوسيط، لأن
+   * `headers()` تُبنى مرّةً عند البناء فلا تحمل `nonce` يتغيّر مع كل طلب.
+   *
+   * ولم يعد الحارس يُنقّب عن كتلةٍ نصّية: يستدعي الباني ويقيس **الناتج**.
+   * فتعبيرٌ يُطابق مصدرًا يمرّ ولو كان الناتج غير ما يصفه، والناتجُ هو ما
+   * يبلغ المتصفّح.
+   */
+  const prod = () => buildContentSecurityPolicy("TEST_NONCE", { isDev: false });
+  const dev = () => buildContentSecurityPolicy("TEST_NONCE", { isDev: true });
+  const directive = (policy: string, name: string) =>
+    policy.split("; ").find((d) => d.startsWith(`${name} `)) ?? "";
 
   it("★ ★ ★ التوجيهات عالية القيمة موجودة", () => {
     /**
@@ -359,7 +369,7 @@ describe("★ (٤) سياسة أمن المحتوى", () => {
      * و`object-src` يمنع مُشغّلًا قديمًا، و`frame-ancestors` يمنع سرقة
      * النقر، و`form-action` يمنع تحويل نموذجٍ إلى مضيفٍ غريب.
      */
-    const block = csp();
+    const block = prod();
     expect(block).toMatch(/default-src 'self'/);
     expect(block).toMatch(/base-uri 'self'/);
     expect(block).toMatch(/object-src 'none'/);
@@ -372,28 +382,31 @@ describe("★ (٤) سياسة أمن المحتوى", () => {
   });
 
   it("★ ★ ★ ولا حرفٌ عامّ يفتح كل شيء", () => {
-    const block = csp();
-    expect(block).not.toMatch(/default-src[^;"]*\*/);
-    expect(block).not.toMatch(/script-src[^;"]*\s\*/);
-    expect(block).not.toMatch(/connect-src[^;"]*\s\*[\s;"]/);
-    expect(block).not.toMatch(/'unsafe-hashes'/);
+    for (const block of [prod(), dev()]) {
+      expect(directive(block, "default-src")).not.toMatch(/\*/);
+      expect(directive(block, "script-src")).not.toMatch(/\*/);
+      /** ونطاقُ المزوّد `*.supabase.co` مقصود — والمفتوح `https:` ليس */
+      expect(directive(block, "connect-src")).not.toMatch(/\shttps:\s|\shttps:$/);
+      expect(block).not.toMatch(/'unsafe-hashes'/);
+    }
   });
 
   it("★ ★ ★ و`unsafe-eval` للتطوير وحده", () => {
     /** البناء الإنتاجيّ لا يحتاجه — ومنحُه «احتياطًا» ثغرة */
-    expect(NEXT_CONFIG).toMatch(/isDev \? " 'unsafe-eval'" : ""/);
-    expect(NEXT_CONFIG).toMatch(/const isDev = process\.env\.NODE_ENV !== "production"/);
+    expect(dev()).toContain("'unsafe-eval'");
+    expect(prod()).not.toContain("'unsafe-eval'");
   });
 
   it("★ ★ ★ ومصادر Supabase محصورةٌ بالمزوّد", () => {
-    expect(NEXT_CONFIG).toMatch(/https:\/\/\*\.supabase\.co/);
-    expect(NEXT_CONFIG).toMatch(/wss:\/\/\*\.supabase\.co/);
+    const block = prod();
+    expect(block).toContain("https://*.supabase.co");
+    expect(block).toContain("wss://*.supabase.co");
     /** لا نطاقٌ مفتوح مكانها */
-    expect(NEXT_CONFIG).not.toMatch(/connect-src[^;"]*https:\s/);
+    expect(directive(block, "connect-src")).not.toMatch(/\shttps:\s|\shttps:$/);
   });
 
   it("★ ★ ★ والخطوط من مصدرها المعلوم", () => {
-    const block = csp();
+    const block = prod();
     expect(block).toMatch(/style-src[^;"]*https:\/\/fonts\.googleapis\.com/);
     expect(block).toMatch(/font-src[^;"]*https:\/\/fonts\.gstatic\.com/);
   });

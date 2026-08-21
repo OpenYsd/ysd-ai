@@ -851,13 +851,67 @@ const dict = {
     ar: "تعذر حذف جميع البيانات. لم نعتبر العملية مكتملة. حاول مرة أخرى أو تواصل مع الدعم.",
     en: "Some data could not be deleted. We did not treat this as complete. Try again or contact support.",
   },
+  /**
+   * ★ حذف الحساب — فعلٌ آخر، فكلماتٌ أخرى.
+   *
+   * «حذف بياناتي» يُبقي تسجيل الدخول قائمًا؛ وهذا يُذهبه. وتسميةُ الاثنين
+   * بكلمةٍ واحدة تجعل من قصد الأوّل يقع في الثاني — فالعبارتان مختلفتان
+   * عمدًا، ومن حفظ الأولى لا تمرّ به الثانية بلا قراءة.
+   */
+  deleteAccount: { ar: "حذف حسابي نهائيًا", en: "Delete my account permanently" },
+  deleteAccountIntro: {
+    ar: "يحذف هذا الإجراء بيانات التطبيق وحساب تسجيل الدخول معًا.",
+    en: "This deletes your application data and your sign-in account together.",
+  },
+  deleteAccountItemAppData: {
+    ar: "كل ما يحذفه «حذف بياناتي»: المحادثات والمشاريع والملفات ومقاطعها",
+    en: "Everything “Delete my data” removes: conversations, projects, files and their passages",
+  },
+  deleteAccountItemIdentity: {
+    ar: "حساب تسجيل الدخول نفسه — لن تستطيع الدخول بعدها",
+    en: "Your sign-in account itself — you will not be able to sign in afterwards",
+  },
+  deleteAccountItemUsage: {
+    ar: "عدّادات الاستهلاك وسجلّ الاشتراك",
+    en: "Usage counters and subscription record",
+  },
+  deleteAccountItemTraining: {
+    ar: "يُسحب إذن المساهمة في تحسين YSD **قبل** أي حذف",
+    en: "Your consent to help improve YSD is withdrawn **before** anything is deleted",
+  },
+  /**
+   * ★ ولا يُوعَد بما لا نملك.
+   *
+   * ما ساهم به صاحبُه ودخل إصدارًا مجمَّدًا لا يُمحى أثرُه من السجلّ
+   * التاريخي — لكنه يصير مرجعًا غير صالح لا يُستعمل في تدريبٍ لاحق. وقولُ
+   * ذلك بصراحةٍ أصدق من وعدٍ بمحوٍ كاملٍ لا يقع.
+   */
+  deleteAccountHistoricalNote: {
+    ar: "قد تبقى إشارات في سجلّات تدريب تاريخية، لكنها تصبح غير صالحة ولا تُستعمل في أي تدريب لاحق.",
+    en: "References may remain in historical training records, but they become invalid and are never used in future training.",
+  },
+  deleteAccountIrreversible: {
+    ar: "لا يمكن التراجع عن هذا الإجراء من داخل YSD.",
+    en: "This action cannot be undone from within YSD.",
+  },
+  /** العبارة تتبع لغة الواجهة — فلا يُطالَب أحدٌ بكتابة لغةٍ لا يقرؤها */
+  deleteAccountConfirmPhrase: { ar: "حذف حسابي نهائيًا", en: "DELETE MY ACCOUNT" },
+  deleteAccountInProgress: { ar: "جارٍ حذف الحساب…", en: "Deleting account…" },
+  deleteAccountDone: {
+    ar: "حُذف حسابك. سيُغلق التطبيق الآن.",
+    en: "Your account was deleted. You will be signed out now.",
+  },
+  deleteAccountFailed: {
+    ar: "تعذر حذف الحساب بالكامل. حسابك ما زال قائمًا. حاول مرة أخرى أو تواصل مع الدعم.",
+    en: "The account could not be fully deleted. Your account is still active. Try again or contact support.",
+  },
   requestAccountDeletion: {
     ar: "طلب حذف الحساب بالكامل",
     en: "Request full account deletion",
   },
   requestAccountDeletionHint: {
-    ar: "حذف حساب تسجيل الدخول يتم عبر طلب إلى الدعم.",
-    en: "Deleting the sign-in account itself is done through a support request.",
+    ar: "إن تعذّر عليك الوصول إلى حسابك، يمكنك طلب الحذف عبر الدعم.",
+    en: "If you cannot access your account, you can request deletion through support.",
   },
 
   supportTopicAccountDeletion: {

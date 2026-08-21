@@ -1,20 +1,22 @@
 "use client";
 
 /**
- * ضوابط البيانات (v0.9.16، المرحلة 6E) — **فعلٌ مدمّر خلف بابين**.
+ * ضوابط البيانات (v0.9.17، المرحلة 6F) — **فعلان مدمّران، لكلٍّ بابه**.
  *
- * ── لماذا كتابة عبارة لا ضغطة تأكيد ──
+ * ── لماذا اثنان لا واحد ──
+ *
+ * «حذف بياناتي» يُبقي تسجيل الدخول قائمًا؛ و«حذف حسابي نهائيًا» يُذهبه.
+ * ودمجُهما في زرٍّ واحد يجعل من أراد تنظيف محادثاته يفقد حسابه. فيبقيان
+ * منفصلين: نصًّا، وعبارةَ تأكيد، ومسارَ خادم.
+ *
+ * ── ولماذا كتابة عبارة لا ضغطة تأكيد ──
  *
  * ضغطتان متتاليتان يفعلهما الإصبع بلا أن يقرأ العقل. وكتابةُ عبارةٍ تُجبر
  * صاحبها على أن يقرأ ما يفعله ويُعيد كتابته — وهي أرخص حاجزٍ يمنع ندمًا لا
- * رجعة فيه.
+ * رجعة فيه. والعبارتان مختلفتان عمدًا: من حفظ الأولى لا تمرّ به الثانية.
  *
- * والعبارة بلغة الواجهة: مطالبةُ من يقرأ العربية بكتابة `DELETE MY DATA`
+ * والعبارة بلغة الواجهة: مطالبةُ من يقرأ العربية بكتابة `DELETE MY ACCOUNT`
  * حاجزٌ لغويّ لا حاجزُ تأكيد.
- *
- * ── ولماذا لا `window.confirm` ──
- *
- * لا يقبل نصًّا، ولا يعرض ما سيُحذف وما يبقى — وهو ما يجب أن يُقرأ هنا.
  *
  * ── والحوار حوارٌ فعلًا ──
  *
@@ -24,39 +26,87 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Trash2 } from "lucide-react";
+import { AlertTriangle, Trash2, UserX } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { SUPPORT_PATH } from "@/lib/public-support";
 
 type Phase = "idle" | "confirming" | "working" | "done" | "failed";
+/** `data` يُبقي الحساب؛ `account` يُذهبه. ولا ثالث. */
+type Mode = "data" | "account";
+
+interface Flow {
+  endpoint: string;
+  confirm: string;
+  phraseKey: "deleteConfirmPhrase" | "deleteAccountConfirmPhrase";
+  titleKey: "deleteMyData" | "deleteAccount";
+  busyKey: "deleteInProgress" | "deleteAccountInProgress";
+  doneKey: "deleteDone" | "deleteAccountDone";
+  failedKey: "deleteFailed" | "deleteAccountFailed";
+  irreversibleKey: "deleteIrreversible" | "deleteAccountIrreversible";
+}
+
+const FLOWS: Record<Mode, Flow> = {
+  data: {
+    endpoint: "/api/account/purge-data",
+    confirm: "DELETE",
+    phraseKey: "deleteConfirmPhrase",
+    titleKey: "deleteMyData",
+    busyKey: "deleteInProgress",
+    doneKey: "deleteDone",
+    failedKey: "deleteFailed",
+    irreversibleKey: "deleteIrreversible",
+  },
+  account: {
+    /** ★ تأكيدٌ آخر لمسارٍ آخر — فلا يُعاد استعمال تأكيد الأخفّ في الأثقل */
+    endpoint: "/api/account/delete-account",
+    confirm: "DELETE_ACCOUNT",
+    phraseKey: "deleteAccountConfirmPhrase",
+    titleKey: "deleteAccount",
+    busyKey: "deleteAccountInProgress",
+    doneKey: "deleteAccountDone",
+    failedKey: "deleteAccountFailed",
+    irreversibleKey: "deleteAccountIrreversible",
+  },
+};
 
 export function DataControls() {
   const { t } = useI18n();
+  const [mode, setMode] = useState<Mode | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [typed, setTyped] = useState("");
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  /** يمنع الإرسال المكرّر داخل الدورة الواحدة — راجع `purge` */
+  /** يمنع الإرسال المكرّر داخل الدورة الواحدة — راجع `submit` */
   const submittingRef = useRef(false);
   const titleId = useId();
   const descId = useId();
 
-  const phrase = t("deleteConfirmPhrase");
-  const matches = typed.trim() === phrase;
+  const flow = mode ? FLOWS[mode] : null;
+  const phrase = flow ? t(flow.phraseKey) : "";
+  const matches = flow !== null && typed.trim() === phrase;
   /**
    * ★ و«تمّ» يبقى الحوار مفتوحًا للحظته.
    *
    * فإغلاقُه فور النجاح يجعل المستخدم يرى الصفحة تُعاد تحميلها بلا أن
    * يقرأ أن ما طلبه وقع.
    */
-  const open = phase !== "idle";
+  const open = mode !== null;
 
   const close = useCallback(() => {
     submittingRef.current = false;
+    setMode(null);
     setPhase("idle");
     setTyped("");
     openerRef.current?.focus();
+  }, []);
+
+  const openFlow = useCallback((next: Mode, opener: HTMLButtonElement | null) => {
+    openerRef.current = opener;
+    submittingRef.current = false;
+    setTyped("");
+    setMode(next);
+    setPhase("confirming");
   }, []);
 
   /**
@@ -78,9 +128,9 @@ export function DataControls() {
 
   useEffect(() => {
     if (phase === "confirming") inputRef.current?.focus();
-  }, [phase]);
+  }, [phase, mode]);
 
-  const purge = useCallback(async () => {
+  const submit = useCallback(async () => {
     /**
      * ★ الحارس مرجعٌ لا حالة — وهذا فرقٌ كشفه اختبار.
      *
@@ -88,15 +138,15 @@ export function DataControls() {
      * تقرأها كلُّها `"confirming"` لأن React لم يُعد الرسم بينها. فيمرّ
      * ثلاثةُ طلباتِ حذف. والمرجع يتغيّر في اللحظة نفسها، فيمنع الثانية.
      */
-    if (submittingRef.current || !matches) return;
+    if (submittingRef.current || !matches || !flow) return;
     submittingRef.current = true;
     setPhase("working");
     try {
-      const res = await fetch("/api/account/purge-data", {
+      const res = await fetch(flow.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // التأكيد وحده — والهوية من الجلسة، فلا معرّف في الجسم
-        body: JSON.stringify({ confirm: "DELETE" }),
+        body: JSON.stringify({ confirm: flow.confirm }),
       });
       if (!res.ok) {
         /** ويُفكّ الحارس عند الفشل — وإلا صار الفشل نهائيًّا بلا إعادة */
@@ -110,16 +160,22 @@ export function DataControls() {
        *
        * فالمحادثات والمشاريع والملفّات التي يرسمها التطبيق الآن لم تعد
        * موجودة، وذاكرةُ الموجّه تحتفظ بها. وتنقّلٌ داخليّ يعرض ما حُذف.
+       *
+       * ★ وبعد حذف الحساب لا تُقصد صفحةٌ محميّة: الهوية ذهبت، فقصدُ
+       * `/chat` يعني تحويلًا إلى `/login` من حسابٍ لم يعد له وجود. فتُقصد
+       * الصفحة العامّة مباشرةً.
        */
-      window.location.assign("/chat");
+      window.location.assign(mode === "account" ? "/" : "/chat");
     } catch {
       submittingRef.current = false;
       setPhase("failed");
     }
-  }, [matches]);
+  }, [matches, flow, mode]);
 
   const focusRing =
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-glow";
+  const dangerButton = `${focusRing} inline-flex items-center gap-2 rounded-xl border border-red-500/40
+                        px-4 py-2 text-[13px] text-red-300 transition-colors hover:bg-red-500/10`;
 
   return (
     <section
@@ -133,36 +189,48 @@ export function DataControls() {
       <p className="text-[12.5px] text-ink-dim leading-relaxed">{t("deleteMyDataIntro")}</p>
 
       <button
-        ref={openerRef}
         type="button"
-        onClick={() => setPhase("confirming")}
+        onClick={(e) => openFlow("data", e.currentTarget)}
         data-open-purge=""
-        className={`${focusRing} mt-4 inline-flex items-center gap-2 rounded-xl border border-red-500/40
-                    px-4 py-2 text-[13px] text-red-300 transition-colors hover:bg-red-500/10`}
+        className={`${dangerButton} mt-4`}
       >
         <Trash2 size={14} aria-hidden />
         {t("deleteMyData")}
       </button>
 
-      {/* ═══ طلب حذف الحساب بالكامل — إلى الدعم، لا فعلٌ هنا ═══ */}
+      {/* ═══ حذف الحساب — فعلٌ أثقل، خلف بابه ═══ */}
       <div className="mt-5 border-t border-line/60 pt-4">
-        <p className="text-[12.5px] text-ink-dim leading-relaxed">
+        <p className="text-[12.5px] text-ink-dim leading-relaxed">{t("deleteAccountIntro")}</p>
+        <button
+          type="button"
+          onClick={(e) => openFlow("account", e.currentTarget)}
+          data-open-delete-account=""
+          className={`${dangerButton} mt-3`}
+        >
+          <UserX size={14} aria-hidden />
+          {t("deleteAccount")}
+        </button>
+
+        {/*
+          ★ والدعم يبقى — لمن لا يستطيع الدخول أصلًا.
+
+          فمن فقد الوصول إلى حسابه لا يبلغ هذا الزرّ، وإزالةُ الطريق الآخر
+          تتركه بلا سبيل. ولا يحمل الرابط بريدًا ولا معرّفًا: ما يُوضع في
+          عنوانٍ يُسجَّل في وكلاء وسجلّاتِ خوادم لا نملكها.
+        */}
+        <p className="mt-3 text-[12px] text-ink-faint leading-relaxed">
           {t("requestAccountDeletionHint")}
         </p>
-        {/*
-          ولا يحمل الرابط بريدًا ولا معرّفًا: ما يُوضع في عنوانٍ يُسجَّل في
-          وكلاء وسجلّاتِ خوادم لا نملكها.
-        */}
         <Link
           href={`${SUPPORT_PATH}?topic=account-deletion`}
           data-request-account-deletion=""
-          className={`${focusRing} mt-2 inline-block rounded-lg text-[13px] text-primary-glow hover:brightness-125`}
+          className={`${focusRing} mt-1 inline-block rounded-lg text-[13px] text-primary-glow hover:brightness-125`}
         >
           {t("requestAccountDeletion")}
         </Link>
       </div>
 
-      {open && (
+      {open && flow && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
           onClick={(e) => {
@@ -176,31 +244,52 @@ export function DataControls() {
             aria-labelledby={titleId}
             aria-describedby={descId}
             data-purge-dialog=""
+            data-purge-mode={mode}
             className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-2xl"
           >
             <h3 id={titleId} className="text-[14.5px] font-semibold text-ink-strong">
-              {t("deleteMyData")}
+              {t(flow.titleKey)}
             </h3>
 
             <div id={descId} className="mt-3 space-y-3 text-[12.5px] leading-relaxed">
               <div>
                 <p className="font-medium text-ink">{t("deleteWhatGoesTitle")}</p>
                 <ul className="mt-1 list-disc ms-5 space-y-1 text-ink-dim">
-                  <li>{t("deleteItemConversations")}</li>
-                  <li>{t("deleteItemProjects")}</li>
-                  <li>{t("deleteItemFiles")}</li>
-                  <li>{t("deleteItemRag")}</li>
-                  <li>{t("deleteItemTraining")}</li>
+                  {mode === "data" ? (
+                    <>
+                      <li>{t("deleteItemConversations")}</li>
+                      <li>{t("deleteItemProjects")}</li>
+                      <li>{t("deleteItemFiles")}</li>
+                      <li>{t("deleteItemRag")}</li>
+                      <li>{t("deleteItemTraining")}</li>
+                    </>
+                  ) : (
+                    <>
+                      <li>{t("deleteAccountItemAppData")}</li>
+                      <li>{t("deleteAccountItemIdentity")}</li>
+                      <li>{t("deleteAccountItemUsage")}</li>
+                      <li>{t("deleteAccountItemTraining")}</li>
+                    </>
+                  )}
                 </ul>
               </div>
-              <div>
-                <p className="font-medium text-ink">{t("deleteWhatStaysTitle")}</p>
-                <ul className="mt-1 list-disc ms-5 space-y-1 text-ink-dim">
-                  <li>{t("deleteStaysAccount")}</li>
-                  <li>{t("deleteStaysUsage")}</li>
-                </ul>
-              </div>
-              <p className="text-amber-300">{t("deleteIrreversible")}</p>
+
+              {mode === "data" ? (
+                <div>
+                  <p className="font-medium text-ink">{t("deleteWhatStaysTitle")}</p>
+                  <ul className="mt-1 list-disc ms-5 space-y-1 text-ink-dim">
+                    <li>{t("deleteStaysAccount")}</li>
+                    <li>{t("deleteStaysUsage")}</li>
+                  </ul>
+                </div>
+              ) : (
+                /** ولا يُوعَد بمحوٍ من كل سجلٍّ تاريخيّ — بل بعدم صلاحيته */
+                <p data-historical-note="" className="text-ink-dim">
+                  {t("deleteAccountHistoricalNote")}
+                </p>
+              )}
+
+              <p className="text-amber-300">{t(flow.irreversibleKey)}</p>
             </div>
 
             <label className="mt-4 block">
@@ -231,12 +320,12 @@ export function DataControls() {
             )}
             {phase === "failed" && (
               <p role="alert" className="mt-2 text-[12px] text-red-400">
-                {t("deleteFailed")}
+                {t(flow.failedKey)}
               </p>
             )}
             {phase === "done" && (
               <p role="status" className="mt-2 text-[12px] text-emerald-400">
-                {t("deleteDone")}
+                {t(flow.doneKey)}
               </p>
             )}
 
@@ -251,14 +340,14 @@ export function DataControls() {
               </button>
               <button
                 type="button"
-                onClick={() => void purge()}
+                onClick={() => void submit()}
                 disabled={!matches || phase === "working"}
                 aria-disabled={!matches || phase === "working"}
                 data-purge-confirm=""
                 className={`${focusRing} rounded-xl bg-red-500/20 px-4 py-2 text-[13px] text-red-200
                             transition-colors hover:bg-red-500/30 disabled:opacity-40`}
               >
-                {phase === "working" ? t("deleteInProgress") : t("deleteMyData")}
+                {phase === "working" ? t(flow.busyKey) : t(flow.titleKey)}
               </button>
             </div>
           </div>

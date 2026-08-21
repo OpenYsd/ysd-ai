@@ -14,6 +14,7 @@ type CookieToSet = { name: string; value: string; options?: CookieOptions };
  * القاعدة نفسها التي يشغّلها الوسيط — راجعها هناك لشرح التعداد وحدوده.
  */
 import { isProtectedPath, isPublicPath } from "@/lib/route-policy";
+import { CSP_HEADER, NONCE_HEADER, buildContentSecurityPolicy, generateNonce } from "@/lib/csp";
 // مسارات API عامة لا تتطلب مستخدمًا نشطًا
 // /api/live: فحص حياة المنصّة — يجب أن يعمل حتى بلا جلسة وبلا أي تبعية.
 const PUBLIC_API = ["/api/health", "/api/live"];
@@ -29,6 +30,21 @@ export async function middleware(request: NextRequest) {
 
   const requestId = crypto.randomUUID();
   requestHeaders.set("x-ysd-request-id", requestId);
+
+  /**
+   * ★ nonce لهذا الطلب وحده — ثم يُوضع في ترويسة **الطلب**.
+   *
+   * وهذا ليس تفصيلًا: Next يقرأ `content-security-policy` من الطلب، يستخرج
+   * الـnonce، ويضعه على كل وسم `<script>` يحقنه هو. فلا نكتبه بأيدينا على
+   * مكوّنات متفرّقة — ما يُضاف يدويًّا يفترق عن الإطار يوم يتغيّر.
+   *
+   * ويُوضع على الاستجابة كذلك في `finalize`، فالمتصفّح يُنفّذ ما في
+   * الاستجابة والخادم يوقّع بما في الطلب — وافتراقُهما يعني صفحةً بيضاء.
+   */
+  const nonce = generateNonce();
+  const csp = buildContentSecurityPolicy(nonce);
+  requestHeaders.set(NONCE_HEADER, nonce);
+  requestHeaders.set(CSP_HEADER, csp);
 
   const cookiesToSet: CookieToSet[] = [];
   const supabase = createServerClient(
@@ -61,6 +77,13 @@ export async function middleware(request: NextRequest) {
     for (const { name, value, options } of cookiesToSet) r.cookies.set(name, value, options);
     r.headers.set("x-ysd-request-id", requestId);
     r.headers.set("Server-Timing", timingStr);
+    /**
+     * ★ على **كل** استجابة يمرّ بها الوسيط — لا على المُصيَّرة وحدها.
+     *
+     * فالتحويلات وردود 401/403/503 تخرج من هنا أيضًا، وصفحةٌ بلا سياسة
+     * ثغرةٌ صامتة: لا شيء يبدو مكسورًا، والحماية غائبة.
+     */
+    r.headers.set("Content-Security-Policy", csp);
     return r;
   };
 

@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { cleanup, fireEvent, render, act } from "@testing-library/react";
 import { readFileSync } from "node:fs";
+import { buildContentSecurityPolicy } from "@/lib/csp";
 
 /**
  * ★ موجّه Next غير مُركَّب في jsdom.
@@ -446,11 +447,22 @@ describe("★ (٥) ما لم تمسّه هذه المرحلة", () => {
      * يشرح لماذا `frame-ancestors 'none'`، و`aggregate.ts` يشرح `count:
      * "exact"` — فيمرّ الحارس وإن حُذف السطر نفسه.
      */
-    const cfg = stripComments(readSrc("next.config.mjs"));
-    expect(cfg).toMatch(/"object-src 'none'"/);
-    expect(cfg).toMatch(/"frame-ancestors 'none'"/);
-    expect(cfg).toMatch(/poweredByHeader:\s*false/);
-    expect(cfg).not.toMatch(/default-src \*/);
+    /**
+     * ★ الحارس يتبع السياسة حيث انتقلت (المرحلة 6F).
+     *
+     * كانت تُبنى في `next.config.mjs`، وصارت في `lib/csp.ts` لأن `headers()`
+     * تُبنى مرّةً عند البناء فلا تحمل `nonce` يتغيّر مع كل طلب.
+     *
+     * والثابت المحروس هو هو، بل أقوى: يُبنى الناتج ويُقاس — لا يُنقَّب عن
+     * سطرٍ في مصدرٍ قد يصفُ ما لا يفعله.
+     */
+    const policy = buildContentSecurityPolicy("N", { isDev: false });
+    expect(policy).toContain("object-src 'none'");
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).not.toMatch(/default-src \*/);
+    expect(policy).toMatch(/script-src [^;]*'nonce-N'/);
+    expect(policy).not.toMatch(/script-src [^;]*'unsafe-inline'/);
+    expect(stripComments(readSrc("next.config.mjs"))).toMatch(/poweredByHeader:\s*false/);
 
     expect(stripComments(readSrc("app/api/files/upload/route.ts"))).toMatch(
       /BUCKET_UPLOAD, 10, 60\)/,
