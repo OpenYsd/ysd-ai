@@ -1,7 +1,8 @@
 import "server-only";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { randomCode, sha256Hex, userCode } from "./crypto";
-import { DEVICE_CODE_TTL_SECONDS, DEVICE_POLL_INTERVAL_SECONDS } from "./schema";
+import { DEVICE_CODE_TTL_SECONDS, DEVICE_MAX_POLL_COUNT, DEVICE_POLL_INTERVAL_SECONDS } from "./schema";
+import { deploymentEnvironment } from "./feature";
 
 type Status = "pending" | "approved" | "denied" | "consumed";
 
@@ -19,6 +20,30 @@ export interface DeviceRecord {
 }
 
 const memory = new Map<string, DeviceRecord>();
+let nextCleanupAt = 0;
+
+function memoryStoreAllowed(): boolean {
+  const environment = deploymentEnvironment();
+  return (environment === "development" || environment === "test")
+    && process.env.YSD_BROWSER_ALLOW_MEMORY_AUTH_STORE === "1";
+}
+
+async function maybeCleanupDeviceAuthorizations(): Promise<void> {
+  const now = Date.now();
+  if (now < nextCleanupAt) return;
+  nextCleanupAt = now + 5 * 60_000;
+  const admin = getAdminClient();
+  if (!admin) return;
+  try {
+    const { error } = await admin.rpc("cleanup_browser_device_authorizations", {
+      p_limit: 250,
+      p_retention_seconds: 3600,
+    });
+    if (error) console.warn(`[browser-auth] cleanup=skipped code=${error.code ?? "rpc_error"}`);
+  } catch {
+    console.warn("[browser-auth] cleanup=skipped code=exception");
+  }
+}
 
 function sweep() {
   const now = Date.now();
@@ -50,6 +75,7 @@ export async function createDeviceAuthorization(input: {
 
   const admin = getAdminClient();
   if (admin) {
+    await maybeCleanupDeviceAuthorizations();
     const { error } = await admin.from("browser_device_authorizations").insert({
       device_code_hash: record.deviceCodeHash,
       user_code: record.userCode,
@@ -61,11 +87,14 @@ export async function createDeviceAuthorization(input: {
       poll_count: 0,
     });
     if (!error) return { deviceCode, record, storage: "db" as const };
-    console.warn(`[browser-auth] device_store=memory reason=${error.code ?? "db_error"}`);
+    console.warn(`[browser-auth] device_store=unavailable reason=${error.code ?? "db_error"}`);
   }
 
-  memory.set(deviceCodeHash, record);
-  return { deviceCode, record, storage: "memory" as const };
+  if (memoryStoreAllowed()) {
+    memory.set(deviceCodeHash, record);
+    return { deviceCode, record, storage: "memory" as const };
+  }
+  return null;
 }
 
 function mapRow(row: Record<string, unknown>): DeviceRecord {
@@ -93,8 +122,11 @@ export async function getDeviceByUserCode(userCodeValue: string): Promise<Device
       .maybeSingle();
     if (!error && data) return mapRow(data as Record<string, unknown>);
   }
-  sweep();
-  return [...memory.values()].find((r) => r.userCode === userCodeValue) ?? null;
+  if (memoryStoreAllowed()) {
+    sweep();
+    return [...memory.values()].find((r) => r.userCode === userCodeValue) ?? null;
+  }
+  return null;
 }
 
 export async function getDeviceByCode(deviceCode: string): Promise<DeviceRecord | null> {
@@ -108,48 +140,84 @@ export async function getDeviceByCode(deviceCode: string): Promise<DeviceRecord 
       .maybeSingle();
     if (!error && data) return mapRow(data as Record<string, unknown>);
   }
-  sweep();
-  return memory.get(hash) ?? null;
+  if (memoryStoreAllowed()) {
+    sweep();
+    return memory.get(hash) ?? null;
+  }
+  return null;
 }
 
 export async function markUserDecision(record: DeviceRecord, userId: string, decision: "approve" | "deny") {
   const status: Status = decision === "approve" ? "approved" : "denied";
   const admin = getAdminClient();
   if (admin) {
-    await admin
+    const { data, error } = await admin
       .from("browser_device_authorizations")
       .update({ status, user_id: userId, authorized_at: new Date().toISOString() })
       .eq("device_code_hash", record.deviceCodeHash)
-      .eq("status", "pending");
+      .eq("status", "pending")
+      .gt("expires_at", new Date().toISOString())
+      .select("device_code_hash")
+      .maybeSingle();
+    if (!error) return Boolean(data);
   }
-  const existing = memory.get(record.deviceCodeHash);
-  if (existing) memory.set(record.deviceCodeHash, { ...existing, status, userId });
+  if (memoryStoreAllowed()) {
+    const existing = memory.get(record.deviceCodeHash);
+    if (existing && existing.status === "pending" && !isExpired(existing)) {
+      memory.set(record.deviceCodeHash, { ...existing, status, userId });
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function recordPoll(record: DeviceRecord) {
+  if (record.pollCount >= DEVICE_MAX_POLL_COUNT) return false;
   const now = new Date();
   const admin = getAdminClient();
   if (admin) {
-    await admin
+    const { data, error } = await admin
       .from("browser_device_authorizations")
       .update({ poll_count: record.pollCount + 1, last_poll_at: now.toISOString() })
-      .eq("device_code_hash", record.deviceCodeHash);
+      .eq("device_code_hash", record.deviceCodeHash)
+      .eq("poll_count", record.pollCount)
+      .lt("poll_count", DEVICE_MAX_POLL_COUNT)
+      .gt("expires_at", now.toISOString())
+      .select("device_code_hash")
+      .maybeSingle();
+    if (!error) return Boolean(data);
   }
-  const existing = memory.get(record.deviceCodeHash);
-  if (existing) memory.set(record.deviceCodeHash, { ...existing, pollCount: existing.pollCount + 1, lastPollAt: now.toISOString() });
+  if (memoryStoreAllowed()) {
+    const existing = memory.get(record.deviceCodeHash);
+    if (existing && existing.pollCount === record.pollCount && existing.pollCount < DEVICE_MAX_POLL_COUNT && !isExpired(existing)) {
+      memory.set(record.deviceCodeHash, { ...existing, pollCount: existing.pollCount + 1, lastPollAt: now.toISOString() });
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function consumeDevice(record: DeviceRecord) {
   const admin = getAdminClient();
   if (admin) {
-    await admin
+    const { data, error } = await admin
       .from("browser_device_authorizations")
       .update({ status: "consumed", consumed_at: new Date().toISOString() })
       .eq("device_code_hash", record.deviceCodeHash)
-      .eq("status", "approved");
+      .eq("status", "approved")
+      .gt("expires_at", new Date().toISOString())
+      .select("device_code_hash")
+      .maybeSingle();
+    if (!error) return Boolean(data);
   }
-  const existing = memory.get(record.deviceCodeHash);
-  if (existing) memory.set(record.deviceCodeHash, { ...existing, status: "consumed" });
+  if (memoryStoreAllowed()) {
+    const existing = memory.get(record.deviceCodeHash);
+    if (existing?.status === "approved" && !isExpired(existing)) {
+      memory.set(record.deviceCodeHash, { ...existing, status: "consumed" });
+      return true;
+    }
+  }
+  return false;
 }
 
 export function isExpired(record: DeviceRecord) {
@@ -159,4 +227,10 @@ export function isExpired(record: DeviceRecord) {
 export function shouldSlowDown(record: DeviceRecord) {
   if (!record.lastPollAt) return false;
   return Date.now() - new Date(record.lastPollAt).getTime() < DEVICE_POLL_INTERVAL_SECONDS * 1000;
+}
+
+/** Test-only reset; never exposes stored authorization material. */
+export function _resetDeviceStore(): void {
+  memory.clear();
+  nextCleanupAt = 0;
 }

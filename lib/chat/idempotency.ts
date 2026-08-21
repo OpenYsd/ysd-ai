@@ -123,7 +123,8 @@ export async function claimRequestDurable(
   supabase: MinimalClient,
   userId: string,
   clientRequestId: string | undefined,
-  conversationId: string,
+  conversationId: string | null,
+  requireDurable = false,
 ): Promise<ClaimOutcome> {
   if (!clientRequestId) return { ok: true, storage: "memory" };
 
@@ -159,9 +160,16 @@ export async function claimRequestDurable(
   }
 
   if (error.code === UNDEFINED_TABLE) {
+    if (requireDurable) {
+      return { ok: false, duplicate: false, reason: "idempotency_table_unavailable" };
+    }
     // الـmigration لم تُطبَّق — الذاكرة وحدها (حماية داخل النسخة فقط)
     console.error("[idempotency] chat_request_ids missing — falling back to memory");
     return { ok: true, storage: "memory" };
+  }
+
+  if (requireDurable) {
+    return { ok: false, duplicate: false, reason: `idempotency_claim_failed_${error.code ?? "unknown"}` };
   }
 
   // عطل قاعدة آخر: لا نمنع المستخدم من الإرسال بسببه
