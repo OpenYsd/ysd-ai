@@ -10,6 +10,22 @@ const VECTOR_MIGRATION =
   "supabase/migrations/20260821052043_harden_vector_extension_schema_v2.sql";
 
 describe("Production Readiness Sprint 2 contracts", () => {
+  it("preserves the live monitoring and recovery baseline during readiness reconciliation", () => {
+    for (const path of [
+      ".github/workflows/production-health.yml",
+      "lib/ops/storage-reconcile.ts",
+      "scripts/v131-pg-restore-drill.mjs",
+      "tests/v131-monitoring-recovery.test.ts",
+    ]) {
+      expect(fs.existsSync(path), path).toBe(true);
+    }
+
+    const workflow = fs.readFileSync(".github/workflows/production-health.yml", "utf8");
+    expect(workflow).toContain("schedule:");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).not.toContain("ysd-ai-staging-staging.up.railway.app");
+  });
+
   it("sequences every future migration after the live 0047 baseline", () => {
     for (const migration of [BROWSER_MIGRATION, DEFINER_MIGRATION, VECTOR_MIGRATION]) {
       const version = migration.split("/").at(-1)?.split("_", 1)[0] ?? "";

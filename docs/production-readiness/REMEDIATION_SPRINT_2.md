@@ -1,12 +1,14 @@
 # Production Readiness Remediation Sprint 2
 
-Zero-cost reconciliation gate. The only authorized live change was disabling Railway Production auto-deploy from the moving `staging` branch; it created no deployment or restart. No Production database, Auth, SMTP, variables, provider settings, Railway source branch, Browser publication, or Browser version was changed.
+Zero-cost reconciliation gate. Phase 0 found that Railway Production auto-deploy had been re-enabled and had already advanced Production to `6bfd511`; it was disabled again without another deployment or restart. The new runtime baseline is preserved without rollback. No Production database, Auth, SMTP, provider settings, Railway source branch, Browser publication, or Browser version was changed.
 
 ## Immutable candidates
 
-- Backend branch: `release/ysd-assistant-production-readiness-v2`
+- Backend branch: `release/ysd-assistant-production-readiness-v3`
 - Backend candidate: the commit containing this report (record with `git rev-parse HEAD`)
-- Backend baseline: `3250b974ae2064aea5bfd90937b8825b58a0aae3`
+- Backend baseline: `6bfd511f7367e213edc379df722cbc82519c95b9`
+- Baseline branch: `release/production-baseline-6bfd511`
+- Preserved monitoring/recovery commits: `ae21d08137f8b688f4ec8413c161568d1e66a691` and `6bfd511f7367e213edc379df722cbc82519c95b9`
 - Integrated readiness tip: `710c847c37f258452cfa05f02bbc687dcc58d47b`
 - Browser branch: `release/0.8.3-dev.3-production-readiness`
 - Browser baseline: `fd1ad9ed0a013b4b1e5f99282d560d8de9b55289`
@@ -17,16 +19,16 @@ Zero-cost reconciliation gate. The only authorized live change was disabling Rai
 ## Verification summary
 
 - Browser clean clone: Release build with warnings-as-errors PASS; 93/93 SessionTests PASS; clean tracked state.
-- Backend candidate: typecheck PASS; Next 15 lint PASS with no warnings; 132/132 test files PASS, 3,592 tests PASS, 6 optional live tests skipped; production build PASS.
+- Backend candidate: typecheck PASS; Next 15 lint PASS with no warnings; 133/133 test files PASS, 3,627 tests PASS, 6 optional live tests skipped; production build PASS.
 - Runtime dependency audit after safe PostCSS and dev-tool patch upgrades: 5 HIGH, 0 CRITICAL; no demonstrated current Browser Assistant or Production exploit path. The full developer tree has 6 HIGH and 1 CRITICAL (Vitest UI server), which is development-only and requires a separately reviewed major toolchain upgrade. The separate Next 16 branch removes the Next runtime finding.
 - Combined representative-clone migration rehearsal: live baseline 0047 plus all three future migrations and immediate rerun PASS; usage isolation/totals, data/checksum, HNSW index, authenticated RAG, anonymous rejection, grants, and the disabled Browser feature contract all passed.
-- Zero-cost manual monitoring and Railway branch-name transition procedures are operationally documented.
+- Zero-cost GitHub health monitoring, manual escalation, restore-drill evidence, and the Railway branch-name transition are preserved and operationally documented.
 
 ## Production freeze verification
 
-Railway Production auto-deploy is disabled. The current successful deployment remains `59e00f32-0c68-4876-9cc8-b27fbf703ff7` at Git commit `3250b974ae2064aea5bfd90937b8825b58a0aae3`; no new deployment, restart, rollback, or source-branch switch was triggered.
+Railway Production auto-deploy is disabled. The current successful deployment is `5fd1db33-b220-46c3-a21f-e7bdbb43c2cb` at Git commit `6bfd511f7367e213edc379df722cbc82519c95b9`. Phase 0 triggered no later deployment, restart, rollback, migration, or source-branch switch.
 
-The read-only database inventory reports 40 applied migrations, 14 Auth users, no Browser Assistant table, and the vector extension still in `public`. Live `20260821045412_0047_usage_totals_rpc` is source-identical and least-privilege. The canonical Railway variable fingerprint remains `5adaa5b236f6632955771605d230bce4bd56189c935d27985801008850ad0950`; values were not recorded. Production provider/model configuration remained enabled for OpenRouter `ysd/free`.
+The read-only database inventory reports 40 applied migrations, 14 Auth users, no Browser Assistant table, and the vector extension still in `public`. Live `20260821045412_0047_usage_totals_rpc` is source-identical and least-privilege. Phase 0 explicitly pinned `YSD_BROWSER_ASSISTANT_ENABLED=0` with deployment skipped; the resulting canonical variable fingerprint is `9c1e23371e09992a39ed8b83db649854f35688a09b10ca02a2479e12c68f662e`, with no values recorded. The currently deployed pre-candidate runtime remains fail-closed as `auth_unconfigured` and has no Browser token secret.
 
 ## Final matrix
 
@@ -49,16 +51,16 @@ The read-only database inventory reports 40 applied migrations, 14 Auth users, n
 | Browser Assistant Migration | PASS | Forward-only, feature disabled, RLS forced, rerun safe. |
 | Combined Migration Rehearsal | PASS | Live 0047 → A → B → C and immediate rerun passed. |
 | Railway Production Branch Plan | PASS | Protected `release/production` zero-diff sequence documented. |
-| Free Monitoring Runbook | PASS | Manual cadence, owner, thresholds, privacy, and escalation documented. |
+| Free Monitoring Runbook | PASS | Existing GitHub health workflow plus manual cadence, owner, thresholds, privacy, and escalation preserved. |
 | SMTP | BLOCKED — REQUIRES PAID INFRASTRUCTURE | No unsafe workaround. |
 | Password Protection | BLOCKED — REQUIRES PAID INFRASTRUCTURE | No unsafe workaround. |
 | Browser Build | PASS | Release, warnings-as-errors. |
 | Browser Tests | PASS | 93/93. |
 | Backend Typecheck | PASS | `tsc --noEmit`. |
 | Backend Lint | PASS | Next 15 candidate, no warnings/errors. |
-| Backend Tests | PASS | 3,592 passed; 6 optional live skipped. |
+| Backend Tests | PASS | 3,627 passed; 6 optional live skipped. |
 | Backend Build | PASS | Next 15.5.23 production build, 64 static pages. |
-| Production Containment | PASS | Auto-deploy disabled; deployment/runtime/data/variables unchanged. |
+| Production Containment | PASS | Auto-deploy disabled again; `6bfd511` accepted as the no-rollback runtime baseline. |
 
 ## Final decision
 

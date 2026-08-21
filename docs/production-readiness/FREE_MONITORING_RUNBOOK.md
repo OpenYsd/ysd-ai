@@ -1,11 +1,12 @@
 # Free Monitoring Runbook
 
-Use only the existing Railway dashboard/CLI, Supabase dashboard/logs, and YSD's existing internal telemetry. Do not add paid alerts, credits, or services.
+Use only the existing GitHub Actions health workflow, Railway dashboard/CLI, Supabase dashboard/logs, and YSD's existing internal telemetry. Do not add paid alerts, credits, or services. The repository workflow runs the public health check every 15 minutes and also supports manual dispatch; its result is evidence, not a guarantee that an external notification was delivered.
 
 ## Checklist
 
 | Surface | Manual checks | Escalation trigger |
 | --- | --- | --- |
+| GitHub Actions | `production-health.yml` schedule/dispatch status and the redacted health artifact | missed/failed checks, unexpected URL, or non-200 health response |
 | Railway | deployment SHA/status, instance health, health endpoint, 5xx count/pattern, application error logs | wrong SHA, failed/restarting instance, sustained 5xx, repeated uncaught errors |
 | Supabase | database health, connection pressure, Auth failures, Security Advisor delta, DB error/slow-query logs | degraded health, connection exhaustion, unexplained Auth spike, new ERROR security finding, repeated DB errors |
 | YSD Assistant | request count, p50/p95 latency, SSE disconnects, Device Auth failures, HTTP 429s, provider failures, quota rejections | error/429/provider failures above the approved pilot threshold, sustained latency regression, repeated token/device failures |

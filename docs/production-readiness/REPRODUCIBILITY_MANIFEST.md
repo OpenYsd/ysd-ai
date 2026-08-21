@@ -1,13 +1,15 @@
 # Full-System Reproducibility Manifest
 
-This manifest identifies source and tool assumptions without credentials. The immutable Backend candidate is the commit containing this manifest on `release/ysd-assistant-production-readiness-v2`; record its SHA with `git rev-parse HEAD` after verification.
+This manifest identifies source and tool assumptions without credentials. The immutable Backend candidate is the commit containing this manifest on `release/ysd-assistant-production-readiness-v3`; record its SHA with `git rev-parse HEAD` after verification.
 
 ## Backend
 
 - Repository: `https://github.com/OpenYsd/ysd-ai.git`
-- Current Production baseline before readiness work: `3250b974ae2064aea5bfd90937b8825b58a0aae3`
+- Current Production baseline before readiness work: `6bfd511f7367e213edc379df722cbc82519c95b9`
+- Current-runtime baseline branch: `release/production-baseline-6bfd511`
+- Preserved operational commits: `ae21d08137f8b688f4ec8413c161568d1e66a691` and `6bfd511f7367e213edc379df722cbc82519c95b9`
 - Previously tested readiness tip integrated without deployment: `710c847c37f258452cfa05f02bbc687dcc58d47b`
-- Candidate branch: `release/ysd-assistant-production-readiness-v2`
+- Candidate branch: `release/ysd-assistant-production-readiness-v3`
 - Runtime used: Node.js 24.16.0; npm 11.13.0
 - Install: `npm ci`
 - Gate: `npm run typecheck`, `npm run lint`, `npm test -- --reporter=dot`, `npm run build`, `npm audit --omit=dev`, and full `npm audit`

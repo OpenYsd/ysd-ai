@@ -345,11 +345,12 @@ describe("★ (٥) الحدود القائمة", () => {
   it("★ ★ ★ ولا ترحيلَ جديدًا في هذه المرحلة", () => {
     /** المراقبةُ والتعافي لا يحتاجان مخطّطًا — و0047 مُطبَّقٌ رسميًّا */
     const { readdirSync } = require("node:fs") as typeof import("node:fs");
-    const nums = readdirSync("supabase/migrations")
+    const versions = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
-      .map((f) => Number(f.slice(0, 4)));
-    expect(nums).toContain(47);
-    expect(Math.max(...nums)).toBe(47);
-    expect(new Set(nums).size).toBe(nums.length);
+      .map((f) => f.slice(0, f.indexOf("_")));
+    const legacyNums = versions.filter((v) => v.length === 4).map(Number);
+    expect(legacyNums).toContain(47);
+    expect(Math.max(...legacyNums)).toBe(47);
+    expect(new Set(versions).size).toBe(versions.length);
   });
 });
