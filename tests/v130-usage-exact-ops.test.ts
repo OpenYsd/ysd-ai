@@ -30,7 +30,10 @@ const stripComments = (src: string) =>
 const MIGRATION = readSrc("supabase/migrations/0047_usage_totals_rpc.sql");
 const AGGREGATE = readSrc("lib/usage/aggregate.ts");
 const RUNBOOK = readSrc("docs/OPERATIONS.md");
-const HEALTH_PUBLIC = readSrc("app/api/health/route.ts");
+const HEALTH_PUBLIC = [
+  readSrc("app/api/health/route.ts"),
+  readSrc("lib/health/public-response.ts"),
+].join("\n");
 const LIVE = readSrc("app/api/live/route.ts");
 const CHECKS = readSrc("lib/health/checks.ts");
 const DELETE_ROUTE = readSrc("app/api/account/delete-account/route.ts");

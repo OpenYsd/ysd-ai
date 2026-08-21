@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkEnv } from "@/lib/env";
 import { getEmbeddingModelState } from "@/lib/rag/embeddings";
 import { getRagRuntimeConfig } from "@/lib/rag/runtime-config";
@@ -63,18 +63,40 @@ async function probeStorageReachable(): Promise<Check> {
   }
 }
 
+interface HealthDependencies {
+  getAdminClient: () => SupabaseClient | null;
+  probeStorageReachable: () => Promise<Check>;
+}
+
+const DEFAULT_DEPENDENCIES: HealthDependencies = {
+  getAdminClient,
+  probeStorageReachable,
+};
+
 /** ينفّذ كل فحوص التبعيات ويُرجع النتيجة الكاملة (بلا صياغة استجابة) */
-export async function runHealthChecks(): Promise<HealthResult> {
+export async function runHealthChecks(
+  overrides: Partial<HealthDependencies> = {},
+): Promise<HealthResult> {
   const t0 = Date.now();
   const env = checkEnv();
   const cfg = getRagRuntimeConfig();
   const checks: Record<string, Check> = {};
+  const deps = { ...DEFAULT_DEPENDENCIES, ...overrides };
 
   try {
-    const supabase = await createClient();
+    /**
+     * فحصُ الجاهزية عام، لكن اتصاله بالقاعدة **خادميٌّ فقط**.
+     *
+     * كان عميلُ anon يستدعي `match_file_chunks` كفحص pgvector، فصار تشديدُ
+     * صلاحيات الدالّة الصحيح في 52042 يُسقط الصحة. عميلُ الخدمة موجود أصلًا
+     * ولا يدخل حزمة المتصفّح (`server-only`). نستخدم HEAD بلا صفوف ولا RPC:
+     * أسماء أعمدة ثابتة فقط، فلا محتوى مستخدم يُقرأ أو يُعاد أو يُسجَّل.
+     */
+    const supabase = deps.getAdminClient();
+    if (!supabase) throw new Error("server_database_unavailable");
 
     const dbProbe = await withTimeout(
-      supabase.from("usage_limits").select("tier").limit(1),
+      supabase.from("usage_limits").select("tier", { head: true }).limit(1),
       3000,
     );
     checks.database =
@@ -85,25 +107,20 @@ export async function runHealthChecks(): Promise<HealthResult> {
           : { status: "ok" };
     checks.supabase = checks.database.status === "ok" ? { status: "ok" } : { status: "degraded" };
 
-    // pgvector: دالة البحث موجودة وقابلة للاستدعاء (بلا نتائج)
+    // pgvector: تحقق خادمي من وجود عمود vector وقابلية Data API لقراءته، بلا صفوف.
     const vecProbe = await withTimeout(
-      supabase.rpc("match_file_chunks", {
-        p_query_embedding: JSON.stringify(new Array(384).fill(0)),
-        p_file_ids: [],
-        p_match_count: 1,
-        p_min_similarity: 0.99,
-      }),
+      supabase.from("file_chunks").select("embedding", { head: true }).limit(1),
       3000,
     );
     checks.pgvector =
       "timeout" in vecProbe
         ? { status: "down", detail: "timeout" }
         : vecProbe.error
-          ? { status: "down", detail: "rpc_unavailable" }
+          ? { status: "down", detail: "vector_probe_failed" }
           : { status: "ok" };
 
     // Storage: وصول الخدمة (لا تفتيش إداري) — أي استجابة HTTP = الخدمة تعمل
-    checks.storage = await probeStorageReachable();
+    checks.storage = await deps.probeStorageReachable();
   } catch {
     checks.supabase = { status: "down", detail: "client_init_failed" };
     checks.database = { status: "down" };
