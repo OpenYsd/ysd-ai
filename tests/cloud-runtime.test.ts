@@ -22,7 +22,10 @@ const codeOnly = (s: string) =>
 
 const DOCKERFILE = read("Dockerfile");
 const CHAT_ROUTE = read("app/api/chat/route.ts");
-const HEALTH_ROUTE = read("app/api/health/route.ts");
+const HEALTH_ROUTE = [
+  read("app/api/health/route.ts"),
+  read("lib/health/public-response.ts"),
+].join("\n");
 const ADMIN_HEALTH = read("app/api/admin/health/route.ts");
 const LIVE_ROUTE = read("app/api/live/route.ts");
 const MIDDLEWARE = read("middleware.ts");
