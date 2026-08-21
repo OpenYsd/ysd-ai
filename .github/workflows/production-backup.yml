@@ -1,0 +1,221 @@
+# ============================================================
+# نسخةُ الإنتاج المشفَّرة — المرحلة 6I-B
+#
+# ── الحقيقةُ التي يبني عليها هذا الملفّ كلُّه ──
+#
+# **المستودع عامّ.** فكلُّ ما يُرفع أثرًا من هنا يجب أن يُعامَل كأنه في
+# متناول أي أحد. ولا يُرفع إلا نصٌّ مشفَّر — ولا شيء غيره، ولا لحظةً واحدة.
+#
+# ولذلك يقع التشفير **قبل** الرفع لا بعده، ويُتحقَّق من وجود الملفّ المشفَّر
+# وحجمه قبل أن تُذكر خطوةُ الرفع أصلًا.
+#
+# ── ولماذا لا يعمل عند كل دفعة ──
+#
+# دفعةُ شيفرةٍ ليست سببًا لنسخ بيانات الناس. فمرّةً في اليوم، وبطلبٍ يدويّ
+# عند الحاجة — لا أكثر.
+#
+# ── وخطةُ Supabase مجانية ──
+#
+# لا نسخَ آليًّا من المنصّة، ولا PITR. فهذه النسخةُ هي كلُّ ما هناك — وهذا
+# سببٌ إضافيّ لأن تفشل مغلقةً بدل أن تنجح ناقصة.
+#
+# ── ولا أسرارَ في السجلّ ──
+#
+# لا عنوانَ قاعدة، ولا مفتاحَ خدمة، ولا مسارَ كائن، ولا معرّفَ مستخدم.
+# ما يخرج: أسماءُ مراحل، وأعداد، وأحجام.
+# ============================================================
+
+name: production-backup
+
+on:
+  schedule:
+    # دقيقةٌ غيرُ مستديرة: ذروةُ الجدولة في GitHub عند رأس الساعة
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# ★ لا `pull_request` ولا `pull_request_target` ولا شيء يقبل شوكةً.
+#   سيرٌ يحمل اعتماد الإنتاج ويعمل على شوكةٍ يُسلّم الإنتاج لمن فتحها.
+
+concurrency:
+  group: production-backup
+  cancel-in-progress: false
+
+# القراءة تكفي — والنسخُ لا يُغيّر المستودع
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # ★ حارسٌ ثانٍ: لا يعمل إلا في المستودع الأصل
+    if: github.repository == 'OpenYsd/ysd-ai'
+
+    env:
+      YSD_BACKUP_SUPABASE_URL: ${{ vars.YSD_BACKUP_SUPABASE_URL }}
+      YSD_BACKUP_AGE_RECIPIENT: ${{ vars.YSD_BACKUP_AGE_RECIPIENT }}
+      # الحدُّ الأعلى للحزمة المشفَّرة — يُتجاوز فيفشل ولا يُقصّ صامتًا
+      MAX_ARCHIVE_BYTES: "419430400"
+
+    steps:
+      - name: Checkout (backup tooling only)
+        uses: actions/checkout@v4
+
+      - name: Verify required configuration is present
+        shell: bash
+        env:
+          DB_URL: ${{ secrets.YSD_BACKUP_DATABASE_URL }}
+          SERVICE_KEY: ${{ secrets.YSD_BACKUP_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=0
+          # ★ الأسماءُ فقط — ولا قيمةَ ولا طولَ ولا بادئة
+          for name in DB_URL SERVICE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              case "$name" in
+                DB_URL)      echo "::error::missing secret: YSD_BACKUP_DATABASE_URL" ;;
+                SERVICE_KEY) echo "::error::missing secret: YSD_BACKUP_SERVICE_ROLE_KEY" ;;
+              esac
+              missing=1
+            fi
+          done
+          for name in YSD_BACKUP_SUPABASE_URL YSD_BACKUP_AGE_RECIPIENT; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::missing repository variable: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::backup is BLOCKED BY CONFIGURATION — see docs/OPERATIONS.md"
+            exit 1
+          fi
+          case "${YSD_BACKUP_AGE_RECIPIENT}" in
+            age1*) : ;;
+            *) echo "::error::YSD_BACKUP_AGE_RECIPIENT must be an age public recipient (age1…)"; exit 1 ;;
+          esac
+          echo "configuration present"
+
+      - name: Install age and zstd
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age zstd >/dev/null
+          age --version
+          zstd --version --quiet || true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Prepare working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +%Y-%m-%dT%H%M%SZ)"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          WORK="$RUNNER_TEMP/ysd-backup"
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
+          mkdir -p "$WORK/backup/database"
+          echo "prepared"
+
+      # ── قاعدةُ البيانات: أدوارٌ ثم مخطّطٌ ثم بيانات ──
+      #
+      # ★ ولماذا `--data-only` يشمل `auth`.
+      #
+      # فحصتُ نصَّ `pg_dump` الذي يولّده الـCLI: مسحُ **المخطّط** يستثني
+      # `auth` و`storage` (تديرهما المنصّة)، أمّا مسحُ **البيانات** فلا
+      # يستثنيهما — يستثني جدولَي الترحيل فيهما فقط.
+      #
+      # فصفوفُ `auth.users` تدخل النسخة. والمخطّطُ لا يدخل — ولا يحتاج:
+      # مشروعٌ جديد يُنشئه بنفسه.
+      - name: Dump database (roles, schema, data)
+        shell: bash
+        env:
+          DB_URL: ${{ secrets.YSD_BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          cd "$WORK/backup/database"
+
+          echo "stage=roles"
+          npx --yes supabase@2 db dump --db-url "$DB_URL" --role-only -f roles.sql 2>/dev/null
+
+          echo "stage=schema"
+          npx --yes supabase@2 db dump --db-url "$DB_URL" -f schema.sql 2>/dev/null
+
+          echo "stage=data"
+          npx --yes supabase@2 db dump --db-url "$DB_URL" --data-only --use-copy -f data.sql 2>/dev/null
+
+          for f in roles.sql schema.sql data.sql; do
+            if [ ! -s "$f" ]; then
+              echo "::error::database dump stage produced an empty file: $f"
+              exit 1
+            fi
+            echo "  $f bytes=$(stat -c%s "$f")"
+          done
+
+      # ── التخزين: بايتاتٌ لا مُجرَّد بيانات وصفية ──
+      - name: Export storage objects
+        shell: bash
+        env:
+          YSD_BACKUP_SERVICE_ROLE_KEY: ${{ secrets.YSD_BACKUP_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          node scripts/backup/export-storage.mjs "$WORK/backup"
+
+      - name: Build manifest
+        shell: bash
+        env:
+          DB_URL: ${{ secrets.YSD_BACKUP_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          node scripts/backup/make-manifest.mjs "$WORK/backup" "${{ github.sha }}"
+
+      # ── ضغطٌ ثم تشفير — بهذا الترتيب، وقبل أي رفع ──
+      - name: Compress and encrypt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          ARCHIVE="ysd-production-backup-$STAMP.tar.zst"
+          tar --use-compress-program='zstd -19 -T0' -cf "$ARCHIVE" backup
+          age -r "$YSD_BACKUP_AGE_RECIPIENT" -o "$ARCHIVE.age" "$ARCHIVE"
+
+          # ★ النصُّ الصريح يُمحى قبل أن يقترب الرفع
+          rm -f "$ARCHIVE"
+          rm -rf "$WORK/backup"
+
+          if [ ! -s "$ARCHIVE.age" ]; then
+            echo "::error::encrypted archive missing or empty — nothing will be uploaded"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$ARCHIVE.age")
+          echo "encrypted_bytes=$SIZE"
+          if [ "$SIZE" -gt "$MAX_ARCHIVE_BYTES" ]; then
+            echo "::error::encrypted backup is ${SIZE} bytes, above the ${MAX_ARCHIVE_BYTES} limit — backup destination capacity review required"
+            exit 1
+          fi
+          echo "ARCHIVE_PATH=$WORK/$ARCHIVE.age" >> "$GITHUB_ENV"
+
+      - name: Assert only ciphertext remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          # ★ حارسٌ أخير قبل الرفع: لا شيء غير المشفَّر
+          leftovers=$(find . -type f ! -name '*.age' | head -20 || true)
+          if [ -n "$leftovers" ]; then
+            echo "::error::plaintext files still present in the upload directory"
+            echo "$leftovers" | sed 's/[^/]*$/<redacted>/'
+            exit 1
+          fi
+          echo "only ciphertext present"
+
+      - name: Upload encrypted backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: ysd-production-backup-${{ env.STAMP }}
+          path: ${{ env.ARCHIVE_PATH }}
+          retention-days: 7
+          if-no-files-found: error
