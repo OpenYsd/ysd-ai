@@ -1,4 +1,4 @@
--- Forward-only least-privilege hardening for the known caller-owned
+-- Forward-only least-privilege hardening, sequenced after live 0047, for the known caller-owned
 -- SECURITY DEFINER functions. Authenticated access remains only where the
 -- existing product contract requires it; PUBLIC and anon are unnecessary.
 

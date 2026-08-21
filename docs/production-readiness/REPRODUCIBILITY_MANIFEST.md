@@ -1,16 +1,16 @@
 # Full-System Reproducibility Manifest
 
-This manifest identifies source and tool assumptions without credentials. The immutable Backend candidate is the commit containing this manifest on `release/ysd-assistant-production-readiness`; record its SHA with `git rev-parse HEAD` after verification.
+This manifest identifies source and tool assumptions without credentials. The immutable Backend candidate is the commit containing this manifest on `release/ysd-assistant-production-readiness-v2`; record its SHA with `git rev-parse HEAD` after verification.
 
 ## Backend
 
 - Repository: `https://github.com/OpenYsd/ysd-ai.git`
-- Baseline before production-readiness work: `c29dc055b6e63659b3c4c5d73086b97eb2ae03fd`
-- Sprint 1 parent candidate: `c03aa1406ace9cedd0868567ef9142dda3b8eede`
-- Candidate branch: `release/ysd-assistant-production-readiness`
+- Current Production baseline before readiness work: `3250b974ae2064aea5bfd90937b8825b58a0aae3`
+- Previously tested readiness tip integrated without deployment: `710c847c37f258452cfa05f02bbc687dcc58d47b`
+- Candidate branch: `release/ysd-assistant-production-readiness-v2`
 - Runtime used: Node.js 24.16.0; npm 11.13.0
 - Install: `npm ci`
-- Gate: `npm run typecheck`, `npm run lint`, `npm test -- --run`, `npm run build`, `npm audit --omit=dev`
+- Gate: `npm run typecheck`, `npm run lint`, `npm test -- --reporter=dot`, `npm run build`, `npm audit --omit=dev`, and full `npm audit`
 
 ## Browser
 
@@ -25,7 +25,8 @@ This manifest identifies source and tool assumptions without credentials. The im
 
 ## Database assumptions
 
-- Supabase CLI used for migration creation/lint: 2.115.0.
+- Supabase CLI used for the earlier migration lint: 2.115.0. The current reconciliation is a forward-only filename rebase of the previously tested SQL, not a Production migration application.
+- Current live baseline includes `20260821045412_0047_usage_totals_rpc`; its stored statement was verified source-identical to `supabase/migrations/0047_usage_totals_rpc.sql`.
 - Production metadata observed read-only: PostgreSQL with pgvector 0.8.2, relocatable from `public`; `file_chunks.embedding` is `vector(384)` and its HNSW cosine index is valid.
 - Disposable rehearsal runtime: PostgreSQL 17.11 with pgvector 0.8.6.
 - Production remains the authority for final preflight checks in a future controlled window; the rehearsal contains representative, not customer, data.

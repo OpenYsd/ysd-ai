@@ -15,7 +15,7 @@ Preparation only. No Production deployment, database, migration, environment var
 The feature must remain off while migration/config prerequisites are prepared.
 
 1. Set `YSD_BROWSER_ASSISTANT_ENABLED=0` first.
-2. Apply only `20260821024622_browser_assistant_production_readiness.sql` after a backup/change window and schema preflight. Do not replay `0035`.
+2. Apply only `20260821052041_browser_assistant_production_readiness.sql` after a backup/change window and schema preflight. Do not replay `0035`.
 3. Generate a new independent `YSD_BROWSER_TOKEN_SECRET` with at least 32 cryptographically random bytes and set it through Railway's secret UI/CLI without printing it. Do not reuse the Supabase JWT secret, service-role key, or rate-limit HMAC secret.
 4. Confirm `RATE_LIMIT_HMAC_SECRET`, Supabase service role, Production `APP_ORIGIN`, and OpenRouter key are already present without revealing their values.
 5. Optional `YSD_BROWSER_PROVIDER` and `YSD_BROWSER_MODEL_ID`, if set, must be exactly `openrouter` and `ysd/free`. Missing optional values use those compiled authoritative constants. Any contradiction fails closed.

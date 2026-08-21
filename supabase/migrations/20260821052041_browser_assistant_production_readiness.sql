@@ -1,4 +1,4 @@
--- Forward-only Browser Assistant production-readiness migration.
+-- Forward-only Browser Assistant production-readiness migration, sequenced after live 0047.
 -- This is intentionally independent of historical migration 0035.
 -- It is additive, performs no data deletion while applying, and aborts on
 -- an unexpected pre-existing schema instead of guessing how to repair it.

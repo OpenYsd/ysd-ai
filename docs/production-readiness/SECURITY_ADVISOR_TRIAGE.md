@@ -8,9 +8,9 @@ Scope: read-only audit of Production project `mnewsldyrrlpmouetyve`; source hard
 - 49 `public` SECURITY DEFINER functions were also inspected directly from `pg_proc`.
 - Every SECURITY DEFINER function has a fixed `search_path`; none contains dynamic `EXECUTE` SQL.
 - `anon` and `authenticated` cannot create objects in `public`, so fixed `public` search paths are not attacker-writable. New Browser functions nevertheless use `search_path = ''`.
-- Four unnecessary anonymous execution surfaces are removed by the separate forward migration `20260821035648_security_definer_least_privilege.sql`: `claim_rag_job`, `reclaim_expired_rag_jobs`, `match_file_chunks`, and `is_admin`.
+- Four unnecessary anonymous execution surfaces are removed by the separate forward migration `20260821052042_security_definer_least_privilege.sql`: `claim_rag_job`, `reclaim_expired_rag_jobs`, `match_file_chunks`, and `is_admin`.
 - The three remaining anonymously executable Qiyas functions are intentionally public, read-only, fixed-path interfaces. They expose static allowlisted assets or an `auth.uid()`-scoped boolean only.
-- The `vector` extension location remains a real live finding. The separate forward migration `20260821035652_harden_vector_extension_schema_v2.sql` is prepared and passed the representative-clone relocation, index, data-integrity, and RAG checks; it remains unapplied under the Production freeze.
+- The `vector` extension location remains a real live finding. The separate forward migration `20260821052043_harden_vector_extension_schema_v2.sql` is prepared and passed the representative-clone relocation, index, data-integrity, and RAG checks; it remains unapplied under the Production freeze.
 - Leaked-password protection is a real Auth hardening item but is available only on Supabase Pro and above.
 
 Expected post-candidate Advisor delta after the migration is eventually approved and applied: the four `anon_security_definer_function_executable` warnings above disappear; the 12 deny-by-default RLS INFO items and three intentional public Qiyas warnings remain; authenticated SECURITY DEFINER warnings remain where direct signed-in RPC access is the product contract.

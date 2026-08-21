@@ -7,7 +7,7 @@ import {
   DEVICE_POLL_INTERVAL_SECONDS,
 } from "@/lib/browser/schema";
 
-const MIGRATION = "supabase/migrations/20260821024622_browser_assistant_production_readiness.sql";
+const MIGRATION = "supabase/migrations/20260821052041_browser_assistant_production_readiness.sql";
 
 afterEach(() => {
   for (const name of [

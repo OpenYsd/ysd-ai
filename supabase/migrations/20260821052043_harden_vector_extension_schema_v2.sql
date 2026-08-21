@@ -1,4 +1,4 @@
--- Forward-only pgvector schema hardening (Sprint 2).
+-- Forward-only pgvector schema hardening (Sprint 2), sequenced after live 0047.
 --
 -- Production currently owns vector 0.8.2 in public and reports it as
 -- relocatable. ALTER EXTENSION preserves the extension object OIDs, so the
