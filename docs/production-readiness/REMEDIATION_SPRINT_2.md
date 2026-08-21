@@ -1,12 +1,13 @@
 # Production Readiness Remediation Sprint 2
 
-Preparation-only, zero-cost gate. No Production database, Auth, SMTP, variables, provider settings, Railway source, Browser publication, or Browser version was intentionally changed.
+Zero-cost reconciliation gate. The only authorized live change was disabling Railway Production auto-deploy from the moving `staging` branch; it created no deployment or restart. No Production database, Auth, SMTP, variables, provider settings, Railway source branch, Browser publication, or Browser version was changed.
 
 ## Immutable candidates
 
-- Backend branch: `release/ysd-assistant-production-readiness`
+- Backend branch: `release/ysd-assistant-production-readiness-v2`
 - Backend candidate: the commit containing this report (record with `git rev-parse HEAD`)
-- Backend baseline: `c29dc055b6e63659b3c4c5d73086b97eb2ae03fd`
+- Backend baseline: `3250b974ae2064aea5bfd90937b8825b58a0aae3`
+- Integrated readiness tip: `710c847c37f258452cfa05f02bbc687dcc58d47b`
 - Browser branch: `release/0.8.3-dev.3-production-readiness`
 - Browser baseline: `fd1ad9ed0a013b4b1e5f99282d560d8de9b55289`
 - Browser candidate: `bd97c9c0d04e2ef2847f16df24c0eb011d8203f7`
@@ -16,16 +17,16 @@ Preparation-only, zero-cost gate. No Production database, Auth, SMTP, variables,
 ## Verification summary
 
 - Browser clean clone: Release build with warnings-as-errors PASS; 93/93 SessionTests PASS; clean tracked state.
-- Backend candidate: typecheck PASS; Next 15 lint PASS with no warnings; 130/130 test files PASS, 3,488 tests PASS, 6 optional live tests skipped; production build PASS.
+- Backend candidate: typecheck PASS; Next 15 lint PASS with no warnings; 132/132 test files PASS, 3,592 tests PASS, 6 optional live tests skipped; production build PASS.
 - Runtime dependency audit after safe PostCSS and dev-tool patch upgrades: 5 HIGH, 0 CRITICAL; no demonstrated current Browser Assistant or Production exploit path. The full developer tree has 6 HIGH and 1 CRITICAL (Vitest UI server), which is development-only and requires a separately reviewed major toolchain upgrade. The separate Next 16 branch removes the Next runtime finding.
-- Combined representative-clone migration rehearsal: all three migrations and immediate rerun PASS; data/checksum preserved, HNSW index valid, authenticated RAG PASS, anonymous RAG rejected, no lingering locks, feature disabled.
+- Combined representative-clone migration rehearsal: live baseline 0047 plus all three future migrations and immediate rerun PASS; usage isolation/totals, data/checksum, HNSW index, authenticated RAG, anonymous rejection, grants, and the disabled Browser feature contract all passed.
 - Zero-cost manual monitoring and Railway branch-name transition procedures are operationally documented.
 
 ## Production freeze verification
 
-The required frozen Railway deployment was `cc076481-2576-4cd9-a1f1-9387a7f93d0b`. Read-only inspection instead found current successful deployment `42cbcc90-5c10-4cde-ae28-d309c836e10e` at Git commit `fecc9d4df699114cc4cdef02f6ac4d4a699db3c6`, still sourced from branch `staging`. This sprint did not trigger it. Because the required deployment identity changed externally, `Production Untouched` is **FAIL** even though Sprint 2 performed no Production mutation.
+Railway Production auto-deploy is disabled. The current successful deployment remains `59e00f32-0c68-4876-9cc8-b27fbf703ff7` at Git commit `3250b974ae2064aea5bfd90937b8825b58a0aae3`; no new deployment, restart, rollback, or source-branch switch was triggered.
 
-The read-only database inventory still reports 39 applied migrations, 14 Auth users, no Browser Assistant table, and the vector extension still in `public`. The canonical Railway variable fingerprint remains `5adaa5b236f6632955771605d230bce4bd56189c935d27985801008850ad0950`; values were not recorded. Production provider/model configuration remained enabled for OpenRouter `ysd/free`.
+The read-only database inventory reports 40 applied migrations, 14 Auth users, no Browser Assistant table, and the vector extension still in `public`. Live `20260821045412_0047_usage_totals_rpc` is source-identical and least-privilege. The canonical Railway variable fingerprint remains `5adaa5b236f6632955771605d230bce4bd56189c935d27985801008850ad0950`; values were not recorded. Production provider/model configuration remained enabled for OpenRouter `ysd/free`.
 
 ## Final matrix
 
@@ -46,7 +47,7 @@ The read-only database inventory still reports 39 applied migrations, 14 Auth us
 | SECURITY DEFINER Hardening | PASS | Separate least-privilege migration prepared and verified. |
 | Security Advisor Clone Result | PASS | Target anon/vector findings removed; accepted findings documented. |
 | Browser Assistant Migration | PASS | Forward-only, feature disabled, RLS forced, rerun safe. |
-| Combined Migration Rehearsal | PASS | A → B → C and immediate rerun passed. |
+| Combined Migration Rehearsal | PASS | Live 0047 → A → B → C and immediate rerun passed. |
 | Railway Production Branch Plan | PASS | Protected `release/production` zero-diff sequence documented. |
 | Free Monitoring Runbook | PASS | Manual cadence, owner, thresholds, privacy, and escalation documented. |
 | SMTP | BLOCKED — REQUIRES PAID INFRASTRUCTURE | No unsafe workaround. |
@@ -55,12 +56,12 @@ The read-only database inventory still reports 39 applied migrations, 14 Auth us
 | Browser Tests | PASS | 93/93. |
 | Backend Typecheck | PASS | `tsc --noEmit`. |
 | Backend Lint | PASS | Next 15 candidate, no warnings/errors. |
-| Backend Tests | PASS | 3,488 passed; 6 optional live skipped. |
-| Backend Build | PASS | Next 15.5.23 production build, 63 static-generation entries. |
-| Production Untouched | FAIL | Required deployment ID drifted externally; this sprint made no Production mutation. |
+| Backend Tests | PASS | 3,592 passed; 6 optional live skipped. |
+| Backend Build | PASS | Next 15.5.23 production build, 64 static pages. |
+| Production Containment | PASS | Auto-deploy disabled; deployment/runtime/data/variables unchanged. |
 
 ## Final decision
 
-**B) PARTIAL — ZERO-COST TECHNICAL BLOCKERS REMAIN**
+**A) PRODUCTION DRIFT CONTAINED — NEW BASELINE AND CANDIDATE READY**
 
-The remaining zero-cost actions are to reconcile/approve the unexplained Railway deployment drift, review and promote the isolated Next 16 work through Staging, and perform the already-prepared branch/migration procedures only in a separately approved Production window. There is no unresolved demonstrated exploitable issue in the current Browser Assistant path.
+The candidate remains undeployed. SMTP and leaked-password protection remain paid-infrastructure blockers and were neither purchased nor bypassed. Any future source-branch switch, deployment, secret configuration, or migration application requires a separately approved Production window.

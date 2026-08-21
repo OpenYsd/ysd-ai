@@ -1,14 +1,23 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const PRODUCTION_BASELINE_VERSION = "20260821045412";
 const BROWSER_MIGRATION =
-  "supabase/migrations/20260821024622_browser_assistant_production_readiness.sql";
+  "supabase/migrations/20260821052041_browser_assistant_production_readiness.sql";
 const DEFINER_MIGRATION =
-  "supabase/migrations/20260821035648_security_definer_least_privilege.sql";
+  "supabase/migrations/20260821052042_security_definer_least_privilege.sql";
 const VECTOR_MIGRATION =
-  "supabase/migrations/20260821035652_harden_vector_extension_schema_v2.sql";
+  "supabase/migrations/20260821052043_harden_vector_extension_schema_v2.sql";
 
 describe("Production Readiness Sprint 2 contracts", () => {
+  it("sequences every future migration after the live 0047 baseline", () => {
+    for (const migration of [BROWSER_MIGRATION, DEFINER_MIGRATION, VECTOR_MIGRATION]) {
+      const version = migration.split("/").at(-1)?.split("_", 1)[0] ?? "";
+      expect(version).toMatch(/^\d{14}$/);
+      expect(version > PRODUCTION_BASELINE_VERSION).toBe(true);
+    }
+  });
+
   it("keeps Browser Assistant and global privilege hardening independently deployable", () => {
     const browser = fs.readFileSync(BROWSER_MIGRATION, "utf8");
     const definer = fs.readFileSync(DEFINER_MIGRATION, "utf8");
