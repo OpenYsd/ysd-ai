@@ -3,19 +3,21 @@ import fs from "node:fs";
 
 import { BROWSER_API_VERSION, browserChatRequestSchema } from "@/lib/browser/schema";
 import { createBrowserAccessToken, verifyBrowserAccessToken } from "@/lib/browser/token";
-import { sanitizeActionProposal } from "@/lib/browser/actions";
+import { parseStructuredAssistantOutput, sanitizeActionProposal } from "@/lib/browser/actions";
 import { sha256Base64Url, signHmac } from "@/lib/browser/crypto";
 
 const SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 afterEach(() => {
   delete process.env.YSD_BROWSER_TOKEN_SECRET;
+  delete process.env.YSD_BROWSER_ASSISTANT_ENABLED;
   vi.useRealTimers();
 });
 
 describe("YSD Browser API capabilities", () => {
   it("returns versioned capabilities without secrets", async () => {
     process.env.YSD_BROWSER_TOKEN_SECRET = SECRET;
+    process.env.YSD_BROWSER_ASSISTANT_ENABLED = "1";
     const { GET } = await import("@/app/api/browser/v1/capabilities/route");
     const res = await GET();
     const body = await res.json();
@@ -95,6 +97,117 @@ describe("YSD Browser action proposals", () => {
       arguments: { url: "file:///C:/secret.txt" },
     })).toBeNull();
   });
+
+  it("accepts only minimal semantic workspace arguments", () => {
+    const create = sanitizeActionProposal({
+      type: "browser_action_proposal",
+      action: "create_workspace",
+      arguments: { name: "QA Workspace", query: "QA source" },
+    }, "tabs-v1", "workspaces-v1", "request_12345678");
+    expect(create).toMatchObject({
+      id: "request_12345678",
+      tabSnapshotId: "tabs-v1",
+      workspaceSnapshotId: "workspaces-v1",
+      arguments: { name: "QA Workspace", query: "QA source" },
+    });
+
+    const move = sanitizeActionProposal({
+      type: "browser_action_proposal",
+      action: "move_tabs",
+      arguments: { query: "QA source", targetWorkspace: "QA Workspace" },
+    }, "tabs-v1", "workspaces-v1", "request_12345678");
+    expect(move).not.toBeNull();
+
+    for (const dangerous of [
+      { name: "QA", query: "QA", command: "powershell" },
+      { name: "QA", query: "QA", tabIds: ["invented"] },
+      { query: "QA", targetWorkspace: "QA", execute_script: "alert(1)" },
+    ]) {
+      const action = "targetWorkspace" in dangerous ? "move_tabs" : "create_workspace";
+      expect(sanitizeActionProposal({ type: "browser_action_proposal", action, arguments: dangerous })).toBeNull();
+    }
+  });
+
+  it("binds retries of one request to one stable proposal id", () => {
+    const raw = {
+      type: "browser_action_proposal",
+      action: "open_tab",
+      arguments: { url: "https://example.com/qa" },
+    };
+    const first = sanitizeActionProposal(raw, "tabs", "workspaces", "request_same_123");
+    const duplicate = sanitizeActionProposal(raw, "tabs", "workspaces", "request_same_123");
+    expect(first?.id).toBe("request_same_123");
+    expect(duplicate?.id).toBe(first?.id);
+  });
+
+  it("parses only the exact line-bounded fenced proposal envelope", () => {
+    const output = [
+      "I found the matching tab.",
+      "```ysd-browser-action",
+      JSON.stringify({
+        type: "browser_action_proposal",
+        action: "find_tab",
+        arguments: { query: "Example Domains" },
+      }),
+      "```",
+    ].join("\n");
+
+    const parsed = parseStructuredAssistantOutput(output, "tabs-v1", "workspaces-v1", "request_12345678");
+    expect(parsed.message).toBe("I found the matching tab.");
+    expect(parsed.action).toMatchObject({
+      id: "request_12345678",
+      action: "find_tab",
+      arguments: { query: "Example Domains" },
+    });
+
+    const inline = "prefix```ysd-browser-action\n{}\n```";
+    expect(parseStructuredAssistantOutput(inline)).toEqual({ message: inline, action: null });
+  });
+});
+
+describe("YSD Browser request idempotency wiring", () => {
+  it("claims the request before provider execution and rejects duplicates", () => {
+    const route = fs.readFileSync("app/api/browser/v1/chat/route.ts", "utf8");
+    const claimAt = route.indexOf("await claimRequestDurable(");
+    const rateLimitAt = route.indexOf("await consumeRateLimit(");
+    const quotaAt = route.indexOf('supabase.rpc("check_usage_allowed"');
+    const providerAt = route.indexOf("provider.streamChat(");
+    const usageAt = route.indexOf('from("usage_events").insert');
+    expect(claimAt).toBeGreaterThan(0);
+    expect(rateLimitAt).toBeGreaterThan(claimAt);
+    expect(quotaAt).toBeGreaterThan(rateLimitAt);
+    expect(providerAt).toBeGreaterThan(quotaAt);
+    expect(usageAt).toBeGreaterThan(providerAt);
+    expect(route).toContain('code: "duplicate_request"');
+    expect(route).toContain("body.requestId, null, true");
+    expect(route).toContain('throw new Error("browser_stream_aborted")');
+    expect(route).not.toContain("await req.text()");
+    expect(route).not.toContain("chunk.error ??");
+    expect(route).not.toContain("chunk.errorCode ??");
+  });
+
+  it("fails closed when a durable browser idempotency claim is unavailable", async () => {
+    const { _resetIdempotency, claimRequestDurable } = await import("@/lib/chat/idempotency");
+    _resetIdempotency();
+    const unavailable = {
+      from: () => ({
+        insert: () => ({
+          select: () => ({
+            single: async () => ({ data: null, error: { code: "57P01" } }),
+          }),
+        }),
+      }),
+    };
+
+    const result = await claimRequestDurable(
+      unavailable as never,
+      "browser-user",
+      "request_durable_123",
+      null,
+      true,
+    );
+    expect(result).toMatchObject({ ok: false, duplicate: false });
+  });
 });
 
 describe("YSD Browser device auth contract", () => {
@@ -133,5 +246,43 @@ describe("YSD Browser context minimization limits", () => {
       mode: "chat",
       message: "x".repeat(8_001),
     }).success).toBe(false);
+  });
+
+  it("builds provider context from only the selected mode and sanitized origin", async () => {
+    const { buildUserContent } = await import("@/lib/browser/context");
+    const selection = buildUserContent({
+      mode: "selection",
+      message: "explain",
+      context: {
+        pageOrigin: "https://example.test/account/private-page?token=fake-secret&user=test#fragment",
+        selectedText: "known selected text",
+        pageText: "UNRELATED-PAGE-CANARY PASSWORD-TEST-VALUE HIDDEN-DOM-CANARY",
+      },
+    });
+
+    expect(selection).toContain("Origin: https://example.test");
+    expect(selection).toContain("known selected text");
+    expect(selection).not.toMatch(/private-page|fake-secret|user=test|fragment/);
+    expect(selection).not.toMatch(/UNRELATED-PAGE-CANARY|PASSWORD-TEST-VALUE|HIDDEN-DOM-CANARY/);
+
+    const page = buildUserContent({
+      mode: "page",
+      message: "summarize",
+      context: {
+        pageOrigin: "https://example.test/sensitive/path?token=fake-secret",
+        pageText: "VISIBLE-PAGE-TEXT",
+        selectedText: "UNRELATED-SELECTION-CANARY",
+      },
+    });
+    expect(page).toContain("Origin: https://example.test");
+    expect(page).toContain("VISIBLE-PAGE-TEXT");
+    expect(page).not.toMatch(/sensitive\/path|fake-secret|UNRELATED-SELECTION-CANARY/);
+  });
+
+  it("rejects credential-bearing or non-http origin metadata", async () => {
+    const { sanitizeOrigin } = await import("@/lib/browser/context");
+    expect(sanitizeOrigin("https://user:password@example.test/private")).toBe("invalid");
+    expect(sanitizeOrigin("file:///C:/private.txt")).toBe("invalid");
+    expect(sanitizeOrigin("https://example.test/private?secret=yes")).toBe("https://example.test");
   });
 });

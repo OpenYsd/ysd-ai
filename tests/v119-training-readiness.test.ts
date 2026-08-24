@@ -533,7 +533,7 @@ describe("★ (٧) ★ ولا تنفيذ — ولا سبيلَ إليه", () => 
      * وكان الحارس يملك «أحدث رقم» — فيسقط مع كل ترحيلٍ جديد لا لأن شيئًا
      * انكسر بل لأن المشروع تقدّم. وملكيةُ الأحدث تنتقل إلى أحدث مجموعة.
      */
-    const nums = files.map((f) => Number(f.slice(0, 4)));
+    const nums = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     expect(nums).toContain(45);
     expect(new Set(nums).size).toBe(nums.length);
   });

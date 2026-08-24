@@ -432,7 +432,7 @@ describe("★ الترحيلة 0037", () => {
   it("★ ملفّ واحد جديد، وهو الأحدث ترقيمًا", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0037_ysd_target_observability.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     /**
      * ★ حُدِّث في الرقعة التاسعة: هذا الحارس يملك **رقم 0037 وحده**.
      * وربطُه بالأعلى كان يجعل كل ترحيلةٍ لاحقة تُسقطه بلا خطأ حقيقيّ.

@@ -36,7 +36,7 @@ describe("★ (١) حدود الترحيلة", () => {
   it("★ ملفّ واحد جديد، وهو التالي في الترقيم", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain(MIGRATION_FILE);
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     /**
      * ★ حُدِّث في الرقعة السادسة: هذا الحارس يملك **رقم 0036 وحده**، لا
      * «أعلى رقم في المجلد». فربطُه بالأعلى يجعل كل ترحيلةٍ لاحقة تُسقطه

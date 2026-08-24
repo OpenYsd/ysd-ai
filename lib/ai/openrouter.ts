@@ -1,5 +1,6 @@
 import type { AIProviderAdapter, ChatRequest, ModelInfo, StreamChunk, UsageReport } from "./types";
 import { FREE_MODEL_CHAIN, YSD_FREE_MODEL_ID } from "./free-models";
+import { isBrowserQaEnvironment } from "@/lib/browser/feature";
 import {
   type CooldownReason,
   acquireProbeSlot,
@@ -75,7 +76,10 @@ export const PROVIDER_TIMEOUT_MS = 25_000;
  * وهو ما تعذّر في RC1 لأن العنوان كان ثابتًا في الكود.
  */
 function testHooksEnabled(): boolean {
-  return process.env.NODE_ENV === "test" || process.env.YSD_ENABLE_TEST_PROVIDER === "1";
+  if (process.env.NODE_ENV === "test") return true;
+  return isBrowserQaEnvironment()
+    && process.env.YSD_BROWSER_QA_ENABLED === "1"
+    && process.env.YSD_ENABLE_TEST_PROVIDER === "1";
 }
 
 /** عنوان المزوّد — الحقيقي، أو عنوان اختبار خلف البوابة وحدها */

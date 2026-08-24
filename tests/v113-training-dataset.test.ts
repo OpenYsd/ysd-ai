@@ -872,7 +872,7 @@ describe("★ (١٠) 0043 — صلاحيةٌ وأداءٌ لا سلوك", () => 
      */
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0043_ysd_training_dataset_hardening.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 });

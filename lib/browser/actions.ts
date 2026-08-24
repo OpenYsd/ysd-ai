@@ -10,10 +10,11 @@ const proposalSchemas: Record<BrowserActionName, z.ZodTypeAny> = {
   open_tab: z.object({ url: z.string().url().max(2048).refine((u) => /^https?:\/\//i.test(u)) }).strict(),
   create_workspace: z.object({
     name: z.string().min(1).max(80),
-    tabIds: z.array(id).min(1).max(100),
+    query: z.string().min(1).max(256),
   }).strict(),
   move_tabs: z.object({
-    orderedTabIds: z.array(id).min(1).max(100),
+    query: z.string().min(1).max(256),
+    targetWorkspace: z.string().min(1).max(80),
   }).strict(),
 };
 
@@ -21,7 +22,6 @@ const envelope = z.object({
   type: z.literal("browser_action_proposal"),
   action: z.enum(BROWSER_ACTIONS),
   arguments: z.unknown(),
-  tabSnapshotId: z.string().max(128).optional(),
 }).strict();
 
 export interface BrowserActionProposal {
@@ -30,36 +30,58 @@ export interface BrowserActionProposal {
   action: BrowserActionName;
   sourceOrigin: string;
   tabSnapshotId: string;
+  workspaceSnapshotId: string;
   createdAtUtc: string;
   arguments: unknown;
 }
 
-export function sanitizeActionProposal(raw: unknown, tabSnapshotId = ""): BrowserActionProposal | null {
+export function sanitizeActionProposal(
+  raw: unknown,
+  tabSnapshotId = "",
+  workspaceSnapshotId = "",
+  requestId?: string,
+): BrowserActionProposal | null {
   const parsed = envelope.safeParse(raw);
   if (!parsed.success) return null;
   const args = proposalSchemas[parsed.data.action].safeParse(parsed.data.arguments);
   if (!args.success) return null;
   return {
     version: 1,
-    id: crypto.randomUUID().replace(/-/g, ""),
+    id: requestId && id.safeParse(requestId).success ? requestId : crypto.randomUUID().replace(/-/g, ""),
     action: parsed.data.action,
     sourceOrigin: appOrigin(),
-    tabSnapshotId: parsed.data.tabSnapshotId ?? tabSnapshotId,
+    tabSnapshotId,
+    workspaceSnapshotId,
     createdAtUtc: new Date().toISOString(),
     arguments: args.data,
   };
 }
 
-export function parseStructuredAssistantOutput(text: string, tabSnapshotId = "") {
-  const marker = "\n```ysd-browser-action\n";
+export function parseStructuredAssistantOutput(
+  text: string,
+  tabSnapshotId = "",
+  workspaceSnapshotId = "",
+  requestId?: string,
+) {
+  const marker = "```ysd-browser-action\n";
   const start = text.lastIndexOf(marker);
-  if (start < 0) return { message: text.trim(), action: null as BrowserActionProposal | null };
+  if (start < 0 || (start > 0 && text[start - 1] !== "\n")) {
+    return { message: text.trim(), action: null as BrowserActionProposal | null };
+  }
   const before = text.slice(0, start).trim();
   const rest = text.slice(start + marker.length);
   const end = rest.indexOf("\n```");
   if (end < 0) return { message: text.trim(), action: null as BrowserActionProposal | null };
   try {
-    return { message: before, action: sanitizeActionProposal(JSON.parse(rest.slice(0, end)), tabSnapshotId) };
+    return {
+      message: before,
+      action: sanitizeActionProposal(
+        JSON.parse(rest.slice(0, end)),
+        tabSnapshotId,
+        workspaceSnapshotId,
+        requestId,
+      ),
+    };
   } catch {
     return { message: before || text.trim(), action: null as BrowserActionProposal | null };
   }

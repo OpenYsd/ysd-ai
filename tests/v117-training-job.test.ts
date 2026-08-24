@@ -947,7 +947,7 @@ describe("★ (٩) الحدود — لا تدريب", () => {
   it("★ وهي التالية في الترقيم", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0045_ysd_training_jobs.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     /**
      * ★ الثابت: لا تكرار في الترقيم، والترحيلات المعنيّة قائمة.
      *

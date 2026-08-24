@@ -45,8 +45,8 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NODE_ENV=production
 
 # يفشل مبكرًا برسالة واضحة بدل صورة تُبنى ثم تنكسر في المتصفح
-RUN test -n "$NEXT_PUBLIC_SUPABASE_URL" || (echo "خطأ: NEXT_PUBLIC_SUPABASE_URL مطلوب وقت البناء (--build-arg)" && exit 1)
-RUN test -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" || (echo "خطأ: NEXT_PUBLIC_SUPABASE_ANON_KEY مطلوب وقت البناء (--build-arg)" && exit 1)
+RUN node -e "if (!process.env.NEXT_PUBLIC_SUPABASE_URL) { console.error('NEXT_PUBLIC_SUPABASE_URL is required at build time'); process.exit(1); }"
+RUN node -e "if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) { console.error('NEXT_PUBLIC_SUPABASE_ANON_KEY is required at build time'); process.exit(1); }"
 
 RUN npm run build
 

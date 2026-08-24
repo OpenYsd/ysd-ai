@@ -710,9 +710,10 @@ describe("★ (٧) المخطّط — التعاقب مكتوبٌ في التر�
      */
     const { readdirSync, readFileSync: rf } = require("node:fs") as typeof import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    const nums = files.map((f) => Number(f.slice(0, 4)));
-    expect(nums).toContain(46);
-    expect(new Set(nums).size).toBe(nums.length);
+    const versions = files.map((f) => f.slice(0, f.indexOf("_")));
+    const legacyNums = versions.filter((v) => v.length === 4).map(Number);
+    expect(legacyNums).toContain(46);
+    expect(new Set(versions).size).toBe(versions.length);
     /** ولا ترحيلَ يمسّ نصّ الوثيقة أو تاريخَ قسمها */
     for (const f of files) {
       if (Number(f.slice(0, 4)) <= 46) continue;

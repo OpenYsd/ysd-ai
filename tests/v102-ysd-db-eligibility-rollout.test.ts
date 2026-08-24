@@ -439,7 +439,7 @@ describe("★ (٣٠–٣٩) ما لا يخرج ولا يُلمس", () => {
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql")).sort();
     expect(files).toContain("0038_guard_ysd_model_eligibility.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     expect(numbers).toContain(38);
     expect(new Set(numbers).size).toBe(numbers.length);
     for (let n = 1; n <= 38; n++) expect(numbers, String(n)).toContain(n);

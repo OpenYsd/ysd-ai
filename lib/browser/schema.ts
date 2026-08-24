@@ -7,6 +7,7 @@ export const BROWSER_TOKEN_ISSUER = "ysd-ai";
 export const BROWSER_TOKEN_TTL_SECONDS = 60 * 60;
 export const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 export const DEVICE_POLL_INTERVAL_SECONDS = 5;
+export const DEVICE_MAX_POLL_COUNT = Math.ceil(DEVICE_CODE_TTL_SECONDS / DEVICE_POLL_INTERVAL_SECONDS);
 
 export const BROWSER_ACTIONS = ["find_tab", "open_tab", "create_workspace", "move_tabs"] as const;
 export type BrowserActionName = (typeof BROWSER_ACTIONS)[number];
@@ -52,6 +53,7 @@ export const browserChatRequestSchema = z.object({
   context: contextSchema,
   locale: z.string().max(16).optional(),
   tabSnapshotId: z.string().max(128).optional(),
+  workspaceSnapshotId: z.string().max(128).optional(),
 });
 
 export function normalizeLegacyChatRequest(raw: unknown): unknown {

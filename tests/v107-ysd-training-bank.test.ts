@@ -36,7 +36,7 @@ const stripComments = (src: string) =>
 
 const MIGRATION = readSrc("supabase/migrations/0040_ysd_training_bank.sql");
 const HARDENING = readSrc("supabase/migrations/0041_ysd_training_bank_hardening.sql");
-const numbersOf = (files: string[]) => files.map((f) => Number(f.slice(0, 4)));
+const numbersOf = (files: string[]) => files.map((f) => Number(f.slice(0, f.indexOf("_"))));
 const CANDIDATE_SRC = readSrc("lib/training/candidate.ts");
 const CHAT_ROUTE = readSrc("app/api/chat/route.ts");
 const CONSENT_ROUTE = readSrc("app/api/training-consent/route.ts");
@@ -814,7 +814,7 @@ describe("★ (١٠) التشديد — صلاحيات وأداءٌ لا سلو�
     const { readdirSync } = await import("node:fs");
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
     expect(files).toContain("0041_ysd_training_bank_hardening.sql");
-    const numbers = files.map((f) => Number(f.slice(0, 4)));
+    const numbers = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     /**
      * ★ ولا يملك هذا الملفّ «أحدث رقم».
      *

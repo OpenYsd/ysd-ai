@@ -530,7 +530,7 @@ describe("★ (٥) الحزمة القانونية", () => {
 
   it("★ ★ ★ ورقم الترحيل فريد", () => {
     const files = readdirSync("supabase/migrations").filter((f) => f.endsWith(".sql"));
-    const nums = files.map((f) => Number(f.slice(0, 4)));
+    const nums = files.map((f) => Number(f.slice(0, f.indexOf("_"))));
     expect(new Set(nums).size).toBe(nums.length);
     expect(files).toContain(LEGAL_VERSION_MIGRATION);
   });

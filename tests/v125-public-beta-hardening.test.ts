@@ -533,12 +533,14 @@ describe("★ (٥) الحدود — موزّعة لا في ذاكرة عملية
 
   it("★ ★ ★ ومسار تفويض الجهاز لم يعد بلا حدّ", () => {
     const body = stripComments(readSrc("app/api/browser/v1/auth/device/route.ts"));
-    expect(body).toMatch(/consumeKeyedRate/);
+    const guard = stripComments(readSrc("lib/browser/auth-rate-limit.ts"));
+    expect(body).toMatch(/enforceBrowserAuthRateLimits/);
+    expect(guard).toMatch(/consumeKeyedRate/);
     expect(body).toMatch(/clientIpFrom\(req\.headers\)/);
-    expect(body).toMatch(/429/);
-    expect(body).toMatch(/Retry-After/);
+    expect(guard).toMatch(/429/);
+    expect(guard).toMatch(/Retry-After/);
     /** ولا مفتاحَ يختاره من ينادي */
-    expect(body).not.toMatch(/consumeKeyedRate\([^)]*client_id/);
+    expect(body).not.toMatch(/enforceBrowserAuthRateLimits\([^)]*client_id/);
   });
 
   it("★ ★ ★ ودعوةُ Google لم تعد تثق بأوّل عنصرٍ في `x-forwarded-for`", () => {
@@ -564,7 +566,7 @@ describe("★ (٥) الحدود — موزّعة لا في ذاكرة عملية
     ];
     for (const f of publicWriters) {
       const body = stripComments(readSrc(f));
-      expect(body, f).toMatch(/consumeKeyedRate|consumeInviteRate/);
+      expect(body, f).toMatch(/consumeKeyedRate|consumeInviteRate|enforceBrowserAuthRateLimits/);
     }
   });
 
