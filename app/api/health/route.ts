@@ -1,6 +1,6 @@
 import { logger, newCorrelationId } from "@/lib/logger";
-import { runHealthChecks, summarizeCounts } from "@/lib/health/checks";
-import { APP_VERSION } from "@/lib/version";
+import { runHealthChecks } from "@/lib/health/checks";
+import { publicHealthResponse } from "@/lib/health/public-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +24,6 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const correlation = newCorrelationId();
   const result = await runHealthChecks();
-  const { passing, failing } = summarizeCounts(result.checks);
 
   // السجل الداخلي يبقى كما هو — التقليص يخصّ الاستجابة العامة لا التشخيص
   logger.info({
@@ -34,15 +33,5 @@ export async function GET() {
     ms: result.ms,
   });
 
-  const body = {
-    status: result.overall,
-    version: APP_VERSION,
-    checked_at: new Date().toISOString(),
-    checks: { passing, failing },
-  };
-
-  return new Response(JSON.stringify(body), {
-    status: result.overall === "down" ? 503 : 200,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
+  return publicHealthResponse(result);
 }
