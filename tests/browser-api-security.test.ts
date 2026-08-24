@@ -11,6 +11,7 @@ const SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 afterEach(() => {
   delete process.env.YSD_BROWSER_TOKEN_SECRET;
   delete process.env.YSD_BROWSER_ASSISTANT_ENABLED;
+  delete process.env.YSD_BROWSER_PILOT_USER_IDS;
   vi.useRealTimers();
 });
 
@@ -18,6 +19,7 @@ describe("YSD Browser API capabilities", () => {
   it("returns versioned capabilities without secrets", async () => {
     process.env.YSD_BROWSER_TOKEN_SECRET = SECRET;
     process.env.YSD_BROWSER_ASSISTANT_ENABLED = "1";
+    process.env.YSD_BROWSER_PILOT_USER_IDS = "11111111-1111-4111-8111-111111111111";
     const { GET } = await import("@/app/api/browser/v1/capabilities/route");
     const res = await GET();
     const body = await res.json();

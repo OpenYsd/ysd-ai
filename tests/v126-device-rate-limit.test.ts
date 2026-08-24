@@ -75,6 +75,7 @@ function request(ip: string) {
 
 beforeEach(() => {
   process.env.YSD_BROWSER_ASSISTANT_ENABLED = "1";
+  process.env.YSD_BROWSER_PILOT_USER_IDS = "11111111-1111-4111-8111-111111111111";
   state.allowed = true;
   state.backend = "distributed";
   state.throws = false;
@@ -84,6 +85,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.YSD_BROWSER_ASSISTANT_ENABLED;
+  delete process.env.YSD_BROWSER_PILOT_USER_IDS;
   delete process.env.YSD_DEPLOYMENT_ENVIRONMENT;
 });
 
