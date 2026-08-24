@@ -4,6 +4,7 @@ import { clientIpFrom } from "@/lib/http/client-ip";
 import { createDeviceAuthorization } from "@/lib/browser/device-store";
 import { enforceBrowserAuthRateLimits } from "@/lib/browser/auth-rate-limit";
 import { browserAssistantDisabledResponse } from "@/lib/browser/feature";
+import { browserPilotInfrastructureResponse } from "@/lib/browser/pilot-allowlist";
 import { browserMetric } from "@/lib/browser/metrics";
 import { readBoundedJson } from "@/lib/browser/bounded-json";
 import {
@@ -36,6 +37,8 @@ const DEVICE_WINDOW_SECONDS = 300;
 export async function POST(req: NextRequest) {
   const disabled = browserAssistantDisabledResponse();
   if (disabled) return disabled;
+  const pilotUnavailable = browserPilotInfrastructureResponse();
+  if (pilotUnavailable) return pilotUnavailable;
 
   const limited = await enforceBrowserAuthRateLimits("device", [{
     bucket: DEVICE_BUCKET,

@@ -4,6 +4,7 @@ import { createBrowserAccessToken } from "@/lib/browser/token";
 import { browserTokenRequestSchema, DEVICE_MAX_POLL_COUNT, json } from "@/lib/browser/schema";
 import { browserTokenSecret, sha256Base64Url, sha256Hex } from "@/lib/browser/crypto";
 import { browserAssistantDisabledResponse } from "@/lib/browser/feature";
+import { browserPilotAccessResponse } from "@/lib/browser/pilot-allowlist";
 import { enforceBrowserAuthRateLimits } from "@/lib/browser/auth-rate-limit";
 import { clientIpFrom } from "@/lib/http/client-ip";
 import { readBoundedJson } from "@/lib/browser/bounded-json";
@@ -70,6 +71,8 @@ export async function POST(req: NextRequest) {
     browserMetric("browser.auth.token_failure", "warn", { code: "reused_device_code" });
     return json({ error: "invalid_grant", code: "reused_device_code" }, 400);
   }
+  const pilotDenied = browserPilotAccessResponse(record.userId);
+  if (pilotDenied) return pilotDenied;
 
   if (!browserTokenSecret()) {
     browserMetric("browser.server_error", "error", { code: "token_unconfigured", status: 503 });

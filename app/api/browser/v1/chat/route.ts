@@ -13,14 +13,18 @@ import { browserQaFaultResponse } from "@/lib/browser/qa-fault";
 import { browserAssistantDisabledResponse } from "@/lib/browser/feature";
 import { resolveBrowserProvider } from "@/lib/browser/provider-readiness";
 import { browserMetric } from "@/lib/browser/metrics";
+import { browserPilotAccessResponse } from "@/lib/browser/pilot-allowlist";
+import { acquireSlot } from "@/lib/ai/generation-slot";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const RATE_LIMIT = Number(process.env.YSD_BROWSER_CHAT_RATE_LIMIT ?? 30);
-const RATE_WINDOW_SEC = Number(process.env.YSD_BROWSER_CHAT_RATE_WINDOW_SEC ?? 60);
+const RATE_LIMIT = 3;
+const RATE_WINDOW_SEC = 60;
+const PILOT_DAILY_LIMIT = 10;
+const PILOT_DAILY_WINDOW_SEC = 24 * 60 * 60;
 const STREAM_TIMEOUT_MS = 90_000;
-const MAX_OUTPUT_TOKENS = 1200;
+const MAX_OUTPUT_TOKENS = 400;
 const SYSTEM_PROMPT = [
   "You are YSD Assistant inside YSD Browser.",
   "Answer the user directly. Never request cookies, tokens, passwords, localStorage, browsing history, private URLs, or files.",
@@ -43,6 +47,8 @@ export async function POST(req: NextRequest) {
 
   const token = verifyBrowserAccessToken(req.headers.get("authorization"));
   if (!token.ok) return json({ error: "unauthorized", code: token.reason }, 401);
+  const pilotDenied = browserPilotAccessResponse(token.claims.sub);
+  if (pilotDenied) return pilotDenied;
 
   const bounded = await readBoundedJson(req, 40_000);
   if (!bounded.ok) {
@@ -83,6 +89,21 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  const daily = await consumeRateLimit(
+    token.claims.sub,
+    "browser_pilot_day",
+    PILOT_DAILY_LIMIT,
+    PILOT_DAILY_WINDOW_SEC,
+  );
+  if (!daily.allowed) {
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+    browserMetric("browser.rate_limited", "warn", { code: "pilot_daily", status: 429 });
+    return json({ error: "rate_limit", code: "pilot_daily_limit" }, 429, {
+      ...rateLimitHeaders(daily),
+      "Retry-After": String(daily.retryAfterSec),
+    });
+  }
+
   const { data: allowed } = await supabase.rpc("check_usage_allowed", { p_user_id: token.claims.sub });
   if (allowed === false) {
     await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
@@ -112,6 +133,13 @@ export async function POST(req: NextRequest) {
     return json({ error: "provider_unavailable", code: "provider_unavailable" }, 503);
   }
   const provider = providerReadiness.provider;
+
+  const slot = await acquireSlot(token.claims.sub, body.requestId, "free");
+  if (!slot) {
+    await releaseChatBudget(body.requestId);
+    await finalizeRequest(supabase as never, token.claims.sub, body.requestId, "failed", null);
+    return json({ error: "concurrent_request", code: "concurrent_request" }, 429);
+  }
 
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), STREAM_TIMEOUT_MS);
@@ -188,6 +216,7 @@ export async function POST(req: NextRequest) {
       } finally {
         clearTimeout(timer);
         req.signal.removeEventListener("abort", onAbort);
+        await slot.release();
         controller.close();
       }
     },

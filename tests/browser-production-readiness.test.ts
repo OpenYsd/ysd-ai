@@ -13,6 +13,7 @@ afterEach(() => {
   for (const name of [
     "YSD_BROWSER_ASSISTANT_ENABLED",
     "YSD_BROWSER_TOKEN_SECRET",
+    "YSD_BROWSER_PILOT_USER_IDS",
     "YSD_DEPLOYMENT_ENVIRONMENT",
     "RAILWAY_ENVIRONMENT_NAME",
     "YSD_BROWSER_PROVIDER",
@@ -40,6 +41,7 @@ describe("Browser Assistant Production kill switch", () => {
   it.each(["1", "true", "TRUE"])("enables only through an explicit true value: %s", async (value) => {
     process.env.YSD_BROWSER_ASSISTANT_ENABLED = value;
     process.env.YSD_BROWSER_TOKEN_SECRET = "s".repeat(64);
+    process.env.YSD_BROWSER_PILOT_USER_IDS = "11111111-1111-4111-8111-111111111111";
     const { GET } = await import("@/app/api/browser/v1/capabilities/route");
     const body = await (await GET()).json();
     expect(body.assistant).toBe(true);
@@ -180,7 +182,7 @@ describe("deterministic Browser Assistant provider", () => {
     expect(FREE_MODEL_CHAIN.length).toBeGreaterThan(0);
     expect(FREE_MODEL_CHAIN.every((model) => model.endsWith(":free"))).toBe(true);
     const route = fs.readFileSync("app/api/browser/v1/chat/route.ts", "utf8");
-    expect(route).toContain("const MAX_OUTPUT_TOKENS = 1200");
+    expect(route).toContain("const MAX_OUTPUT_TOKENS = 400");
     expect(route).toContain("reserveChatBudget(");
     expect(route).toContain("finalizeChatBudget(");
     expect(route).toContain("releaseChatBudget(");

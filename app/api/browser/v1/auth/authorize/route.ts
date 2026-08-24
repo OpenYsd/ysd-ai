@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { browserAuthorizeSchema, json } from "@/lib/browser/schema";
 import { getDeviceByUserCode, isExpired, markUserDecision } from "@/lib/browser/device-store";
 import { browserAssistantDisabledResponse } from "@/lib/browser/feature";
+import { browserPilotAccessResponse } from "@/lib/browser/pilot-allowlist";
 import { enforceBrowserAuthRateLimits } from "@/lib/browser/auth-rate-limit";
 import { clientIpFrom } from "@/lib/http/client-ip";
 import { sha256Hex } from "@/lib/browser/crypto";
@@ -31,6 +32,8 @@ export async function POST(req: NextRequest) {
     browserMetric("browser.auth.failure", "warn", { code: "unauthorized" });
     return json({ error: "unauthorized", code: "unauthorized" }, 401);
   }
+  const pilotDenied = browserPilotAccessResponse(user.id);
+  if (pilotDenied) return pilotDenied;
 
   const contentType = req.headers.get("content-type") ?? "";
   let raw: unknown = null;
