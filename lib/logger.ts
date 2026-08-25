@@ -36,5 +36,7 @@ export const logger = {
 
 /** correlation_id جديد للطلب أو العملية */
 export function newCorrelationId(): string {
-  return crypto.randomUUID();
+  // Anonymous and intentionally not UUID-shaped, so it cannot be confused with
+  // (or accidentally reused as) a stable Supabase user identifier.
+  return `corr_${crypto.randomUUID().replaceAll("-", "")}`;
 }

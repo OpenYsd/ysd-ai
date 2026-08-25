@@ -6,6 +6,11 @@ const SECRET_VALUE_PATTERNS = [
   /sk-or-[A-Za-z0-9_-]{12,}/gi,
   /eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]*)?/g,
   /sb_[A-Za-z0-9_-]{20,}/g,
+  // Stable account identifiers are not operational log dimensions. Supabase's
+  // privileged Auth audit log is the only place where platform-required user
+  // metadata may appear; application/Railway logs must remain identity-free.
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,
+  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
 ];
 
 export function redactLogValue(value: unknown, depth = 0): unknown {
@@ -39,5 +44,9 @@ export function sanitizedErrorCode(error: unknown): string {
   if (!error || typeof error !== "object") return "unknown";
   const record = error as Record<string, unknown>;
   const code = record.code ?? record.name;
-  return typeof code === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : "error";
+  return typeof code === "string"
+    && /^[A-Za-z0-9_-]{1,64}$/.test(code)
+    && redactString(code) === code
+    ? code
+    : "error";
 }

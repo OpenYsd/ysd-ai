@@ -1,5 +1,6 @@
 import "server-only";
 import { logger } from "@/lib/logger";
+import { redactString } from "@/lib/log-redaction";
 
 export type BrowserMetricEvent =
   | "browser.assistant.request"
@@ -26,7 +27,15 @@ export function browserMetric(
   level: MetricLevel = "info",
   fields: { ms?: number; count?: number; code?: string; status?: number } = {},
 ): void {
-  const code = fields.code?.replace(/[^a-z0-9_.-]/gi, "_").slice(0, 64);
+  // Reject rather than normalize unknown values. Normalizing an email could
+  // preserve most of the address after replacing "@", while a UUID is already
+  // syntactically valid as a metric code. Codes are a fixed low-cardinality
+  // vocabulary, never a place for request or account data.
+  const code = fields.code
+    && /^[a-z0-9_.-]{1,64}$/i.test(fields.code)
+    && redactString(fields.code) === fields.code
+    ? fields.code
+    : undefined;
   logger[level]({
     event,
     ...(Number.isFinite(fields.ms) ? { ms: Math.max(0, Math.round(fields.ms!)) } : {}),
