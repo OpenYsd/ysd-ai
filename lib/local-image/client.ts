@@ -64,6 +64,35 @@ const HEALTH_TIMEOUT_MS = 2500;
 const CAPABILITIES_TIMEOUT_MS = 15_000;
 const GENERATE_TIMEOUT_MS = 300_000;
 
+/**
+ * ★ محاولةٌ ثانية للفحص وحده — ومهلتُها أطول.
+ *
+ * ── العطبُ المقيس ──
+ *
+ * أوّلُ نداءٍ من صفحةِ HTTPS إلى الحلقة المحلّية يستلزم تفاوضَ
+ * Private Network Access. وقد رُصد على التجربة: المحاولةُ الأولى تُجهَض
+ * عند 2.5 ث فتقول الواجهةُ «المحرّكُ لا يعمل» — والمحرّكُ سليم، وما إن
+ * يتمّ التفاوضُ حتى تعود النداءاتُ في 4–71 مِلّي‌ثانية.
+ *
+ * ★ ولماذا لا يكفي إطالةُ المهلة وحدها؟
+ *
+ * لأنّ الإجهاضَ يُلغي التفاوضَ في منتصفه، فلا يُخبَّأ شيء. فمهلةٌ واحدة
+ * طويلة تُصلح الحالةَ الباردة لكنها تُبطئ كلَّ فشلٍ آخر بلا داعٍ.
+ *
+ * ★ ولماذا لا تُطال المحاولةُ الأولى؟
+ *
+ * لأنّ الحالةَ الشائعة — محرّكٌ غيرُ مثبَّت — تفشل برفضِ اتّصالٍ فوريّ لا
+ * بمهلة. فالأولى تبقى قصيرةً ليظلّ ذلك الجوابُ سريعًا، والثانيةُ تُعطى
+ * سعةً للتفاوض البارد وحده.
+ *
+ * والحدُّ الأقصى للانتظار مقيّد: 2500 + 200 + 6000 = 8.7 ثانية، ولا
+ * يقع إلا حين يكون ثمّة من يستمع ويتباطأ.
+ */
+const HEALTH_RETRY_TIMEOUT_MS = 6000;
+const HEALTH_RETRY_DELAY_MS = 200;
+/** ★ محاولتان لا ثالثة — ولا حلقةَ إعادةٍ تُطيل الانتظار بلا سقف */
+const HEALTH_MAX_ATTEMPTS = 2;
+
 async function call(path: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -81,12 +110,29 @@ async function call(path: string, init: RequestInit, timeoutMs: number): Promise
  * مختلفتان تمامًا في العلاج، وخلطُهما يُرسل المستخدمَ في طريقٍ خطأ.
  */
 export async function probeEngine(): Promise<boolean> {
-  try {
-    const res = await call("/health", { method: "GET" }, HEALTH_TIMEOUT_MS);
-    return res.ok;
-  } catch {
-    return false;
+  const timeouts = [HEALTH_TIMEOUT_MS, HEALTH_RETRY_TIMEOUT_MS];
+  for (let attempt = 0; attempt < HEALTH_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await call("/health", { method: "GET" }, timeouts[attempt] ?? HEALTH_TIMEOUT_MS);
+      /**
+       * ★ ردٌّ وصل ⇒ لا إعادة، مهما كان رمزُه.
+       *
+       * الإعادةُ لأجل عطبِ الوصول لا لأجل جوابِ التطبيق. فرمزٌ مثل 401 أو
+       * 403 أو 429 أو 503 جوابٌ صحيحٌ من محرّكٍ حيّ، وتكرارُه لا يغيّره —
+       * وإنما يضاعف الانتظارَ ويُخفي السبب.
+       */
+      return res.ok;
+    } catch {
+      /**
+       * لم يصل ردٌّ: إجهاضُ مهلة أو عطبُ شبكة. تُعاد المحاولةُ مرّةً واحدة
+       * بمهلةٍ أوسع، ثم يُسلَّم بأنّ المحرّكَ لا يعمل.
+       */
+      const isLast = attempt === HEALTH_MAX_ATTEMPTS - 1;
+      if (isLast) return false;
+      await new Promise((r) => setTimeout(r, HEALTH_RETRY_DELAY_MS));
+    }
   }
+  return false;
 }
 
 export async function fetchCapabilities(token: string): Promise<EngineCapabilities> {

@@ -28,7 +28,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, rmSync, existsSync, renameSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, existsSync, renameSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ROOT = process.cwd();
@@ -96,22 +97,62 @@ function extractFlagExpression() {
  */
 const ENV_FILES = [".env.local", ".env.development.local", ".env.production.local", ".env"];
 
+/**
+ * ★ النسخُ الاحتياطيّ يخرج من المستودع بالكامل.
+ *
+ * كان يُكتب بجوار الأصل باسم `.env.local.__flagproof_backup__`، فظهر ملفٌّ
+ * غيرُ متتبَّع في شجرة العمل يحمل **نفسَ الأسرار**: مفتاحَ الخدمة في
+ * Supabase ومفاتيحَ المزوّدين. و`.gitignore` لا يغطّي ذلك الاسم.
+ *
+ * ★ ولم يُعالَج بإضافته إلى `.gitignore`.
+ *
+ * فذلك يُبقي الأسرارَ في شجرة العمل ويعتمد على قاعدةٍ نصّية تُنسى أو
+ * تُخالَف بـ`git add -f`. وإخراجُ الملفّ من المستودع يزيل الاحتمالَ نفسَه:
+ * لا يوجد ما يُتجاهَل لأنه ليس هناك أصلًا.
+ *
+ * ويُنشأ مجلّدٌ فريد لكلّ تشغيل — فتشغيلان متوازيان لا يدوس أحدُهما نسخةَ
+ * الآخر.
+ */
+
 function withEnvFilesHidden(fn) {
+  /**
+   * ★ مجلّدٌ جديد لكلّ نداء — لا واحدٌ عند تحميل الوحدة.
+   *
+   * فأوّلُ نداءٍ ينظّف المجلّدَ في `finally`، والنداءُ الثاني (إعادةُ
+   * بناء الإطفاء في الآخر) يجدُه محذوفًا فيسقط بـENOENT.
+   */
+  const backupDir = mkdtempSync(join(tmpdir(), "ysd-flagproof-"));
   const moved = [];
   try {
     for (const name of ENV_FILES) {
       const src = join(ROOT, name);
       if (existsSync(src)) {
-        const dst = join(ROOT, `${name}.__flagproof_backup__`);
+        const dst = join(backupDir, name);
         renameSync(src, dst);
         moved.push([src, dst]);
       }
     }
     return fn();
   } finally {
-    /** الاستعادةُ في `finally` — فلا يُترك ملفُّ بيئةِ المطوّر مفقودًا لو انهار البناء */
+    /**
+     * ★ الاستعادةُ تفشل معلنةً — ولا تُبتلع.
+     *
+     * فلو تعذّرت إعادةُ ملفِّ بيئةِ المطوّر وسكت السكربت، لبحث صاحبُه عن
+     * ملفٍّ يظنّه ضائعًا. والمكانُ يُذكر، والمحتوى لا يُطبع أبدًا.
+     */
+    const failed = [];
     for (const [src, dst] of moved) {
-      try { renameSync(dst, src); } catch { /* يُترك النسخُ الاحتياطيّ ليُستعاد يدويًّا */ }
+      try {
+        renameSync(dst, src);
+      } catch (e) {
+        failed.push(`${src.replace(ROOT, ".")} (copy kept at ${dst})`);
+      }
+    }
+    try { rmSync(backupDir, { recursive: true, force: true }); } catch { /* قد يبقى إن فشلت الاستعادة */ }
+    if (failed.length > 0) {
+      console.error("FATAL: could not restore env file(s): " + failed.join(", "));
+      process.exitCode = 3;
+      throw new Error("env_restore_failed");
     }
   }
 }
