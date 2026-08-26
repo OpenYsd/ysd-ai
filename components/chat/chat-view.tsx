@@ -52,6 +52,9 @@ import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { TrainingShareAction } from "./training-share-action";
 import { Markdown } from "./markdown";
+import { detectImageIntent } from "@/lib/local-image/intent";
+import { isLocalImageEnabled } from "@/lib/local-image/flag";
+import { LocalImagePanel } from "@/components/local-image/local-image-panel";
 
 export interface ChatModel {
   id: string;
@@ -84,6 +87,15 @@ function newClientRequestId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 }
+
+/**
+ * ★ تُقرأ مرّةً في وقت الوحدة.
+ *
+ * `process.env.NEXT_PUBLIC_*` يُستبدل نصًّا وقتَ البناء، فقراءتُه في كلِّ
+ * تصيير لا تضيف شيئًا. والأهمُّ أنّ ثباتَها يجعل السلوكَ واحدًا طوال
+ * الجلسة بدل أن يتبدّل بين تصييرين.
+ */
+const localImageEnabled = isLocalImageEnabled();
 
 export interface MsgSource {
   fileId: string;
@@ -250,6 +262,35 @@ export function ChatView({
   const router = useRouter();
 
   const [messages, setMessages] = useState<Msg[]>(initialMessages);
+
+  /**
+   * طلبُ صورةٍ محلّيّ معلَّق — يظهر في ذيل المحادثة حتى يُنفَّذ أو يُصرف.
+   *
+   * ولا يُخزَّن في قاعدةٍ ولا يُرسل إلى خادم: حالةُ واجهةٍ محضة، تزول
+   * بإغلاق التبويب. وهذا مقصودٌ في هذه المرحلة — البايتاتُ والوصفُ يبقيان
+   * على الجهاز، فلا شيءَ يستحقّ الحفظَ بعد.
+   */
+  const [localImageRequest, setLocalImageRequest] = useState<{ id: string; prompt: string } | null>(null);
+  const [localEngineToken, setLocalEngineToken] = useState("");
+
+  /**
+   * رمزُ المحرّك يُقرأ من تخزين المتصفّح.
+   *
+   * ★ وهو رمزٌ محلّيٌّ بحت: يُولّده المحرّكُ عند كلِّ تشغيل، ويخصّ هذا
+   *   الجهازَ وحده، ولا علاقةَ له بحساب YSD ولا يصلح لشيءٍ خارج الحلقة
+   *   المحلّية. فحفظُه في `localStorage` لا يُعرّض حسابًا لخطر.
+   *
+   * ويُقرأ في تأثيرٍ لا في التهيئة: `localStorage` غيرُ موجودٍ أثناء
+   * التصيير على الخادم، وقراءتُه هناك تُسقط الصفحة.
+   */
+  useEffect(() => {
+    if (!localImageEnabled) return;
+    try {
+      setLocalEngineToken(window.localStorage.getItem("ysd.localEngineToken") ?? "");
+    } catch {
+      /* تخزينٌ محجوب — تبقى فارغةً واللوحةُ تطلبها */
+    }
+  }, []);
 
   /**
    * المصدر المفتوح — واحد لا أكثر.
@@ -845,6 +886,25 @@ export function ChatView({
 
         const tempUserId = `tmp-u-${Date.now()}`;
         setMessages((prev) => [...prev, { id: tempUserId, role: "user", content: text }]);
+
+        /**
+         * ★ نيّةُ الصورة تُفحص قبل مغادرةِ الطلب للشبكة.
+         *
+         * فلو أُرسل إلى `/api/chat` أوّلًا لكلّف نداءَ نموذجٍ نصّيّ لطلبٍ
+         * لن يُجاب به — أي كلفةٌ على YSD لطلبٍ قاعدتُه ألّا يكلّف شيئًا.
+         *
+         * والشرطان معًا: رايةٌ مشتعلة، ونيّةٌ مكشوفة. وبغيابِ أيٍّ منهما
+         * تمضي المحادثةُ كما كانت حرفًا بحرف — وهو ما يجعل إطفاءَ الراية
+         * إرجاعًا تامًّا لا وضعًا ثالثًا.
+         */
+        if (localImageEnabled) {
+          const intent = detectImageIntent(text);
+          if (intent.detected) {
+            setLocalImageRequest({ id: `img-${Date.now()}`, prompt: intent.prompt });
+            return;
+          }
+        }
+
         await streamRequest(
           {
             conversationId: convId,
@@ -1435,6 +1495,22 @@ export function ChatView({
                   )}
                 </div>
               ))}
+
+              {/**
+                * لوحةُ التوليد المحلّيّ — في ذيل المحادثة، بعد رسالة المستخدم.
+                *
+                * ★ وتُصيَّر فقط حين تشتعل الرايةُ ويوجد طلبٌ معلَّق. فبإطفاء
+                *   الراية لا يبقى في الشجرة أثرٌ لها البتّة — لا عنصرٌ مخفيّ
+                *   ولا زرٌّ معطَّل. وهذا ما يجعل «مطفأة» تعني «غير موجودة».
+                */}
+              {localImageEnabled && localImageRequest ? (
+                <LocalImagePanel
+                  key={localImageRequest.id}
+                  prompt={localImageRequest.prompt}
+                  token={localEngineToken}
+                  onDismiss={() => setLocalImageRequest(null)}
+                />
+              ) : null}
 
               {error && (
                 <div

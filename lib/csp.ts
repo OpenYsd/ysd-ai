@@ -29,6 +29,8 @@
  * وقولُ ذلك أصدق من إيحاءٍ بأن السياسة أُحكمت كلُّها.
  */
 
+import { isLocalImageEnabled, LOCAL_ENGINE_ORIGIN } from "@/lib/local-image/flag";
+
 /** ١٦ بايتًا = ١٢٨ بتًا من العشوائية المعمّاة — لا وقتٌ ولا `Math.random` */
 const NONCE_BYTES = 16;
 
@@ -69,11 +71,24 @@ export interface CspOptions {
   /** التطوير وحده يحتاج `'unsafe-eval'` — والإنتاج لا يُمنحه «احتياطًا» */
   isDev?: boolean;
   supabaseUrl?: string | undefined;
+  /**
+   * وصلةُ المحرّك المحلّيّ — تُفتح بالراية وحدها.
+   *
+   * ★ ولا تُفتح «احتياطًا للمستقبل».
+   *
+   * `connect-src` يحدّد إلى أين يستطيع كودُ الصفحة أن يتّصل. وإضافةُ
+   * الحلقة المحلّية دائمًا تعني أن أيَّ سكربتٍ ينجح في العمل داخل الصفحة
+   * يستطيع مسحَ خدماتِ الجهاز — والصفحةُ لا تحتاج ذلك إلا حين تكون
+   * الميزةُ مشتعلةً فعلًا.
+   */
+  localImage?: boolean;
 }
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}): string {
   const isDev = options.isDev ?? process.env.NODE_ENV !== "production";
   const supabase = supabaseSources(options.supabaseUrl ?? process.env.NEXT_PUBLIC_SUPABASE_URL);
+  /** الرايةُ تُقرأ من مصدرها الوحيد — فلا تفترق السياسةُ عن الواجهة */
+  const localImage = options.localImage ?? isLocalImageEnabled();
 
   /**
    * ★ `'unsafe-eval'` في التطوير وحده — وإعادةُ التحميل الساخنة تحتاجه.
@@ -102,7 +117,14 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
     "font-src 'self' https://fonts.gstatic.com data:",
     // data: للصور المضمّنة، blob: لمعاينة ما يرفعه المستخدم قبل الحفظ
     `img-src 'self' data: blob: ${supabase}`,
-    `connect-src 'self' ${supabase}`,
+    /**
+     * ★ عنوانٌ واحد بمنفذٍ واحد — لا نمطٌ ولا مدى.
+     *
+     * ولا `127.0.0.1:*` ولا `localhost:*`: الأوّلُ يُصرّح لكلِّ خدمةٍ على
+     * الجهاز مهما كانت، والثاني اسمٌ قد يُحلّ إلى غير الحلقة المحلّية في
+     * بعض البيئات. والمكتوبُ هنا هو ما يستمع عليه المحرّكُ حرفًا بحرف.
+     */
+    `connect-src 'self' ${supabase}${localImage ? ` ${LOCAL_ENGINE_ORIGIN}` : ""}`,
     "manifest-src 'self'",
     "worker-src 'self' blob:",
     "media-src 'self'",

@@ -1,0 +1,191 @@
+# ============================================================
+# بوّابةُ جاهزيّةِ الإنتاج — فحصٌ إلزاميّ على طلبات الدمج إلى release/production
+#
+# ★ لماذا وُجدت
+#
+# كان الفرعُ المحميُّ `release/production` يشترط سياقًا باسم
+# `production-readiness/gate`، ولا شيءَ في المستودع يُنتجه: السيران
+# الوحيدان مجدولان و`workflow_dispatch` فقط. فبقي كلُّ طلبِ دمجٍ
+# `blocked` إلى الأبد، و`enforce_admins` مفعّلة فلا يتجاوزه أحد.
+#
+# فالشرطُ كان قائمًا والفحصُ غائبًا — وهي أسوأُ الحالتين: يبدو المشروعُ
+# محروسًا وليس فيه حارس، ثم يُغري الانسدادُ بتعطيل الحماية بدل بنائها.
+#
+# ★ اسمُ المهمّة هو السياق
+#
+# GitHub يشتقّ اسمَ الفحص من **اسم المهمّة** لا من اسم السير. فيجب أن يبقى
+# `name:` أدناه مطابقًا حرفًا بحرف لما تشترطه حمايةُ الفرع. وتغييرُه يكسر
+# البوّابةَ بصمت: يمرّ السيرُ أخضرَ ويظلّ الشرطُ غيرَ محقَّق.
+#
+# ★ pull_request لا pull_request_target
+#
+# البوّابةُ تُنفّذ شيفرةَ الطلب — بناءً واختبارات. و`pull_request_target`
+# يعمل بسياق الفرع الأساس وبأسراره، فيسلّم أيَّ فاتحِ طلبٍ ما يملكه
+# المستودع. وهذه البوّابةُ لا تحتاج سرًّا أصلًا: لا نشرَ ولا قاعدةَ بيانات
+# ولا مزوّدَ مدفوع.
+# ============================================================
+
+name: production-readiness
+
+on:
+  pull_request:
+    branches:
+      - release/production
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+# لا صلاحيةَ كتابةٍ البتّة: البوّابةُ تقرأ الشيفرةَ وتحكم، ولا تكتب حالةً
+# ولا تعليقًا ولا نشرًا. وGitHub يُنشئ سجلَّ الفحص من تلقاء نفسه.
+permissions:
+  contents: read
+
+concurrency:
+  group: production-readiness-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # ★ يجب أن يطابق سياقَ حماية الفرع حرفيًّا: production-readiness/gate
+    name: production-readiness/gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout PR head (no credentials left behind)
+        uses: actions/checkout@v4
+        with:
+          # وإلا بقي رمزُ الدفع في `.git/config` طوالَ تنفيذ شيفرةِ الطلب
+          persist-credentials: false
+
+      - name: Set up Node 22 (matches the production image)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # ══════════════════════════════════════════════════════════
+      # ثابتُ الإطفاء — يُقاس قبل البناء لا بعده
+      #
+      # ★ ولا تُضبط الرايةُ إلى "0" هنا.
+      #
+      # فضبطُها إلى صفر يجعل البوّابةَ تُثبت ما فرضته بنفسها، ويُخفي بيئةً
+      # تصل مشتعلةً. والمطلوبُ أن تُبنى كما يُبنى الإنتاج: **غائبةً**.
+      # ══════════════════════════════════════════════════════════
+      # ★ يُقرأ متغيّرُ الصَّدفة لا سياقُ `env` في التعبيرات.
+      #
+      # فسياقُ `${{ env.X }}` لا يرى إلا ما أُعلن في السير نفسه أو كُتب في
+      # `$GITHUB_ENV`؛ ومتغيّرٌ يحقنه المُشغِّلُ من خارج ذلك يخرج فارغًا،
+      # فيصير الفحصُ يقيس ما كتبناه نحن ويمرّ دائمًا. و`$VAR` في الصَّدفة
+      # هو ما سيراه `npm run build` فعلًا — وهو المقصود.
+      - name: Assert the CI environment does not enable Local Image
+        run: |
+          if [ -n "${NEXT_PUBLIC_YSD_LOCAL_IMAGE:-}" ]; then
+            echo "FAIL: NEXT_PUBLIC_YSD_LOCAL_IMAGE is present in the gate environment."
+            echo "The production-default build must run with the variable absent, not set to 0."
+            exit 1
+          fi
+          echo "OK: NEXT_PUBLIC_YSD_LOCAL_IMAGE is absent from the gate environment."
+
+      - name: Assert no checked-in env file enables Local Image
+        run: |
+          # الملفّاتُ المتتبَّعة وحدها — ولا تُطبع قيمةُ أيّ متغيّر
+          hits=$(git ls-files -z \
+            | tr '\0' '\n' \
+            | grep -E '(^|/)\.env|env\..*example' || true)
+          bad=0
+          for f in $hits; do
+            if grep -qE '^[[:space:]]*NEXT_PUBLIC_YSD_LOCAL_IMAGE[[:space:]]*=' "$f"; then
+              echo "FAIL: $f sets NEXT_PUBLIC_YSD_LOCAL_IMAGE"
+              bad=1
+            fi
+          done
+          [ "$bad" = "0" ] && echo "OK: no tracked env file sets the flag."
+          exit $bad
+
+      - name: Install dependencies (clean, lockfile-exact)
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # مجموعةُ الاختبارات كلُّها. وحارسُ الشبكة في
+      # tests/setup/no-external-network.ts يمنع أيَّ اتصالٍ خارج الحلقة
+      # المحلّية، فلا مزوّدَ مدفوعًا يُستدعى من هنا ولو بالخطأ.
+      - name: Full automated test suite
+        run: npm test
+
+      - name: Production-default build (flag absent)
+        run: npm run build
+
+      # يبني مرّتين — غائبةً ومشتعلة — ثم **يُنفّذ** البوّابةَ المشحونة في
+      # كلّ حزمة. ولا يُقبل «لم أجد تعبيرًا» دليلًا على الحذف.
+      - name: Local Image artifact verifier (executes the shipped gate)
+        run: node scripts/verify-local-image-flag.mjs
+
+      # يترك المُتحقِّقُ `.next` على بناء الإطفاء، فيُعاد الحكمُ هنا صراحةً
+      # كي يذكر سجلُّ البوّابة نتيجةَ سياسةِ المحتوى بلا اجتهاد من القارئ.
+      - name: Assert OFF artifact keeps the loopback origin out of CSP
+        run: |
+          node --input-type=module <<'NODE'
+          import { extractGates, assessOff } from "./scripts/verify-local-image-flag.mjs";
+
+          const client = extractGates([".next/static/chunks"]);
+          const server = extractGates([".next/server"]);
+          const c = assessOff(client, true);
+          const s = assessOff(server, false);
+
+          console.log(`client gates: ${client.length} -> ${c.verdict} (${c.reason})`);
+          console.log(`server gates: ${server.length} -> ${s.verdict} (${s.reason})`);
+
+          const okv = (v) => v === "inert" || v === "absent";
+          if (!okv(c.verdict) || !okv(s.verdict)) {
+            console.error("FAIL: a shipped gate is reachable in the production-default build.");
+            process.exit(1);
+          }
+          // البوّابةُ كاذبة، فالفرعُ الذي يُضيف 127.0.0.1:47615 إلى
+          // connect-src لا يُسلك. ولا يُدّعى أنّ الشيفرةَ حُذفت من الحزمة —
+          // بل أنّها لا تُبلَغ.
+          console.log("OK: server gate false => connect-src cannot gain the loopback origin.");
+          NODE
+
+      - name: Local Image targeted tests
+        run: >-
+          npx vitest run
+          tests/v133-local-image-csp.test.ts
+          tests/v133-local-image-dockerfile.test.ts
+          tests/v133-local-image-failures.test.ts
+          tests/v133-local-image-intent.test.ts
+          tests/v133-local-image-retry.test.ts
+          tests/v133-flagproof-env-safety.test.ts
+          tests/v133-flagproof-gate-semantics.test.ts
+          tests/v133-local-image-off.test.tsx
+          tests/v133-local-image-panel.test.tsx
+          tests/v133-local-image-routing.test.tsx
+
+      - name: Browser Assistant tests
+        run: >-
+          npx vitest run
+          tests/browser-api-security.test.ts
+          tests/browser-failure-contract.test.ts
+          tests/browser-production-readiness.test.ts
+          tests/browser-pilot-allowlist.test.ts
+          tests/browser-privacy-logging.test.ts
+          tests/v126-device-rate-limit.test.ts
+
+      - name: Gate summary
+        run: |
+          {
+            echo "### production-readiness/gate"
+            echo ""
+            echo "- lint, typecheck, full test suite: passed"
+            echo "- production-default build ran with the flag **absent**"
+            echo "- shipped OFF gate executes to \`false\` (client and server)"
+            echo "- shipped ON gate executes to \`true\`"
+            echo "- Local Image code may remain in the OFF bundle; the asserted invariant is unreachability, not absence"
+          } >> "$GITHUB_STEP_SUMMARY"
