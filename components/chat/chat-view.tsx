@@ -53,8 +53,10 @@ import { MobileMenuButton } from "@/components/shell/app-shell";
 import { TrainingShareAction } from "./training-share-action";
 import { Markdown } from "./markdown";
 import { detectImageIntent } from "@/lib/local-image/intent";
+import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
+import { MicButton } from "@/components/local-voice/mic-button";
 
 export interface ChatModel {
   id: string;
@@ -96,6 +98,14 @@ function newClientRequestId(): string {
  * الجلسة بدل أن يتبدّل بين تصييرين.
  */
 const localImageEnabled = isLocalImageEnabled();
+/**
+ * ★ رايةٌ مستقلّة عن راية الصور.
+ *
+ * فإطفاءُ الصوت لا يمسُّ الصور، وإطفاؤهما معًا يعيد المحادثةَ
+ * إلى ما كانت عليه حرفًا بحرف — ولا زرَّ ميكروفون، ولا طلبَ
+ * يذهب إلى الحلقة المحلّية أصلًا.
+ */
+const localVoiceEnabled = isLocalVoiceEnabled();
 
 export interface MsgSource {
   fileId: string;
@@ -1040,6 +1050,15 @@ export function ChatView({
     taRef.current?.focus();
   }, [isEmpty]);
   const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
+  /**
+   * ★ يُنطق الردُّ بعد اكتماله لا أثناء تدفّقِه.
+   *
+   * فالنطقُ مع كلّ جزءٍ يصل يقطّع الصوتَ ويُثقِل المحرّك بلا طائل،
+   * والمستمعُ يريد جملةً تامّة لا مقاطعَ مبتورة.
+   */
+  const voiceSpeakText = localVoiceEnabled
+    ? ([...messages].reverse().find((m) => m.role === "assistant" && !m.streaming && m.content.trim())?.content ?? null)
+    : null;
 
   return (
     <>
@@ -1248,6 +1267,7 @@ export function ChatView({
             <Composer
               input={input}
               setInput={setInput}
+              voiceSpeakText={voiceSpeakText}
               onSend={() => void send()}
               onStop={stop}
               onAttach={(f) => void attachFile(f)}
@@ -1571,6 +1591,7 @@ export function ChatView({
               <Composer
                 input={input}
                 setInput={setInput}
+                voiceSpeakText={voiceSpeakText}
                 onSend={() => void send()}
                 onStop={stop}
                 onAttach={(f) => void attachFile(f)}
@@ -1817,6 +1838,7 @@ function Composer({
   stopLabel,
   composerLabel,
   centered,
+  voiceSpeakText,
 }: {
   input: string;
   setInput: (v: string) => void;
@@ -1834,6 +1856,7 @@ function Composer({
   stopLabel: string;
   composerLabel: string;
   centered?: boolean;
+  voiceSpeakText?: string | null;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   return (
@@ -1897,6 +1920,20 @@ function Composer({
             e.target.value = "";
           }}
         />
+          {/**
+            * ★ النصُ المفرَّغ يُوضَع في حقل الإدخال وحسب.
+            *
+            * فيمضي بعدها في مسار الإرسال القائم، فيمرّ على
+            * `detectImageIntent` الموجود كما يمرّ عليه ما يُكتب باليد.
+            * ولا موجِّهَ نيّةٍ ثانٍ.
+            */}
+          {localVoiceEnabled ? (
+            <MicButton
+              onTranscript={(text) => setInput(text)}
+              speakText={voiceSpeakText}
+              busy={Boolean(disabled) || generating}
+            />
+          ) : null}
         <div className="flex-1" />
         {generating ? (
           <button
