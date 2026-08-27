@@ -20,18 +20,61 @@
  *  يبنيها الوسيطُ عند الطلب. فلا سبيلَ إلى قياسهما معًا إلا بتشغيل البناء
  *  وقراءةِ استجابةٍ فعليّة. وأربعُ تركيباتٍ تُبنى وتُخدَم، لأنّ الصوتَ
  *  والصورةَ يتقاسمان الأصلَ الحلقيَّ نفسَه فيلزم قياسُ تداخلهما.
+ *
+ *  ══ ما تعلّمه هذا الملفُّ من إخفاقه على GitHub Actions (4G.2) ══
+ *
+ *  ★ كان يُشغّل `npm start`، فينشأ `npm → sh → next-server`. و`child.kill()`
+ *    يقتل الغلافَ ويترك الحفيدَ حيًّا، فتبقى مقابضُ Node مفتوحةً ولا تخرج
+ *    العمليّةُ أبدًا — طُبع الملخّصُ كاملًا ثم عُلّقت الوظيفةُ 45 دقيقة حتى
+ *    قتلتها المهلة. فصار يُشغّل الخرجَ المستقلّ بـNode مباشرةً، ويقتل
+ *    **مجموعةَ العمليّات** لا الابنَ وحدَه.
+ *
+ *  ★ وكان يقيس على `/` بلا بيئةِ تشغيل. والوسيطُ يبني عميلَ Supabase قبل
+ *    عودته المبكّرة، فبغير إعدادٍ صالحٍ نحويًّا لا تصل استجابةٌ تُقرأ
+ *    ترويستُها. فصار يقيس على `/api/live` — مسارٌ عامٌّ يعود قبل أيّ نداءٍ
+ *    شبكيّ — ببيئةٍ صوريّة على نطاق `.invalid` المحجوز. ولا سرَّ ولا نداءَ
+ *    خارجيّ.
+ *
+ *  ★ والمهلُ محدودةٌ في كلّ مرحلة. فحارسٌ يعلّق حتى مهلةِ الوظيفة لا يقول
+ *    شيئًا، ويُضيّع خمسًا وأربعين دقيقةً من كلّ مراجعة.
  * ══════════════════════════════════════════════════════════════════
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { request as httpRequest } from "node:http";
 
 const ROOT = process.cwd();
 const VOICE = "NEXT_PUBLIC_YSD_LOCAL_VOICE";
 const IMAGE = "NEXT_PUBLIC_YSD_LOCAL_IMAGE";
 const CHUNKS = join(ROOT, ".next", "static", "chunks");
-const SERVER = join(ROOT, ".next", "server");
+const SERVER_DIR = join(ROOT, ".next", "server");
+const STANDALONE = join(ROOT, ".next", "standalone", "server.js");
+const HOST = "127.0.0.1";
 const PORT = Number(process.env.YSD_VERIFY_PORT ?? 3287);
+const PROBE = "/api/live";
+const IS_WINDOWS = process.platform === "win32";
+
+/** مهلٌ محدودةٌ لكلّ مرحلة — لا انتظارَ مفتوح */
+const T_BOOT_MS = 30_000;
+const T_FETCH_MS = 10_000;
+const T_SHUTDOWN_MS = 5_000;
+
+/**
+ * ★ بيئةُ تشغيلٍ صوريّة — لا سرَّ فيها ولا نداءَ إليها.
+ *
+ * الوسيطُ يستدعي `createServerClient(url, key)` قبل عودته المبكّرة، فيلزم
+ * إعدادٌ **صالحٌ نحويًّا** لا أكثر. و`/api/live` يعود قبل أيّ نداءٍ شبكيّ،
+ * فلا يُطرق هذا العنوانُ أصلًا.
+ *
+ * والنطاقُ `.invalid` محجوزٌ بنصّ RFC 2606: لا يُحلّ في DNS البتّة، فلو
+ * حاول الكودُ الاتّصالَ يومًا لسقط الطلبُ فورًا بدل أن يبلغ جهةً حقيقيّة.
+ */
+const RUNTIME_FIXTURE = {
+  NEXT_PUBLIC_SUPABASE_URL: "https://ysd-ci.invalid",
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: "ysd-ci-nonsecret-placeholder",
+};
 
 /** علاماتُ الميزة — لو بقيت وغابت البوّابةُ فالاستخراجُ فشل، لا الميزةُ اختفت */
 const VOICE_MARKERS = ["voice-mic", "voice-privacy", "/voice/transcribe", "local-voice"];
@@ -43,8 +86,6 @@ const VOICE_MARKERS = ["voice-mic", "voice-privacy", "/voice/transcribe", "local
  * فتُقاس كلُّها، لا الغيابُ وحدَه.
  */
 const MUST_BE_OFF = ["", "0", "false", "true", "yes", "on", " 1", "1 ", "01"];
-
-const LOOPBACK = "http://127.0.0.1:47615";
 
 function walk(dir, acc = []) {
   if (!existsSync(dir)) return acc;
@@ -95,8 +136,7 @@ export function runGate(expr, override) {
 function markersPresent(dirs) {
   for (const dir of dirs) {
     for (const file of walk(dir)) {
-      const src = readFileSync(file, "utf8");
-      if (VOICE_MARKERS.some((mk) => src.includes(mk))) return true;
+      if (VOICE_MARKERS.some((mk) => readFileSync(file, "utf8").includes(mk))) return true;
     }
   }
   return false;
@@ -109,48 +149,74 @@ function build(env) {
   });
 }
 
-async function serve(env) {
-  const child = spawn("npm", ["start"], {
-    cwd: ROOT, env: { ...process.env, ...env, PORT: String(PORT) },
-    stdio: "pipe", shell: true,
+/** طلبٌ بمهلةٍ صارمة — يُعيد الحالةَ والترويسات، ولا يعلّق */
+function probe(path = PROBE) {
+  return new Promise((resolve) => {
+    const req = httpRequest({ host: HOST, port: PORT, path, method: "GET", timeout: T_FETCH_MS }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers }));
+    });
+    req.on("timeout", () => { req.destroy(); resolve({ status: 0, headers: {}, error: "fetch timeout" }); });
+    req.on("error", (e) => resolve({ status: 0, headers: {}, error: e.code ?? String(e.message) }));
+    req.end();
   });
-  for (let i = 0; i < 90; i++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try { await fetch(`http://127.0.0.1:${PORT}/`, { redirect: "follow" }); return child; } catch { /* لم يستمع */ }
-  }
-  child.kill();
-  throw new Error("the built server did not start");
 }
 
 /**
- * تُقرأ الترويسةُ بلا اتّباع تحويل.
+ * ★ يُشغَّل الخرجُ المستقلُّ بـNode مباشرةً.
  *
- * ★ ولا يُستعمل `fetch` هنا: مع `redirect:"manual"` يُعيد استجابةً معتِمة
- *   ترويساتُها فارغة، فتمرّ الفحوصُ على نصٍّ فارغ مرورًا كاذبًا.
+ * لا `npm start`: ذاك ينشئ `npm → sh → next-server`، فيبقى الحفيدُ حيًّا
+ * بعد قتل الأب. وهنا العمليّةُ واحدة، وعلى POSIX تُفصل في مجموعةٍ خاصّةٍ
+ * بها لتُقتل كاملةً.
  */
-function header(name) {
-  let out = "";
-  try {
-    out = execFileSync("curl", ["-s", "-D", "-", "-o", "/dev/null", "--max-time", "25", `http://127.0.0.1:${PORT}/`], { encoding: "utf8" });
-  } catch (e) {
-    out = String(e.stdout ?? "");
+async function startServer(env) {
+  if (!existsSync(STANDALONE)) throw new Error("standalone server.js not found after build");
+  const child = spawn(process.execPath, [STANDALONE], {
+    cwd: join(ROOT, ".next", "standalone"),
+    env: { ...process.env, ...env, ...RUNTIME_FIXTURE, HOSTNAME: HOST, PORT: String(PORT), NODE_ENV: "production" },
+    stdio: "ignore",
+    detached: !IS_WINDOWS,
+  });
+  const deadline = Date.now() + T_BOOT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (child.exitCode !== null) throw new Error(`server exited early with code ${child.exitCode}`);
+    const r = await probe();
+    if (r.status > 0) return child;
   }
-  const NL = String.fromCharCode(10);
-  const CR = String.fromCharCode(13);
-  const line = out.split(NL).map((l) => l.split(CR).join(""))
-    .find((l) => l.toLowerCase().startsWith(name.toLowerCase() + ":"));
-  return line ? line.slice(name.length + 1).trim() : "";
+  await stopServer(child);
+  throw new Error(`TIMEOUT[boot]: no response within ${T_BOOT_MS / 1000}s`);
 }
 
-function killPort() {
+/** يُنهي **الشجرة**، ثم ينتظر بحدّ، ثم يقسو — ولا يمسّ عمليّةً أخرى */
+async function stopServer(child) {
+  if (!child || child.exitCode !== null) return;
+  const pid = child.pid;
+  const exited = new Promise((r) => child.once("exit", () => r(true)));
   try {
-    const list = execFileSync("netstat", ["-ano", "-p", "tcp"], { encoding: "utf8" })
-      .split(String.fromCharCode(10))
-      .filter((l) => l.includes(":" + PORT + " ") && /LISTENING/i.test(l));
-    for (const pid of [...new Set(list.map((l) => l.trim().split(/\s+/).pop()))]) {
-      try { execFileSync("taskkill", ["/PID", pid, "/F"], { stdio: "ignore" }); } catch { /* ذهب */ }
-    }
-  } catch { /* لا netstat — بيئةٌ غيرُ ويندوز */ }
+    if (IS_WINDOWS) execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    else process.kill(-pid, "SIGTERM");
+  } catch { /* ذهبت سلفًا */ }
+  const graceful = await Promise.race([exited, new Promise((r) => setTimeout(() => r(false), T_SHUTDOWN_MS))]);
+  if (!graceful) {
+    try { if (!IS_WINDOWS) process.kill(-pid, "SIGKILL"); } catch { /* ذهبت */ }
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
+  }
+}
+
+/**
+ * ★ إثباتُ تحرُّرِ المنفذ — محمولٌ ولا يعتمد على `netstat`.
+ *
+ * يُربط خادمٌ مؤقّتٌ على العنوان نفسِه ثم يُغلق. فإن فشل الربطُ فثمّة
+ * خادمٌ مُسرَّب — وهو الانحدارُ الذي أوقع 4G.2 بعينه.
+ */
+function portFree() {
+  return new Promise((resolve) => {
+    const s = createServer();
+    s.once("error", () => resolve(false));
+    s.once("listening", () => s.close(() => resolve(true)));
+    s.listen(PORT, HOST);
+  });
 }
 
 let pass = 0, fail = 0;
@@ -169,19 +235,16 @@ const ok = (cond, label, detail = "") => {
  * المشحونة بحقن `undefined`، وهو الإثباتُ الدلاليّ المطلوب.
  */
 function offValue(name) {
-  const files = [".env.local", ".env.development.local", ".env.production.local", ".env"];
-  for (const f of files) {
+  for (const f of [".env.local", ".env.development.local", ".env.production.local", ".env"]) {
     const p = join(ROOT, f);
-    if (!existsSync(p)) continue;
-    if (new RegExp(`^\\s*${name}\\s*=`, "m").test(readFileSync(p, "utf8"))) return "0";
+    if (existsSync(p) && new RegExp(`^\\s*${name}\\s*=`, "m").test(readFileSync(p, "utf8"))) return "0";
   }
   return undefined;
 }
 function envFor(voiceOn, imageOn) {
   const e = {};
-  const vOff = offValue(VOICE);
-  const iOff = offValue(IMAGE);
-  if (voiceOn) e[VOICE] = "1"; else if (vOff !== undefined) e[VOICE] = vOff; else delete e[VOICE];
+  const vOff = offValue(VOICE), iOff = offValue(IMAGE);
+  if (voiceOn) e[VOICE] = "1"; else if (vOff !== undefined) e[VOICE] = vOff;
   if (imageOn) e[IMAGE] = "1"; else if (iOff !== undefined) e[IMAGE] = iOff;
   return e;
 }
@@ -193,8 +256,23 @@ console.log("builds four combinations, serves each, and EXECUTES the shipped gat
   console.log(`  OFF is expressed as: ${VOICE}=${v ?? "<absent>"} · ${IMAGE}=${i ?? "<absent>"}`);
   if (v !== undefined || i !== undefined) {
     console.log('  (an untracked env file sets a flag on this machine, so "0" is used instead of absence;');
-    console.log("   absence itself is still proven by executing the shipped gate with no value)\n");
+    console.log("   absence itself is still proven by executing the shipped gate with no value)");
   }
+  console.log(`  probe: http://${HOST}:${PORT}${PROBE} · launcher: .next/standalone/server.js\n`);
+}
+
+/**
+ * ★ حارسُ سلامةِ البيئة الصوريّة.
+ *
+ * يُقاس أنّها لا تحمل مضيفًا حقيقيًّا ولا شيئًا يشبه مفتاحًا. فبيئةُ اختبارٍ
+ * تتسرّب إليها قيمةُ إنتاجٍ يومًا تجعل الحارسَ يطرق جهةً حيّة.
+ */
+{
+  const url = RUNTIME_FIXTURE.NEXT_PUBLIC_SUPABASE_URL;
+  const key = RUNTIME_FIXTURE.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  ok(/^https:\/\/[a-z0-9-]+\.invalid$/.test(url), "the runtime fixture host is a reserved .invalid name");
+  ok(!/supabase\.co|railway\.app|\.com|\.net|\.org/i.test(url), "the fixture names no real host");
+  ok(!/^eyJ/.test(key) && key.length < 60, "the fixture key is a placeholder, not a JWT");
 }
 
 const CASES = [
@@ -210,13 +288,21 @@ for (const c of CASES) {
   build(env);
   let child = null;
   try {
-    child = await serve(env);
+    child = await startServer(env);
+    const res = await probe();
 
-    const pp = header("permissions-policy");
-    const csp = header("content-security-policy");
+    /**
+     * ★ الاستجابةُ نفسُها تُفحص قبل ترويساتها.
+     *
+     * فترويسةٌ غائبةٌ على ردّ 500 تجعل كلَّ فحصِ «لا يحوي الممنوع» يمرّ على
+     * نصٍّ فارغ — نجاحٌ أجوف. وهذا ما أوقع 4G.2، والحارسُ يُبقيه أحمر.
+     */
+    ok(res.status === 200, `${PROBE} answers 200`, res.error ? `${res.status} ${res.error}` : String(res.status));
+    const pp = String(res.headers["permissions-policy"] ?? "");
+    const csp = String(res.headers["content-security-policy"] ?? "");
     ok(pp.length > 0, "a Permissions-Policy header is actually present");
     ok(csp.length > 0, "a Content-Security-Policy header is actually present");
-    if (!pp.length || !csp.length) continue;
+    if (res.status !== 200 || !pp.length || !csp.length) continue;
 
     ok(pp === `camera=(), microphone=${c.mic}, geolocation=()`, "Permissions-Policy matches exactly", pp);
     ok(/(^|[ ;])camera=\(\)/.test(pp), "camera stays blocked");
@@ -236,8 +322,7 @@ for (const c of CASES) {
     if (c.loopback === 0) ok(!/127\.0\.0\.1/.test(csp), "production-default CSP names no loopback at all");
 
     const gates = extractVoiceGates([CHUNKS]);
-    const serverGates = extractVoiceGates([SERVER]);
-    const markers = markersPresent([CHUNKS]);
+    const serverGates = extractVoiceGates([SERVER_DIR]);
 
     /**
      * ★ «لم أجد بوّابة» ليست «الميزةُ غائبة».
@@ -245,7 +330,7 @@ for (const c of CASES) {
      * لو بقيت علاماتُ الميزة في الحزمة وغابت البوّابةُ فالاستخراجُ عجز —
      * وتحويلُ العجز إلى نجاحٍ هو ما يجعل الحارسَ يكذب يومَ يتغيّر المُصغِّر.
      */
-    if (gates.length === 0 && markers) {
+    if (gates.length === 0 && markersPresent([CHUNKS])) {
       ok(false, "UNSOUND: voice markers ship but no gate could be extracted");
     } else if (gates.length === 0) {
       ok(!c.voice, "no voice gate shipped and no voice markers", "absent");
@@ -263,10 +348,11 @@ for (const c of CASES) {
         ok(gates.some((g) => runGate(g, { [VOICE]: "1" }) === true), 'literal "1" does enable it (so the extracted expression really is the gate)');
       }
     }
+  } catch (e) {
+    ok(false, `stage error in "${c.label}"`, String(e.message).slice(0, 120));
   } finally {
-    if (child) child.kill();
-    await new Promise((r) => setTimeout(r, 1500));
-    killPort();
+    await stopServer(child);
+    ok(await portFree(), `the verifier port is released after "${c.label}"`, `${HOST}:${PORT}`);
   }
 }
 
@@ -277,4 +363,5 @@ console.log("  .next rebuilt with both local flags off");
 console.log(`\n═══ ${pass} PASS / ${fail} FAIL ═══`);
 if (failed.length) console.log("failed:\n" + failed.map((f) => "  - " + f).join("\n"));
 console.log("\nLocal Voice remains OFF unless NEXT_PUBLIC_YSD_LOCAL_VOICE is literal 1 at build time.");
-process.exitCode = fail ? 1 : 0;
+/** ★ خروجٌ صريح: لا مقبضَ عالقٌ يُبقي العمليّةَ حيّةً بعد انتهاء عملها */
+process.exit(fail ? 1 : 0);
