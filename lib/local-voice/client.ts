@@ -27,7 +27,14 @@ const TRANSCRIBE_TIMEOUT_MS = 180_000;
 const SYNTHESIZE_TIMEOUT_MS = 120_000;
 
 export interface VoiceCapabilities {
-  status: "ready" | "unavailable" | "not_running";
+  /**
+   * ★ «رمزٌ خاطئ» تُفصل عن «المحرّكُ ساقط».
+   *
+   * كانتا حالةً واحدة، فكان المستخدمُ يُقال له «غيرُ متاح» وهو يملك محرّكًا
+   * يعمل ورمزًا أخطأ في لصقه — فلا يعرف أين يبحث. والتمييزُ هنا هو ما
+   * يجعل الرسالةَ في الواجهة تدلّ على الفعل الصحيح.
+   */
+  status: "ready" | "unauthorized" | "unavailable" | "not_running";
   sttAvailable: boolean;
   ttsAvailable: boolean;
   model?: string;
@@ -97,6 +104,10 @@ export async function fetchVoiceCapabilities(token: string): Promise<VoiceCapabi
       headers: { Authorization: `Bearer ${token}` },
     });
     done();
+    /** المحرّكُ أجاب ورفض الرمز — حيٌّ لا ساقط، والرسالةُ تختلف */
+    if (res.status === 401 || res.status === 403) {
+      return { status: "unauthorized", sttAvailable: false, ttsAvailable: false };
+    }
     if (!res.ok) return { status: "unavailable", sttAvailable: false, ttsAvailable: false };
     const body = (await res.json()) as {
       stt?: { available?: boolean; model?: string; device?: string; maxDurationMs?: number; maxBytes?: number; acceptedMime?: string[] };

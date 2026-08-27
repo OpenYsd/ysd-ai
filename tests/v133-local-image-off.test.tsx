@@ -32,6 +32,15 @@ vi.mock("next/navigation", () => ({
  * فيمرّ هذا الملفُّ وهو يقيس الحالةَ المعاكسة ولا أحد يدري.
  */
 delete process.env.NEXT_PUBLIC_YSD_LOCAL_IMAGE;
+/**
+ * ★ ورايةُ الصوت تُنزع معها.
+ *
+ * لوحةُ `LocalAiSettings` صارت تظهر بأيٍّ من الرايتين (المرحلة 4F-C.1)،
+ * لأنّ المحرّكَ واحدٌ يخدمهما. فلو بقيت رايةُ الصوت مشتعلةً هنا لظهرت
+ * اللوحةُ وسقط الاختبارُ لسببٍ لا يخصّ الصور — أو الأسوأ: لمرّ يومًا
+ * وهو يقيس حالةً غير التي يزعمها.
+ */
+delete process.env.NEXT_PUBLIC_YSD_LOCAL_VOICE;
 
 const { ChatView } = await import("@/components/chat/chat-view");
 const { I18nProvider } = await import("@/lib/i18n");

@@ -94,36 +94,91 @@ describe("v134 — مطفأة ⇒ إرجاعٌ تامّ", () => {
   });
 });
 
-describe("v134 — مشتعلة ⇒ تظهر وتفشل مغلقةً", () => {
-  it("المحرّكُ جاهز ⇒ يظهر الزرّ", async () => {
+describe("v134 — مشتعلة ⇒ تظهر، جاهزةً أو معلَّلة", () => {
+  it("المحرّكُ جاهز ⇒ يظهر الزرُّ مفعَّلًا", async () => {
     process.env[ENV] = "1";
     render(<MicButton onTranscript={() => {}} />);
     await waitFor(() => expect(screen.getByTestId("voice-mic")).toBeTruthy());
+    expect((screen.getByTestId("voice-mic") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("voice-mic-disabled")).toBeNull();
   });
 
-  /** ★ فشلٌ مغلق: لا زرَّ يُغري بضغطةٍ لن تعمل، ولا بديلَ سحابيّ */
-  it("المحرّكُ لا يعمل ⇒ لا زرّ", async () => {
-    process.env[ENV] = "1";
-    probeVoiceEngine.mockResolvedValue(false);
-    const { container } = render(<MicButton onTranscript={() => {}} />);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(container.innerHTML).toBe("");
-  });
-
-  it("والتفريغُ غيرُ متاح ⇒ لا زرّ", async () => {
-    process.env[ENV] = "1";
-    fetchVoiceCapabilities.mockResolvedValue({ status: "ready", sttAvailable: false, ttsAvailable: true });
-    const { container } = render(<MicButton onTranscript={() => {}} />);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(container.innerHTML).toBe("");
-  });
-
-  it("والرمزُ غائب ⇒ لا زرّ", async () => {
+  /**
+   * ★ الثابتُ الذي أُضيف في 4F-C.1.
+   *
+   * ميزةٌ مشتعلةٌ غيرُ مهيّأة **تظهر** معطَّلةً ومعلَّلة. وإخفاؤها كان
+   * يجعل المالكَ يبحث في البناء والراية والشبكة، والسببُ حقلٌ فارغ في
+   * الإعدادات. الإخفاءُ التامّ حقُّ الرايةِ المطفأة وحدَها.
+   */
+  it.each([
+    ["الرمزُ غائب", "voice-needs-token", "اربط YSD Local Engine من الإعدادات"],
+  ])("%s ⇒ زرٌّ معطَّلٌ ورسالةُ إرشاد", async (_label, testid, text) => {
     process.env[ENV] = "1";
     try { window.localStorage.removeItem(ENGINE_TOKEN_KEY); } catch { /* محجوب */ }
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId(testid)).toBeTruthy());
+    expect(screen.getByTestId(testid).textContent).toContain(text);
+    expect((screen.getByTestId("voice-mic-disabled") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByTestId("voice-mic")).toBeNull();
+  });
+
+  it("والرمزُ غائب ⇒ لا يُلمس المحرّكُ أصلًا", async () => {
+    process.env[ENV] = "1";
+    try { window.localStorage.removeItem(ENGINE_TOKEN_KEY); } catch { /* محجوب */ }
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("voice-needs-token")).toBeTruthy());
+    expect(probeVoiceEngine).not.toHaveBeenCalled();
+    expect(fetchVoiceCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("والرمزُ غائب ⇒ رابطٌ إلى الإعدادات بلا رمزٍ في العنوان", async () => {
+    process.env[ENV] = "1";
+    try { window.localStorage.removeItem(ENGINE_TOKEN_KEY); } catch { /* محجوب */ }
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("voice-settings-link")).toBeTruthy());
+    const href = screen.getByTestId("voice-settings-link").getAttribute("href") ?? "";
+    expect(href).toBe("/settings");
+    expect(href).not.toContain("token");
+    expect(href).not.toContain("?");
+  });
+
+  it("المحرّكُ لا يعمل ⇒ «المحرك المحلي غير متصل»", async () => {
+    process.env[ENV] = "1";
+    probeVoiceEngine.mockResolvedValue(false);
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("voice-engine-down")).toBeTruthy());
+    expect(screen.getByTestId("voice-engine-down").textContent).toContain("المحرك المحلي غير متصل");
+    expect(screen.queryByTestId("voice-mic")).toBeNull();
+  });
+
+  /** ★ محرّكٌ حيٌّ رفض الرمز ≠ محرّكٌ ساقط — والرسالتان تدلّان على فعلين */
+  it("الرمزُ غيرُ صحيح ⇒ «رمز المحرك المحلي غير صحيح»", async () => {
+    process.env[ENV] = "1";
+    fetchVoiceCapabilities.mockResolvedValue({ status: "unauthorized", sttAvailable: false, ttsAvailable: false });
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("voice-bad-token")).toBeTruthy());
+    expect(screen.getByTestId("voice-bad-token").textContent).toContain("رمز المحرك المحلي غير صحيح");
+    expect(screen.queryByTestId("voice-engine-down")).toBeNull();
+    expect(screen.queryByTestId("voice-mic")).toBeNull();
+  });
+
+  it("والتفريغُ غيرُ متاح ⇒ معطَّلٌ لا مخفيّ", async () => {
+    process.env[ENV] = "1";
+    fetchVoiceCapabilities.mockResolvedValue({ status: "ready", sttAvailable: false, ttsAvailable: true });
+    render(<MicButton onTranscript={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("voice-engine-down")).toBeTruthy());
+    expect(screen.queryByTestId("voice-mic")).toBeNull();
+  });
+
+  /** ★ ولا بديلَ سحابيّ في أيٍّ من الحالات المعطَّلة */
+  it.each(["no-token", "engine-down", "bad-token"])("وحالةُ «%s» لا تقترح سحابة", async (kind) => {
+    process.env[ENV] = "1";
+    if (kind === "no-token") { try { window.localStorage.removeItem(ENGINE_TOKEN_KEY); } catch { /* محجوب */ } }
+    if (kind === "engine-down") probeVoiceEngine.mockResolvedValue(false);
+    if (kind === "bad-token") fetchVoiceCapabilities.mockResolvedValue({ status: "unauthorized", sttAvailable: false, ttsAvailable: false });
     const { container } = render(<MicButton onTranscript={() => {}} />);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(container.innerHTML).toBe("");
+    await waitFor(() => expect(screen.getByTestId("local-voice")).toBeTruthy());
+    expect(container.textContent ?? "").not.toMatch(/سحاب|cloud|OpenAI|Google|Azure|مدفوع/i);
   });
 });
 

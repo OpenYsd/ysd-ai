@@ -47,7 +47,7 @@ export function isLocalVoiceEnabled(env?: Record<string, string | undefined>): b
 }
 
 /** مفتاحُ رمزِ المحرّك — هو نفسُه الذي تستعمله الصورُ، فلا رمزَ ثانٍ */
-export const ENGINE_TOKEN_KEY = "ysd.localEngineToken";
+export { ENGINE_TOKEN_KEY } from "@/lib/local-image/flag";
 
 /** حدودُ المحرّك كما يعلنها — تُكرَّر هنا للواجهة قبل أن تسأل */
 export const MAX_RECORDING_MS = 60_000;
