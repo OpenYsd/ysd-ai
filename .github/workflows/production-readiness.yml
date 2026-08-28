@@ -89,20 +89,34 @@ jobs:
           fi
           echo "OK: NEXT_PUBLIC_YSD_LOCAL_IMAGE is absent from the gate environment."
 
-      - name: Assert no checked-in env file enables Local Image
+      # نفسُ الحُجّة للصوت، وخطوةٌ مستقلّة عمدًا: لو جُمعا في فحصٍ واحد
+      # لقرأ السجلُّ سطرًا واحدًا لا يُميّز أيَّهما تسرّب.
+      - name: Assert the CI environment does not enable Local Voice
         run: |
-          # الملفّاتُ المتتبَّعة وحدها — ولا تُطبع قيمةُ أيّ متغيّر
+          if [ -n "${NEXT_PUBLIC_YSD_LOCAL_VOICE:-}" ]; then
+            echo "FAIL: NEXT_PUBLIC_YSD_LOCAL_VOICE is present in the gate environment."
+            echo "The production-default build must run with the variable absent, not set to 0."
+            exit 1
+          fi
+          echo "OK: NEXT_PUBLIC_YSD_LOCAL_VOICE is absent from the gate environment."
+
+      - name: Assert no checked-in env file enables a local feature
+        run: |
+          # الملفّاتُ المتتبَّعة وحدها — ولا تُطبع قيمةُ أيّ متغيّر،
+          # فاسمُ الملفّ واسمُ المتغيّر يكفيان للإصلاح.
           hits=$(git ls-files -z \
             | tr '\0' '\n' \
             | grep -E '(^|/)\.env|env\..*example' || true)
           bad=0
           for f in $hits; do
-            if grep -qE '^[[:space:]]*NEXT_PUBLIC_YSD_LOCAL_IMAGE[[:space:]]*=' "$f"; then
-              echo "FAIL: $f sets NEXT_PUBLIC_YSD_LOCAL_IMAGE"
-              bad=1
-            fi
+            for v in NEXT_PUBLIC_YSD_LOCAL_IMAGE NEXT_PUBLIC_YSD_LOCAL_VOICE; do
+              if grep -qE "^[[:space:]]*${v}[[:space:]]*=" "$f"; then
+                echo "FAIL: $f sets $v"
+                bad=1
+              fi
+            done
           done
-          [ "$bad" = "0" ] && echo "OK: no tracked env file sets the flag."
+          [ "$bad" = "0" ] && echo "OK: no tracked env file sets a local-feature flag."
           exit $bad
 
       - name: Install dependencies (clean, lockfile-exact)
@@ -168,6 +182,28 @@ jobs:
           tests/v133-local-image-panel.test.tsx
           tests/v133-local-image-routing.test.tsx
 
+      # ── الصوتُ المحلّيّ: خطواتٌ مسمّاةٌ لا اعتمادًا على أنّ `npm test` يشملها ──
+      #
+      # اشتمالُ المجموعة الكاملة عليها صحيحٌ اليوم، لكنّه مصادفةٌ لا حراسة:
+      # لو قُسّمت المجموعةُ أو رُشِّحت يومًا لسقطت التغطيةُ صامتة. وسجلُّ
+      # GitHub يجب أن يقول صراحةً إنّ الصوتَ فُحص.
+      - name: Local Voice artifact verifier (executes the shipped gate)
+        run: node scripts/verify-local-voice-flag.mjs
+
+      - name: Local Voice targeted tests
+        run: >-
+          npx vitest run
+          tests/v134-local-voice-flag.test.ts
+          tests/v134-local-voice-client.test.ts
+          tests/v134-local-voice-ui.test.tsx
+          tests/v134-local-voice-wire.test.ts
+          tests/v136-engine-token-shared.test.tsx
+
+      - name: Permissions-Policy targeted tests
+        run: >-
+          npx vitest run
+          tests/v135-permissions-policy.test.ts
+
       - name: Browser Assistant tests
         run: >-
           npx vitest run
@@ -184,8 +220,21 @@ jobs:
             echo "### production-readiness/gate"
             echo ""
             echo "- lint, typecheck, full test suite: passed"
-            echo "- production-default build ran with the flag **absent**"
-            echo "- shipped OFF gate executes to \`false\` (client and server)"
-            echo "- shipped ON gate executes to \`true\`"
-            echo "- Local Image code may remain in the OFF bundle; the asserted invariant is unreachability, not absence"
+            echo "- production-default build ran with both local flags **absent**"
+            echo ""
+            echo "**Local Image**"
+            echo "- OFF shipped gate executes to \`false\` (client and server)"
+            echo "- ON shipped gate executes to \`true\`"
+            echo ""
+            echo "**Local Voice**"
+            echo "- OFF shipped gate executes to \`false\` (client and server)"
+            echo "- ON shipped gate executes to \`true\`"
+            echo "- production-default Permissions-Policy: \`camera=(), microphone=(), geolocation=()\` — microphone blocked"
+            echo "- voice-enabled artifact: \`camera=(), microphone=(self), geolocation=()\` — self only, never a wildcard"
+            echo ""
+            echo "Feature code may remain in the OFF bundle; the asserted invariant is unreachability, not absence."
+            echo ""
+            echo "> Local Voice remains OFF unless \`NEXT_PUBLIC_YSD_LOCAL_VOICE\` is literal \`1\` at build time."
+            echo "> This gate does not enable it anywhere, and Production must not set it —"
+            echo "> see \`docs/local-voice-engine-contract.md\` (PRODUCTION ENABLEMENT BLOCKER)."
           } >> "$GITHUB_STEP_SUMMARY"

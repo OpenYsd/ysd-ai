@@ -64,11 +64,20 @@ ARG NEXT_PUBLIC_DEFAULT_LOCALE
 # `1` وحدها تُشعلها، وتُمرَّر من المنصّة بـ`--build-arg` لبيئةِ التجربة.
 # وتثبيتُها في الملفّ يجعل كلَّ بيئةٍ تُبنى منه مشتعلةً — ومنها الإنتاج.
 ARG NEXT_PUBLIC_YSD_LOCAL_IMAGE
+#
+# رايةُ الصوت المحلّيّ.
+#
+# ★ ولا تُثبّت قيمتُها هنا بحال — كراية الصور سواءً بسواء.
+#
+# غيابُها أو خلوُّها ⇒ مطفأة (وهو وضعُ الإنتاج). والقيمةُ الحرفيّة
+# `1` وحدها تُشعلها، وتُمرّر من المنصّة بـ`--build-arg` لبيئة التجربة.
+ARG NEXT_PUBLIC_YSD_LOCAL_VOICE
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_APP_NAME=$NEXT_PUBLIC_APP_NAME \
     NEXT_PUBLIC_DEFAULT_LOCALE=$NEXT_PUBLIC_DEFAULT_LOCALE \
     NEXT_PUBLIC_YSD_LOCAL_IMAGE=$NEXT_PUBLIC_YSD_LOCAL_IMAGE \
+    NEXT_PUBLIC_YSD_LOCAL_VOICE=$NEXT_PUBLIC_YSD_LOCAL_VOICE \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 

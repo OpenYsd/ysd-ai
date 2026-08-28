@@ -19,11 +19,26 @@
  */
 const isDev = process.env.NODE_ENV !== "production";
 
+/**
+ * سياسةُ الأذونات تُبنى بدالّة — والسببُ في `lib/permissions-policy.mjs`.
+ *
+ * ★ وتُقرأ الرايةُ **وقتَ البناء**.
+ *
+ * `headers()` تُخبَز في بيان المسارات، فلا تُقيَّم مع كل طلب. فالرايةُ يجب
+ * أن تكون حاضرةً في بيئة البناء — وهي القاعدةُ نفسُها التي تحكم
+ * `NEXT_PUBLIC_*` في المتصفّح، فلا تفترق الترويسةُ عن الواجهة: إمّا أن
+ * تظهرَ الميزةُ ويُسمح للميكروفون، أو يُمنع الاثنان.
+ *
+ * وضبطُها في لوحة المنصّة دون تمريرها إلى البناء لا يُشعل شيئًا — وهو
+ * بالضبط ما وقع في الطور 3H، فصار الخادمُ يراها والمتصفّحُ لا يراها.
+ */
+import { buildPermissionsPolicy } from "./lib/permissions-policy.mjs";
+
 const securityHeaders = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  { key: "Permissions-Policy", value: buildPermissionsPolicy() },
   /**
    * HSTS — بلا `preload` عمدًا.
    *

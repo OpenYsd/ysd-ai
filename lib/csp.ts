@@ -30,6 +30,7 @@
  */
 
 import { isLocalImageEnabled, LOCAL_ENGINE_ORIGIN } from "@/lib/local-image/flag";
+import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 
 /** ١٦ بايتًا = ١٢٨ بتًا من العشوائية المعمّاة — لا وقتٌ ولا `Math.random` */
 const NONCE_BYTES = 16;
@@ -82,6 +83,14 @@ export interface CspOptions {
    * الميزةُ مشتعلةً فعلًا.
    */
   localImage?: boolean;
+  /**
+   * ★ والصوتُ يسكن المحرّكَ نفسَه على المنفذ نفسِه.
+   *
+   * فلا يُضاف أصلٌ ثانٍ ولا منفذٌ ثانٍ: العنوانُ واحد، ويُذكر مرّةً
+   * واحدة مهما اشتعلت الميزتان معًا. وإطفاؤهما معًا يعيد السياسةَ
+   * حرفًا بحرف.
+   */
+  localVoice?: boolean;
 }
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}): string {
@@ -89,6 +98,9 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
   const supabase = supabaseSources(options.supabaseUrl ?? process.env.NEXT_PUBLIC_SUPABASE_URL);
   /** الرايةُ تُقرأ من مصدرها الوحيد — فلا تفترق السياسةُ عن الواجهة */
   const localImage = options.localImage ?? isLocalImageEnabled();
+  const localVoice = options.localVoice ?? isLocalVoiceEnabled();
+  /** أصلٌ واحد يكفي للاثنتين — والتكرارُ في السياسة عيبٌ لا فائدة فيه */
+  const needsLoopback = localImage || localVoice;
 
   /**
    * ★ `'unsafe-eval'` في التطوير وحده — وإعادةُ التحميل الساخنة تحتاجه.
@@ -124,7 +136,7 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
      * الجهاز مهما كانت، والثاني اسمٌ قد يُحلّ إلى غير الحلقة المحلّية في
      * بعض البيئات. والمكتوبُ هنا هو ما يستمع عليه المحرّكُ حرفًا بحرف.
      */
-    `connect-src 'self' ${supabase}${localImage ? ` ${LOCAL_ENGINE_ORIGIN}` : ""}`,
+    `connect-src 'self' ${supabase}${needsLoopback ? ` ${LOCAL_ENGINE_ORIGIN}` : ""}`,
     "manifest-src 'self'",
     "worker-src 'self' blob:",
     "media-src 'self'",
