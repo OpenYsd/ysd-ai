@@ -32,6 +32,7 @@
 import { LOCAL_ENGINE_ORIGIN } from "@/lib/local-engine/endpoint";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { isLocalPairingEnabled } from "@/lib/local-pairing/flag";
+import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 
 /** ١٦ بايتًا = ١٢٨ بتًا من العشوائية المعمّاة — لا وقتٌ ولا `Math.random` */
 const NONCE_BYTES = 16;
@@ -97,6 +98,14 @@ export interface CspOptions {
    *   واحدة، فالسياسةُ تبقى كما كانت حرفًا بحرف.
    */
   localPairing?: boolean;
+  /**
+   * ★ والصوتُ يسكن المحرّكَ نفسَه على المنفذ نفسِه.
+   *
+   * فلا يُضاف أصلٌ ثانٍ ولا منفذٌ ثانٍ: العنوانُ واحد، ويُذكر مرّةً
+   * واحدة مهما اشتعلت الميزتان معًا. وإطفاؤهما معًا يعيد السياسةَ
+   * حرفًا بحرف.
+   */
+  localVoice?: boolean;
 }
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}): string {
@@ -105,8 +114,9 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
   /** الرايةُ تُقرأ من مصدرها الوحيد — فلا تفترق السياسةُ عن الواجهة */
   const localImage = options.localImage ?? isLocalImageEnabled();
   const localPairing = options.localPairing ?? isLocalPairingEnabled();
-  /** ★ مجموعةٌ لا وصلٌ: رايتان مشتعلتان لا تكتبان الأصلَ مرّتين */
-  const loopback = localImage || localPairing ? ` ${LOCAL_ENGINE_ORIGIN}` : "";
+  const localVoice = options.localVoice ?? isLocalVoiceEnabled();
+  /** ★ مجموعةٌ لا وصلٌ: ثلاثُ راياتٍ مشتعلة لا تكتب الأصلَ أكثرَ من مرّة */
+  const loopback = localImage || localPairing || localVoice ? ` ${LOCAL_ENGINE_ORIGIN}` : "";
 
   /**
    * ★ `'unsafe-eval'` في التطوير وحده — وإعادةُ التحميل الساخنة تحتاجه.

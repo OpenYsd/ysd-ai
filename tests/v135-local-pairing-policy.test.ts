@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { buildContentSecurityPolicy } from "@/lib/csp";
+import { buildPermissionsPolicy } from "@/lib/permissions-policy.mjs";
 
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
@@ -36,8 +37,16 @@ describe("سياسةُ الأذون", () => {
   const nextConfig = read("next.config.mjs");
 
   it("الميكروفونُ مغلقٌ في الإعداد الأساس", () => {
+    /**
+     * ★ السياسةُ تُبنى الآن بدالّةٍ واحدة تحكمها رايةُ الصوت وحدَها
+     *   (`lib/permissions-policy.mjs`)، والإعدادُ يستدعيها. فيُقاس ما تُخرجه
+     *   لا نصُّ الإعداد: مطفأةً ⇒ `microphone=()`.
+     */
     expect(nextConfig).toMatch(/Permissions-Policy/);
-    expect(nextConfig).toMatch(/microphone=\(\)/);
+    expect(nextConfig).toMatch(/buildPermissionsPolicy\(\)/);
+    expect(buildPermissionsPolicy({})).toMatch(/microphone=\(\)/);
+    // والاقترانُ مشتعلًا وحدَه لا يفتح ميكروفونًا
+    expect(buildPermissionsPolicy({ NEXT_PUBLIC_YSD_LOCAL_PAIRING: "1" })).toMatch(/microphone=\(\)/);
   });
 
   it("★ ولا يذكر الاقترانُ في سياسة الأذون بحال", () => {
@@ -47,6 +56,7 @@ describe("سياسةُ الأذون", () => {
      */
     expect(nextConfig).not.toContain("NEXT_PUBLIC_YSD_LOCAL_PAIRING");
     expect(nextConfig).not.toContain("PAIRING");
+    expect(read("lib/permissions-policy.mjs")).not.toContain("PAIRING");
   });
 
   it("والاقترانُ مشتعلٌ لا يُغيّر شيئًا خارج connect-src", () => {
