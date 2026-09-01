@@ -17,7 +17,8 @@
 #   • الأسرار الخادمية (OPENROUTER_API_KEY / ANTHROPIC_API_KEY) **وقت التشغيل فقط**
 #     عبر -e أو secrets المنصة. لا ARG ولا ENV لها ولا COPY لأي .env — راجع .dockerignore.
 #
-#   • رايات الميزات العامة — NEXT_PUBLIC_YSD_LOCAL_IMAGE (التوليد المحلّيّ للصور):
+#   • رايات الميزات العامة — NEXT_PUBLIC_YSD_LOCAL_IMAGE (التوليد المحلّيّ للصور)
+#     و NEXT_PUBLIC_YSD_LOCAL_PAIRING (الاقتران الدائم بالمحرّك المحلّيّ):
 #       ★ ضبطُها في المنصّة **لا يكفي**.
 #       لأنها تُخبَز في حزمة المتصفح وقت البناء، فيجب أن تُذكر `ARG` هنا
 #       وتُمرَّر `--build-arg`. وإلا رآها الخادمُ (فبنى سياسةَ محتوى تفتح
@@ -64,11 +65,33 @@ ARG NEXT_PUBLIC_DEFAULT_LOCALE
 # `1` وحدها تُشعلها، وتُمرَّر من المنصّة بـ`--build-arg` لبيئةِ التجربة.
 # وتثبيتُها في الملفّ يجعل كلَّ بيئةٍ تُبنى منه مشتعلةً — ومنها الإنتاج.
 ARG NEXT_PUBLIC_YSD_LOCAL_IMAGE
+#
+# رايةُ الاقتران الدائم بالمحرّك المحلّيّ.
+#
+# ★ ووقعت هنا نفسُ الزلّة التي يحذّر منها رأسُ هذا الملفّ.
+#
+#   ضُبطت الرايةُ في منصّة التجربة ولم تُعلَن `ARG` هنا، فرآها الخادمُ
+#   (وفتحت سياسةُ المحتوى `127.0.0.1:47615`) ولم يرَها المتصفّح — فلم
+#   يظهر قسمُ الإعدادات أصلًا. والقاعدةُ مكتوبةٌ أعلاه منذ رايةِ الصور،
+#   وخُولفت. ولذلك صار الحارسُ يمشي من المصدر إلى هذا الملفّ لا العكس.
+ARG NEXT_PUBLIC_YSD_LOCAL_PAIRING
+#
+# بريدُ الدعم العامّ.
+#
+# ★ عطبٌ قائمٌ من قبلُ، كشفه الحارسُ الجديد في أوّل تشغيل.
+#
+#   `lib/public-support.ts` يقرؤها، ويستوردها أربعةُ مكوّناتِ عميل. بل إنّ
+#   تعليقَ ذلك الملفّ يقول صراحةً إنّ الوصولَ كُتب ساكنًا كي يحقنه Next في
+#   حزمة المتصفّح — ثمّ لم تُعلَن هنا، فلم يُحقَن شيء. فكان المستخدمُ يرى
+#   موضعَ بريدِ الدعم فارغًا ولا يُنبّه أحدٌ إلى ذلك.
+ARG NEXT_PUBLIC_YSD_SUPPORT_EMAIL
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_APP_NAME=$NEXT_PUBLIC_APP_NAME \
     NEXT_PUBLIC_DEFAULT_LOCALE=$NEXT_PUBLIC_DEFAULT_LOCALE \
     NEXT_PUBLIC_YSD_LOCAL_IMAGE=$NEXT_PUBLIC_YSD_LOCAL_IMAGE \
+    NEXT_PUBLIC_YSD_LOCAL_PAIRING=$NEXT_PUBLIC_YSD_LOCAL_PAIRING \
+    NEXT_PUBLIC_YSD_SUPPORT_EMAIL=$NEXT_PUBLIC_YSD_SUPPORT_EMAIL \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 
