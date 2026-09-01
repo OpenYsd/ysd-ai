@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { listModelOptions } from "@/lib/ai/registry";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { LocalAiSettings } from "@/components/local-image/local-ai-settings";
+import { LocalPairingPanel } from "@/components/local-pairing/pairing-panel";
 
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -30,6 +31,13 @@ export default async function SettingsPage() {
         * القرار واحد، ولا يفترق ما يقرّره الخادمُ عمّا يقرّره المتصفّح.
         */}
       <LocalAiSettings />
+      {/**
+        * ★ والاقترانُ لوحةٌ مستقلّةٌ برايةٍ مستقلّة.
+        *
+        *   فقد يُشعل المستخدمُ الاقترانَ وحدَه دون توليد الصور، أو العكس.
+        *   ودمجُهما في لوحةٍ واحدة يجعل إطفاءَ إحداهما يُخفي الأخرى.
+        */}
+      <LocalPairingPanel />
     </>
   );
 }

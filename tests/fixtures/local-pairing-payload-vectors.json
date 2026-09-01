@@ -1,0 +1,109 @@
+{
+  "$schema": "ysd-local-engine canonical signing payload, YSD-AUTH-V1",
+  "$source": "generated from ysd-local-engine src/pairing-auth.mjs signingPayload()",
+  "engineCommit": "51129dbd877a6fe063f79212afcdff63d6be5a8c",
+  "engineVersion": "0.2.0-alpha.4",
+  "pairingApiVersion": 1,
+  "prefix": "YSD-AUTH-V1",
+  "fieldOrder": [
+    "challengeId",
+    "challenge",
+    "engineId",
+    "clientId",
+    "origin"
+  ],
+  "encoding": "prefix bytes, then per field: uint32 big-endian byte length, then UTF-8 bytes",
+  "vectors": [
+    {
+      "name": "typical production pairing",
+      "input": {
+        "challengeId": "9f2c4a1b7e5d3068a1c4e7b09d2f6538",
+        "challenge": "cXVpY2stYnJvd24tZm94LWp1bXBzLW92ZXItdGhlLWxhenktZG9n",
+        "engineId": "732e0e9f87b74c1a9d3e05f6b8c2417d",
+        "clientId": "3a4ac8c07033f1e2b9d4a6c8e0f21357",
+        "origin": "https://ysd-ai-production.up.railway.app"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAAgOWYyYzRhMWI3ZTVkMzA2OGExYzRlN2IwOWQyZjY1MzgAAAA0Y1hWcFkyc3RZbkp2ZDI0dFptOTRMV3AxYlhCekxXOTJaWEl0ZEdobExXeGhlbmt0Wkc5bgAAACA3MzJlMGU5Zjg3Yjc0YzFhOWQzZTA1ZjZiOGMyNDE3ZAAAACAzYTRhYzhjMDcwMzNmMWUyYjlkNGE2YzhlMGYyMTM1NwAAAChodHRwczovL3lzZC1haS1wcm9kdWN0aW9uLnVwLnJhaWx3YXkuYXBw",
+      "payloadLength": 219,
+      "payloadSha256": "bdabc1dc1626d73eae2b48bd3cf7585d786c994613acbd7a463254999e9431a4"
+    },
+    {
+      "name": "staging origin",
+      "input": {
+        "challengeId": "00000000000000000000000000000000",
+        "challenge": "AAAA",
+        "engineId": "ffffffffffffffffffffffffffffffff",
+        "clientId": "11111111111111111111111111111111",
+        "origin": "https://ysd-ai-staging-staging.up.railway.app"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAEQUFBQQAAACBmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZgAAACAxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMQAAAC1odHRwczovL3lzZC1haS1zdGFnaW5nLXN0YWdpbmcudXAucmFpbHdheS5hcHA=",
+      "payloadLength": 176,
+      "payloadSha256": "f68e9ee95ad4643a13888b74856bcc5a1515b7ebde4a830960d30d676455dfd4"
+    },
+    {
+      "name": "local development origin",
+      "input": {
+        "challengeId": "abcdef0123456789abcdef0123456789",
+        "challenge": "Zm9vYmFy",
+        "engineId": "0123456789abcdef0123456789abcdef",
+        "clientId": "fedcba9876543210fedcba9876543210",
+        "origin": "http://127.0.0.1:3000"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAAgYWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODkAAAAIWm05dlltRnkAAAAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAgZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAAAAAVaHR0cDovLzEyNy4wLjAuMTozMDAw",
+      "payloadLength": 156,
+      "payloadSha256": "a6a58eb5f09039aeee0106946b8f4485f02d693c6d47806763c15a66badf5d6e"
+    },
+    {
+      "name": "delimiter-ambiguity probe A",
+      "input": {
+        "challengeId": "a",
+        "challenge": "b",
+        "engineId": "c",
+        "clientId": "d|e",
+        "origin": "f"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAABYQAAAAFiAAAAAWMAAAADZHxlAAAAAWY=",
+      "payloadLength": 38,
+      "payloadSha256": "02fd51743ed4f69473129b1ac1e96e0f4d50000e99e2d1f17489ba7a4da1f622"
+    },
+    {
+      "name": "delimiter-ambiguity probe B",
+      "input": {
+        "challengeId": "a",
+        "challenge": "b",
+        "engineId": "c",
+        "clientId": "d",
+        "origin": "e|f"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAABYQAAAAFiAAAAAWMAAAABZAAAAANlfGY=",
+      "payloadLength": 38,
+      "payloadSha256": "a4711ccbedb82f9b3528544556f31c3170634de1f57680828c8858167fa65821"
+    },
+    {
+      "name": "non-ascii label bytes",
+      "input": {
+        "challengeId": "1",
+        "challenge": "2",
+        "engineId": "3",
+        "clientId": "4",
+        "origin": "https://مثال.test"
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAABMQAAAAEyAAAAATMAAAABNAAAABVodHRwczovL9mF2KvYp9mELnRlc3Q=",
+      "payloadLength": 56,
+      "payloadSha256": "bdf72dcbe8b1fc3939445c944f5954305b4c488e258b490e6d4d9674f139c347"
+    },
+    {
+      "name": "empty fields",
+      "input": {
+        "challengeId": "",
+        "challenge": "",
+        "engineId": "",
+        "clientId": "",
+        "origin": ""
+      },
+      "payloadBase64": "WVNELUFVVEgtVjEAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+      "payloadLength": 31,
+      "payloadSha256": "12b4eb6ac31e5f503f725096287f58cd887560ebdc28739cf8ca8721b9269880"
+    }
+  ]
+}

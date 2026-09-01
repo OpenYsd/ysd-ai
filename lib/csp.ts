@@ -29,7 +29,9 @@
  * وقولُ ذلك أصدق من إيحاءٍ بأن السياسة أُحكمت كلُّها.
  */
 
-import { isLocalImageEnabled, LOCAL_ENGINE_ORIGIN } from "@/lib/local-image/flag";
+import { LOCAL_ENGINE_ORIGIN } from "@/lib/local-engine/endpoint";
+import { isLocalImageEnabled } from "@/lib/local-image/flag";
+import { isLocalPairingEnabled } from "@/lib/local-pairing/flag";
 
 /** ١٦ بايتًا = ١٢٨ بتًا من العشوائية المعمّاة — لا وقتٌ ولا `Math.random` */
 const NONCE_BYTES = 16;
@@ -82,6 +84,19 @@ export interface CspOptions {
    * الميزةُ مشتعلةً فعلًا.
    */
   localImage?: boolean;
+  /**
+   * والاقترانُ الدائم يحتاج الوصلةَ نفسَها.
+   *
+   * ★ وقدرةٌ مستقلّةٌ برايةٍ مستقلّة.
+   *
+   *   فمن أشعل الاقترانَ وحدَه يحتاج `connect-src` مفتوحةً إلى
+   *   المحرّك، ولا يحتاج توليدَ صور. وربطُ الوصلة برايةِ الصورة
+   *   يجعل إطفاءَ الصورة يقطع اقترانًا قائمًا.
+   *
+   * ★ والعنوانُ لا يتكرّر حين تشتعل الرايتان: نفسُ الأصل مرّةً
+   *   واحدة، فالسياسةُ تبقى كما كانت حرفًا بحرف.
+   */
+  localPairing?: boolean;
 }
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}): string {
@@ -89,6 +104,9 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
   const supabase = supabaseSources(options.supabaseUrl ?? process.env.NEXT_PUBLIC_SUPABASE_URL);
   /** الرايةُ تُقرأ من مصدرها الوحيد — فلا تفترق السياسةُ عن الواجهة */
   const localImage = options.localImage ?? isLocalImageEnabled();
+  const localPairing = options.localPairing ?? isLocalPairingEnabled();
+  /** ★ مجموعةٌ لا وصلٌ: رايتان مشتعلتان لا تكتبان الأصلَ مرّتين */
+  const loopback = localImage || localPairing ? ` ${LOCAL_ENGINE_ORIGIN}` : "";
 
   /**
    * ★ `'unsafe-eval'` في التطوير وحده — وإعادةُ التحميل الساخنة تحتاجه.
@@ -124,7 +142,7 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
      * الجهاز مهما كانت، والثاني اسمٌ قد يُحلّ إلى غير الحلقة المحلّية في
      * بعض البيئات. والمكتوبُ هنا هو ما يستمع عليه المحرّكُ حرفًا بحرف.
      */
-    `connect-src 'self' ${supabase}${localImage ? ` ${LOCAL_ENGINE_ORIGIN}` : ""}`,
+    `connect-src 'self' ${supabase}${loopback}`,
     "manifest-src 'self'",
     "worker-src 'self' blob:",
     "media-src 'self'",
