@@ -12,8 +12,10 @@
  *
  * ★ اثنان في آنٍ واحد
  *
- *   الخادم يسمح بعشر عمليّات رفعٍ في الدقيقة. عشرون ملفًّا دفعةً واحدة تعني عشرة
- *   رفوضٍ مؤكّدة؛ والطابور يُبقي الضغط معقولًا، و429 خطأٌ قابلٌ للإعادة لا نهاية.
+ *   الخادم يسمح بعشر عمليّات رفعٍ في الدقيقة. وأوّلُ 429 **يوقف الطابور كلَّه**
+ *   مدّةَ `Retry-After` ويُعيد الملف إلى رأسه — فلا يُرمى باقي الدفعة على نافذةٍ
+ *   معلومٌ أنها مغلقة، ولا تتحوّل عشرون بطاقةً إلى أخطاء. ولكل ملفٍّ ثلاثُ
+ *   انتظاراتٍ تلقائيّة، ثم خطأٌ قابلٌ للإعادة يدويًّا.
  *
  * ★ والمحادثة تُثبَّت لكل ملفٍّ عند اختياره
  *
@@ -38,6 +40,9 @@ import {
 } from "@/lib/chat/composer-attachments";
 
 const UPLOAD_CONCURRENCY = 2;
+/** انتظاراتٌ تلقائيّة بعد 429 لكل ملف — ثم خطأٌ بزرّ إعادة: لا حلقةَ بلا نهاية */
+const RATE_LIMIT_WAITS = 3;
+const RATE_LIMIT_WAIT_MAX_S = 60;
 const POLL_MS = 1500;
 const POLL_MAX = 200;
 const TERMINAL = new Set(["ready_for_rag", "rag_failed", "failed"]);
@@ -108,6 +113,9 @@ export function useComposerAttachments({
   const active = useRef(0);
   const polling = useRef(new Set<string>());
   const limitsPromise = useRef<Promise<number | null> | null>(null);
+  const pausedUntil = useRef(0);
+  const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rateWaits = useRef(new Map<string, number>());
 
   /** متابعة حالة ملفٍّ على الخادم حتى حالةٍ نهائيّة — استطلاعٌ واحدٌ لكل ملف */
   const poll = useCallback(async (fileId: string) => {
@@ -175,6 +183,18 @@ export function useComposerAttachments({
         if (startRag) requestRag(res.file.id);
         return;
       }
+      if (res.status === 429) {
+        const waits = rateWaits.current.get(key) ?? 0;
+        if (waits < RATE_LIMIT_WAITS) {
+          rateWaits.current.set(key, waits + 1);
+          const seconds = Math.min(Math.max(res.retryAfterSec ?? 10, 1), RATE_LIMIT_WAIT_MAX_S);
+          pausedUntil.current = Math.max(pausedUntil.current, Date.now() + seconds * 1000);
+          queue.current.unshift(key);
+          dispatch({ type: "retryQueued", key });
+          return;
+        }
+      }
+      rateWaits.current.delete(key);
       const failure = classifyUploadFailure(res.status, res.error);
       dispatch({
         type: "uploadFailed",
@@ -189,17 +209,31 @@ export function useComposerAttachments({
     [requestRag],
   );
 
-  const pump = useCallback(() => {
-    while (active.current < UPLOAD_CONCURRENCY && queue.current.length > 0) {
-      const key = queue.current.shift() as string;
-      if (removed.current.has(key)) continue;
-      active.current += 1;
-      void runUpload(key).finally(() => {
-        active.current -= 1;
-        if (mounted.current) pump();
-      });
-    }
-  }, [runUpload]);
+  const pump = useCallback(
+    function pumpQueue() {
+      const wait = pausedUntil.current - Date.now();
+      if (wait > 0) {
+        // الخادم قال «انتظر»: لا رفعَ جديدًا قبل أن تنقضي المدّة
+        if (!resumeTimer.current && queue.current.length > 0) {
+          resumeTimer.current = setTimeout(() => {
+            resumeTimer.current = null;
+            if (mounted.current) pumpQueue();
+          }, wait);
+        }
+        return;
+      }
+      while (active.current < UPLOAD_CONCURRENCY && queue.current.length > 0) {
+        const key = queue.current.shift() as string;
+        if (removed.current.has(key)) continue;
+        active.current += 1;
+        void runUpload(key).finally(() => {
+          active.current -= 1;
+          if (mounted.current) pumpQueue();
+        });
+      }
+    },
+    [runUpload],
+  );
 
   /** الحدّ الفعليّ من الخادم (usage_limits ∧ سقف المزوّد) — مرّةً في الجلسة */
   const loadLimit = useCallback((conversationId: string) => {
@@ -298,6 +332,7 @@ export function useComposerAttachments({
           }
           convOf.current.set(key, conversationId);
         }
+        rateWaits.current.delete(key);
         dispatch({ type: "retryQueued", key });
         queue.current.push(key);
         pump();
@@ -337,6 +372,8 @@ export function useComposerAttachments({
       // مغادرة المحادثة تُلغي ما لم يكتمل: لا رفعَ يُربط بمحادثةٍ لم يعد صاحبها فيها
       mounted.current = false;
       queue.current = [];
+      if (resumeTimer.current) clearTimeout(resumeTimer.current);
+      resumeTimer.current = null;
       for (const h of inflight.values()) h.abort();
       inflight.clear();
     };

@@ -25,7 +25,7 @@ interface FakeUpload {
   file: File;
   conversationId: string | null | undefined;
   onProgress?: (p: number) => void;
-  resolve: (r: { ok: boolean; file?: Record<string, unknown>; error?: string; status?: number }) => void;
+  resolve: (r: { ok: boolean; file?: Record<string, unknown>; error?: string; status?: number; retryAfterSec?: number }) => void;
   abort: ReturnType<typeof vi.fn>;
 }
 const uploads: FakeUpload[] = [];
@@ -181,17 +181,68 @@ describe("★ (١) عدّة ملفّات، اثنان في آنٍ واحد", () 
 });
 
 describe("★ (٢) الفشل وإعادة المحاولة", () => {
-  it("★ ★ ★ 429: خطأٌ قابلٌ للإعادة، والإعادة ترفع الملف نفسه من جديد", async () => {
+  it("★ ★ ★ 429 يوقف الطابور كلَّه مدّةَ Retry-After — لا يُرمى باقي الدفعة على نافذةٍ مغلقة", async () => {
+    const { container } = mount();
+    pick(container, [pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"), pdf("d.pdf")]);
+    await waitFor(() => expect(uploads).toHaveLength(2));
+    const tooMany = { ok: false, status: 429, error: "عمليات رفع كثيرة | Too many uploads", retryAfterSec: 1 };
+
+    await act(async () => uploads[0]!.resolve(tooMany));
+    await act(async () => uploads[1]!.resolve({ ok: true, status: 201, file: serverRow("fb", "b.pdf", "application/pdf", "ready") }));
+    await flush();
+    await flush();
+    // مكانان فرغا، وثلاثة ملفّات تنتظر — ولا طلبَ جديد قبل انقضاء المدّة
+    expect(uploads).toHaveLength(2);
+    expect(phases(container)).toEqual(["selected", "indexing", "selected", "selected"]);
+    expect(cards(container)[0]?.querySelector("[data-attachment-status]")?.textContent).toContain("attachmentQueued");
+
+    // بعد المدّة: الملف المرفوض أوّلًا (نفسه)، ثم التالي في الدفعة
+    await waitFor(() => expect(uploads).toHaveLength(4), { timeout: 3000 });
+    expect(uploads[2]!.file).toBe(uploads[0]!.file);
+    expect(uploads[3]!.file.name).toBe("c.pdf");
+  }, 10000);
+
+  it("★ ★ ★ الانتظار التلقائيّ محدود: بعد ثلاثة 429 للملف نفسه خطأٌ بزرّ إعادةٍ يدويّة", async () => {
     const { container } = mount();
     pick(container, [pdf("a.pdf")]);
-    await waitFor(() => expect(uploads).toHaveLength(1));
-    await act(async () => uploads[0]!.resolve({ ok: false, status: 429, error: "عمليات رفع كثيرة | Too many uploads" }));
+    const tooMany = { ok: false, status: 429, error: "عمليات رفع كثيرة | Too many uploads", retryAfterSec: 1 };
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await waitFor(() => expect(uploads).toHaveLength(attempt), { timeout: 3000 });
+      await act(async () => uploads[attempt - 1]!.resolve(tooMany));
+    }
     await waitFor(() => expect(phases(container)).toEqual(["error"]));
+    await act(async () => { await new Promise((r) => setTimeout(r, 1300)); });
+    expect(uploads).toHaveLength(4);
+
+    // الإعادة اليدويّة ترفع الملف نفسه — بعد أن تنقضي مهلة الخادم
     fireEvent.click(screen.getByRole("button", { name: "retryUpload" }));
-    await waitFor(() => expect(uploads).toHaveLength(2));
-    expect(uploads[1]!.file).toBe(uploads[0]!.file);
-    await act(async () => uploads[1]!.resolve({ ok: true, status: 201, file: serverRow("f1", "a.pdf", "application/pdf", "ready") }));
+    await waitFor(() => expect(uploads).toHaveLength(5));
+    expect(uploads[4]!.file).toBe(uploads[0]!.file);
+    await act(async () => uploads[4]!.resolve({ ok: true, status: 201, file: serverRow("f1", "a.pdf", "application/pdf", "ready") }));
     await waitFor(() => expect(phases(container)).toEqual(["indexing"]));
+  }, 15000);
+
+  it("★ ★ ★ Retry-After يُقرأ من ردّ الخادم الحقيقيّ في uploadWithProgress", async () => {
+    const real = await vi.importActual<typeof import("@/components/files/upload")>("@/components/files/upload");
+    class FakeXhr {
+      status = 0;
+      responseText = "";
+      upload = { onprogress: null as unknown };
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      open() {}
+      getResponseHeader(name: string) { return name.toLowerCase() === "retry-after" ? "42" : null; }
+      send() {
+        this.status = 429;
+        this.responseText = JSON.stringify({ error: "Too many uploads" });
+        queueMicrotask(() => this.onload?.());
+      }
+      abort() {}
+    }
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const res = await real.uploadWithProgress({ file: pdf("a.pdf"), conversationId: CONV }).done;
+    expect(res).toMatchObject({ ok: false, status: 429, retryAfterSec: 42 });
   });
 
   it("★ ★ ★ 413 من الخادم: لا زرّ إعادة — الإعادة لن تغيّر الحجم", async () => {

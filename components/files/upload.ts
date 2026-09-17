@@ -28,6 +28,8 @@ export interface UploadResult {
    * به يُفرَّق ما تُجدي إعادتُه (429، 5xx، الشبكة) عمّا لا تُجدي (413، 400).
    */
   status?: number;
+  /** ثواني `Retry-After` مع 429 — ليتوقّف الطابور بدل أن يُرسل ما سيُرفض حتمًا */
+  retryAfterSec?: number;
 }
 
 export interface UploadHandle {
@@ -47,6 +49,11 @@ export function uploadWithProgress(opts: {
   if (opts.projectId) form.append("projectId", opts.projectId);
   if (opts.conversationId) form.append("conversationId", opts.conversationId);
 
+  const retryAfter = () => {
+    const n = Number(xhr.getResponseHeader("Retry-After"));
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+
   const done = new Promise<UploadResult>(
     (resolve) => {
       xhr.upload.onprogress = (e) => {
@@ -61,9 +68,9 @@ export function uploadWithProgress(opts: {
             error?: string;
           };
           if (xhr.status === 201 && body.file) resolve({ ok: true, file: body.file, status: xhr.status });
-          else resolve({ ok: false, error: body.error ?? `HTTP ${xhr.status}`, status: xhr.status });
+          else resolve({ ok: false, error: body.error ?? `HTTP ${xhr.status}`, status: xhr.status, retryAfterSec: retryAfter() });
         } catch {
-          resolve({ ok: false, error: `HTTP ${xhr.status}`, status: xhr.status });
+          resolve({ ok: false, error: `HTTP ${xhr.status}`, status: xhr.status, retryAfterSec: retryAfter() });
         }
       };
       xhr.onerror = () => resolve({ ok: false, error: "network", status: 0 });
