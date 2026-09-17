@@ -737,6 +737,7 @@ export function ChatView({
    *   فقاعة رسالة — انظر docs/chat-composer-attachments.md.
    */
   const composerAttachments = useComposerAttachments({
+    conversationId,
     initial: initialAttachments,
     ensureConversation,
     locale,

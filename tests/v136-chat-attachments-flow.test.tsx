@@ -8,8 +8,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
  *   حسب المسار. والمقيس: أيَّ المسارات نادت الواجهة، وبأيّ جسم، وما رسمته.
  */
 
+const nav = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), refresh: nav.refresh, replace: vi.fn() }),
 }));
 vi.mock("@/lib/i18n", () => ({
   useI18n: () => ({
@@ -46,6 +47,7 @@ vi.mock("@/components/files/upload", async (importOriginal) => {
 
 import { ChatView } from "@/components/chat/chat-view";
 import type { Attachment } from "@/components/chat/chat-view";
+import { discardCarriedAttachments } from "@/components/chat/use-composer-attachments";
 
 const CONV = "11111111-1111-4111-8111-111111111111";
 const CONV_B = "22222222-2222-4222-8222-222222222222";
@@ -53,6 +55,8 @@ const CONV_B = "22222222-2222-4222-8222-222222222222";
 let fetchMock: ReturnType<typeof vi.fn>;
 let serverFiles: Record<string, Record<string, unknown>>;
 let maxFileMb: number;
+/** بوّابةٌ تُمسك ردَّ حدود الملفات — لتقع إعادة التركيب والملفّات تنتظر التحقّق */
+let limitGate: Promise<void> | null;
 
 function json(body: unknown, status = 200) {
   return Promise.resolve({ ok: status >= 200 && status < 300, status, json: async () => body });
@@ -70,7 +74,10 @@ function sse(frames: Record<string, unknown>[]) {
 
 function route(url: string, init?: RequestInit) {
   const method = init?.method ?? "GET";
-  if (url.startsWith("/api/files?")) return json({ files: [], usage: {}, limits: { maxFileMb } });
+  if (url.startsWith("/api/files?")) {
+    return (limitGate ?? Promise.resolve()).then(() => json({ files: [], usage: {}, limits: { maxFileMb } }));
+  }
+  if (url === "/api/conversations" && method === "POST") return json({ conversation: { id: CONV } });
   const m = /^\/api\/files\/([^/]+)(\/rag|\/process)?$/.exec(url);
   if (m) {
     const id = m[1] as string;
@@ -130,6 +137,8 @@ beforeEach(() => {
   uploads.length = 0;
   serverFiles = {};
   maxFileMb = 5;
+  limitGate = null;
+  nav.refresh.mockClear();
   fetchMock = vi.fn((url: string, init?: RequestInit) => route(url, init));
   vi.stubGlobal("fetch", fetchMock);
   vi.stubGlobal("scrollTo", vi.fn());
@@ -138,6 +147,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // التفكيك يُسلّم المسوّدات لمحادثتها — ولا تعبر من اختبارٍ إلى آخر
+  discardCarriedAttachments();
   vi.unstubAllGlobals();
 });
 
@@ -345,4 +356,126 @@ describe("★ (٥) إعادة التحميل والتنقّل بين المحا�
     fireEvent.click(toggle);
     expect(cards(view.container).map((c) => c.querySelector("[title]")?.getAttribute("title"))).toEqual(["b-only.pdf"]);
   });
+});
+
+/** الصفحتان كما في التطبيق: `/chat` بلا مفتاح محادثة، و`/chat/[id]` بمفتاحها */
+function chatView(opts: { viewKey: string; conversationId: string | null; initialAttachments?: Attachment[] }) {
+  return (
+    <ChatView
+      key={opts.viewKey}
+      conversationId={opts.conversationId}
+      initialMessages={[]}
+      initialTitle="t"
+      models={[{ id: "test/model", label: "m", minTier: "free", locked: false } as never]}
+      initialModelId="test/model"
+      greetingName=""
+      initialAttachments={opts.initialAttachments ?? []}
+    />
+  );
+}
+
+const names = (c: HTMLElement) => cards(c).map((el) => el.querySelector("[title]")?.getAttribute("title"));
+
+describe("★ (٦) محادثةٌ جديدة يُعاد تركيبها بعد أول ردّ — لا يضيع ما أُرفق", () => {
+  it("★ ★ ★ الإخفاق الحيّ نفسه: ملفّاتٌ أُرفقت بعد انتهاء الردّ الأول ثم وصل التحديث — تبقى وتُرفع إلى محادثتها", async () => {
+    const view = render(chatView({ viewKey: "new", conversationId: null }));
+    await typeMessage("hello");
+    const sendBtn = () => screen.getByRole("button", { name: /send/ }) as HTMLButtonElement;
+    await act(async () => { sendBtn().click(); await new Promise((r) => setTimeout(r, 0)); });
+    // الردّ الأول انتهى و`router.refresh` بدأ — قبل أن يُرفق شيء، كما رُصد حيًّا
+    await waitFor(() => expect(nav.refresh).toHaveBeenCalled());
+
+    let openLimit!: () => void;
+    limitGate = new Promise<void>((r) => (openLimit = r));
+    pick(view.container, [pdf("a.pdf"), pdf("b.pdf"), png("c.png")]);
+    await flush();
+    expect(phases(view.container)).toEqual(["selected", "selected", "selected"]);
+    expect(uploads).toHaveLength(0);
+
+    // يصل التحديث: الرابط صار /chat/:id — يُفكّ مكوّن المحادثة الجديدة ويُركَّب مكوّن المحادثة نفسها
+    view.rerender(chatView({ viewKey: CONV, conversationId: CONV }));
+    await flush();
+    expect(names(view.container)).toEqual(["a.pdf", "b.pdf", "c.png"]);
+    expect(phases(view.container)).toEqual(["selected", "selected", "selected"]);
+
+    await act(async () => { openLimit(); await new Promise((r) => setTimeout(r, 0)); });
+    await waitFor(() => expect(uploads).toHaveLength(2));
+    expect(uploads.map((u) => [u.file.name, u.conversationId])).toEqual([["a.pdf", CONV], ["b.pdf", CONV]]);
+
+    await act(async () => uploads[0]!.resolve({ ok: true, status: 201, file: serverRow("fa", "a.pdf", "application/pdf", "ready") }));
+    await waitFor(() => expect(uploads).toHaveLength(3));
+    expect(uploads[2]!.file.name).toBe("c.png");
+    await act(async () => uploads[1]!.resolve({ ok: true, status: 201, file: serverRow("fb", "b.pdf", "application/pdf", "ready") }));
+    await act(async () => uploads[2]!.resolve({ ok: true, status: 201, file: serverRow("fc", "c.png", "image/png", "ready") }));
+    await waitFor(() => expect(phases(view.container)).toEqual(["indexing", "indexing", "ready"]));
+    expect(uploads.every((u) => u.abort.mock.calls.length === 0)).toBe(true);
+    expect(uploads).toHaveLength(3);
+  });
+
+  it("★ ★ ★ رفعٌ جارٍ لحظةَ إعادة التركيب لا يُجهض — يُتبنّى بتقدّمه ونتيجته", async () => {
+    const view = render(chatView({ viewKey: "new", conversationId: null }));
+    pick(view.container, [pdf("live.pdf")]);
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    expect(uploads[0]!.conversationId).toBe(CONV);
+
+    view.rerender(chatView({ viewKey: CONV, conversationId: CONV }));
+    await flush();
+    expect(uploads[0]!.abort).not.toHaveBeenCalled();
+    expect(phases(view.container)).toEqual(["uploading"]);
+
+    await act(async () => uploads[0]!.onProgress?.(40));
+    expect(view.container.querySelector("[role=progressbar]")?.getAttribute("aria-valuenow")).toBe("40");
+    await act(async () => uploads[0]!.resolve({ ok: true, status: 201, file: serverRow("fl", "live.pdf", "application/pdf", "ready") }));
+    await waitFor(() => expect(phases(view.container)).toEqual(["indexing"]));
+    expect(fetchMock.mock.calls.filter(([u, i]) => u === "/api/files/fl/rag" && i?.method === "POST")).toHaveLength(1);
+    expect(uploads).toHaveLength(1);
+  });
+
+  it("★ ★ ★ وملفٌّ رُبط قبل أن تُرسم الصفحة الجديدة لا يظهر مرّتين", async () => {
+    const view = render(chatView({ viewKey: "new", conversationId: null }));
+    pick(view.container, [png("dup.png")]);
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    await act(async () => uploads[0]!.resolve({ ok: true, status: 201, file: serverRow("fd", "dup.png", "image/png", "ready") }));
+    await waitFor(() => expect(phases(view.container)).toEqual(["ready"]));
+
+    view.rerender(
+      chatView({
+        viewKey: CONV,
+        conversationId: CONV,
+        initialAttachments: [{ id: "fd", name: "dup.png", status: "ready", mime: "image/png", size: 64 }],
+      }),
+    );
+    await flush();
+    expect(names(view.container)).toEqual(["dup.png"]);
+    expect(view.container.querySelector("[data-context-toggle]")).toBeNull();
+  });
+
+  it("★ ★ ★ والعزل باقٍ: التركيب لمحادثةٍ أخرى يُجهض الرفع، ولا ينقل مسوّدةً إليها، ولا يُحييها الرجوع", async () => {
+    const view = render(chatView({ viewKey: "new", conversationId: null }));
+    pick(view.container, [pdf("mine.pdf"), pdf("mine2.pdf"), pdf("queued.pdf")]);
+    await waitFor(() => expect(uploads).toHaveLength(2));
+
+    view.rerender(chatView({ viewKey: CONV_B, conversationId: CONV_B }));
+    await flush();
+    expect(uploads[0]!.abort).toHaveBeenCalledTimes(1);
+    expect(uploads[1]!.abort).toHaveBeenCalledTimes(1);
+    expect(cards(view.container)).toHaveLength(0);
+
+    view.rerender(chatView({ viewKey: CONV, conversationId: CONV }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(cards(view.container)).toHaveLength(0);
+    // ما كان في الطابور لم يُرفع إلى أيّ محادثة، وما رُفع حمل محادثته هو
+    expect(uploads).toHaveLength(2);
+    expect(uploads.every((u) => u.conversationId === CONV)).toBe(true);
+  });
+
+  it("★ ★ ★ ومغادرة المحادثات كلّها: ما لم يتبنَّه أحدٌ يُجهض بعد المهلة", async () => {
+    const view = render(chatView({ viewKey: "new", conversationId: null }));
+    pick(view.container, [pdf("left.pdf")]);
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    view.unmount();
+    expect(uploads[0]!.abort).not.toHaveBeenCalled();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5200)); });
+    expect(uploads[0]!.abort).toHaveBeenCalledTimes(1);
+  }, 10000);
 });

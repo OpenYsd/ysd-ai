@@ -235,7 +235,9 @@ export type AttachmentAction =
   | { type: "retryQueued"; key: string }
   | { type: "unlinkFailed"; key: string; message?: string | null }
   | { type: "remove"; key: string }
-  | { type: "markSent" };
+  | { type: "markSent" }
+  /** مسوّداتٌ عبرت إعادةَ تركيب المكوّن في المحادثة نفسها — تحلّ محلّ نسختها من الخادم */
+  | { type: "restore"; items: ComposerAttachment[] };
 
 function patch(state: ComposerAttachment[], match: (a: ComposerAttachment) => boolean, fn: (a: ComposerAttachment) => ComposerAttachment) {
   let changed = false;
@@ -296,7 +298,12 @@ export function attachmentsReducer(state: ComposerAttachment[], action: Attachme
           : { ...a, phase: "uploading", progress: Math.max(0, Math.min(99, Math.round(action.percent))) },
       );
     case "uploadDone":
-      return patch(state, (a) => a.key === action.key, (a) => withServer(a, action.file, action.ragRequested));
+      // الملف نفسه قد يصل من الخادم أيضًا (صفحةٌ رُسمت بعد ربطه): بطاقةٌ واحدة لا اثنتان
+      return patch(
+        state.filter((a) => a.key === action.key || a.fileId !== action.file.id),
+        (a) => a.key === action.key,
+        (a) => withServer(a, action.file, action.ragRequested),
+      );
     case "uploadFailed":
       return patch(state, (a) => a.key === action.key, (a) => ({
         ...a, phase: "error", progress: null, errorKind: action.kind, errorMessage: action.message ?? null, retry: action.retry,
@@ -321,6 +328,14 @@ export function attachmentsReducer(state: ComposerAttachment[], action: Attachme
       }));
     case "remove":
       return state.filter((a) => a.key !== action.key);
+    case "restore": {
+      const keys = new Set(action.items.map((i) => i.key));
+      const fileIds = new Set(action.items.flatMap((i) => (i.fileId ? [i.fileId] : [])));
+      return [
+        ...state.filter((a) => !keys.has(a.key) && !(a.fileId && fileIds.has(a.fileId))),
+        ...action.items,
+      ];
+    }
     case "markSent":
       // ما رُبط بالمحادثة ولم يفشل صار سياقًا لها؛ والفاشل والجاري يبقيان أمام صاحبهما
       return patch(

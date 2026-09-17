@@ -205,6 +205,26 @@ describe("★ (٤) الإرسال والدلالة: المحادثة لا الر
     expect(canRemove(up[0] as ComposerAttachment)).toBe(true);
   });
 
+  it("★ ★ ★ مسوّداتٌ عبرت إعادة التركيب تحلّ محلّ نسختها من الخادم — بطاقةٌ واحدة لكل ملف", () => {
+    const server = fromServerFile({ id: "fx", original_name: "x.pdf", status: "ready", mime_type: "application/pdf", size_bytes: 10 });
+    const other = fromServerFile({ id: "fy", original_name: "y.pdf", status: "ready_for_rag", mime_type: "application/pdf", size_bytes: 10 });
+    const carriedLinked = { ...(linked("k1", "fx", "ready")[0] as ComposerAttachment) };
+    const carriedQueued = { ...(reduce([add("k2", "q.pdf", 1, "application/pdf")])[0] as ComposerAttachment) };
+    const s = attachmentsReducer([server, other], { type: "restore", items: [carriedLinked, carriedQueued] });
+    expect(s.map((a) => [a.key, a.scope])).toEqual([["file:fy", "context"], ["k1", "draft"], ["k2", "draft"]]);
+    // وتكرار التبنّي (StrictMode) لا يُكرّر البطاقات
+    expect(attachmentsReducer(s, { type: "restore", items: [carriedLinked, carriedQueued] })).toHaveLength(3);
+  });
+
+  it("★ ★ ★ ورفعٌ يكتمل لملفٍّ ظهر من الخادم قبل ردّه لا يترك بطاقتين", () => {
+    const server = fromServerFile({ id: "fz", original_name: "z.pdf", status: "ready", mime_type: "application/pdf", size_bytes: 10 });
+    const s = reduce(
+      [add("k", "z.pdf", 10, "application/pdf"), { type: "uploadStart", key: "k" }, { type: "uploadDone", key: "k", ragRequested: true, file: { id: "fz", status: "ready", mime_type: "application/pdf" } }],
+      [server],
+    );
+    expect(s.map((a) => [a.key, a.fileId, a.scope])).toEqual([["k", "fz", "draft"]]);
+  });
+
   it("★ ★ ★ الإشعار صادق: صور فقط · مستندات جاهزة · أو ما زال التجهيز جاريًا", () => {
     expect(attachmentNotice([])).toBeNull();
     expect(attachmentNotice(linked("i", "fi", "ready", "image/png"))).toBe("imageAttachmentNotice");
