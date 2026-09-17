@@ -19,9 +19,20 @@ export interface UploadedFileRow {
   rag_error?: string | null;
 }
 
+export interface UploadResult {
+  ok: boolean;
+  file?: UploadedFileRow;
+  error?: string;
+  /**
+   * رمز HTTP (0 عند انقطاع الشبكة أو الإلغاء) — إضافةٌ لا تكسر أحدًا.
+   * به يُفرَّق ما تُجدي إعادتُه (429، 5xx، الشبكة) عمّا لا تُجدي (413، 400).
+   */
+  status?: number;
+}
+
 export interface UploadHandle {
   abort: () => void;
-  done: Promise<{ ok: boolean; file?: UploadedFileRow; error?: string }>;
+  done: Promise<UploadResult>;
 }
 
 export function uploadWithProgress(opts: {
@@ -36,7 +47,7 @@ export function uploadWithProgress(opts: {
   if (opts.projectId) form.append("projectId", opts.projectId);
   if (opts.conversationId) form.append("conversationId", opts.conversationId);
 
-  const done = new Promise<{ ok: boolean; file?: UploadedFileRow; error?: string }>(
+  const done = new Promise<UploadResult>(
     (resolve) => {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && opts.onProgress) {
@@ -49,14 +60,14 @@ export function uploadWithProgress(opts: {
             file?: UploadedFileRow;
             error?: string;
           };
-          if (xhr.status === 201 && body.file) resolve({ ok: true, file: body.file });
-          else resolve({ ok: false, error: body.error ?? `HTTP ${xhr.status}` });
+          if (xhr.status === 201 && body.file) resolve({ ok: true, file: body.file, status: xhr.status });
+          else resolve({ ok: false, error: body.error ?? `HTTP ${xhr.status}`, status: xhr.status });
         } catch {
-          resolve({ ok: false, error: `HTTP ${xhr.status}` });
+          resolve({ ok: false, error: `HTTP ${xhr.status}`, status: xhr.status });
         }
       };
-      xhr.onerror = () => resolve({ ok: false, error: "network" });
-      xhr.onabort = () => resolve({ ok: false, error: "aborted" });
+      xhr.onerror = () => resolve({ ok: false, error: "network", status: 0 });
+      xhr.onabort = () => resolve({ ok: false, error: "aborted", status: 0 });
       xhr.open("POST", "/api/files/upload");
       xhr.send(form);
     },
