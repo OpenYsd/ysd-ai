@@ -63,7 +63,7 @@ export default async function ConversationPage({
       supabase
         .from("files")
         // mime_type لازم: الواجهة تُفرّق به الصور (لا تدخل RAG) عن المستندات
-        .select("id, original_name, mime_type, status, rag_total_chunks, rag_done_chunks, rag_error")
+        .select("id, original_name, mime_type, size_bytes, status, rag_total_chunks, rag_done_chunks, rag_error")
         .eq("conversation_id", id)
         .eq("user_id", userId)
         .is("deleted_at", null)
@@ -89,6 +89,7 @@ export default async function ConversationPage({
     name: f.original_name,
     status: f.status,
     mime: f.mime_type,
+    size: f.size_bytes,
     ragTotal: f.rag_total_chunks,
     ragDone: f.rag_done_chunks,
     ragError: f.rag_error,
