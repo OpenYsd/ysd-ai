@@ -122,6 +122,9 @@ const isNamed = (b: Btn) => hasVisibleText(b.children) || hasAriaName(b.open);
 
 const CORE_SURFACES = [
   "components/chat/chat-view.tsx",
+  // شريط الكتابة ومرفقاته خرجا من chat-view — وأزرارهما سطحٌ أساسيٌّ كما كانا
+  "components/chat/chat-composer.tsx",
+  "components/chat/attachment-card.tsx",
   "components/shell/app-shell.tsx",
   "components/files/files-view.tsx",
   "components/files/project-files.tsx",
