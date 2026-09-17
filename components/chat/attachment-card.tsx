@@ -4,8 +4,14 @@
  * بطاقة مرفقٍ واحد داخل شريط الكتابة.
  *
  * ★ الاسم نصٌّ لا HTML: React يهرّبه، و`displayFileName` نزع منه محارفَ
- *   التحكّم ثنائيّة الاتّجاه قبل أن يصل هنا. و`<bdi>` يعزل اتّجاهه عن الواجهة،
- *   فاسمٌ لاتينيٌّ في واجهةٍ عربيّة لا يقلب ما حوله.
+ *   التحكّم ثنائيّة الاتّجاه قبل أن يصل هنا.
+ *
+ * ★ والاسم يتبع اتّجاهَ نصِّه لا اتّجاهَ الواجهة
+ *
+ *   سطر الاسم `dir="auto"`: `report.pdf` في واجهةٍ عربيّة يبقى امتدادُه يمينَ
+ *   الاسم، و`تقرير.pdf` يبقى امتدادُه يسارَه — في طرف النصّ الصحيح لكلٍّ منهما.
+ *   والجذع `<span>` لا `<bdi>`: خوارزميّة `dir="auto"` تتخطّى `<bdi>` وكلَّ عنصرٍ
+ *   له `dir`، فلو عُزل الجذع لما رأت حرفًا تستدلّ به ولرجعت إلى LTR دائمًا.
  *
  * ★ ولا `aria-live` هنا: المنطقة الحيّة الوحيدة في المحادثة لحالة البثّ، وعشرُ
  *   بطاقاتٍ تُعلن تقدّمها كلَّ ثانيةٍ ضجيجٌ لا معلومة. التقدّم `progressbar`
@@ -132,10 +138,13 @@ export function AttachmentCard({
       </div>
 
       <div className="min-w-0 flex-1">
-        <p className="flex min-w-0 text-[12.5px] leading-5 text-ink" title={a.name}>
-          <bdi dir="auto" className="truncate">
-            {stem}
-          </bdi>
+        <p
+          dir="auto"
+          data-attachment-name
+          className="flex w-fit min-w-0 max-w-full text-[12.5px] leading-5 text-ink"
+          title={a.name}
+        >
+          <span className="min-w-0 truncate">{stem}</span>
           {ext && (
             <bdi dir="ltr" className="shrink-0">
               {ext}

@@ -244,15 +244,31 @@ describe("★ (٤) الأمن والاتّجاه", () => {
     expect(container.innerHTML).not.toMatch(/token=|signedUrl|\/storage\/v1\/object\/sign/);
   });
 
-  it("★ ★ ★ عربيًّا: نصوصٌ عربيّة، والاسم معزولُ الاتّجاه", () => {
+  it("★ ★ ★ عربيًّا: نصوصٌ عربيّة، والاسم يتبع اتّجاهَ نصِّه لا الواجهة", () => {
     const { container } = render(
-      <Harness locale="ar" attachments={[draft({ key: "a", name: "Quarterly report.pdf", phase: "uploading", progress: 60 })]} />,
+      <Harness
+        locale="ar"
+        attachments={[
+          draft({ key: "a", name: "Quarterly report.pdf", phase: "uploading", progress: 60 }),
+          draft({ key: "b", name: "تقرير الربع.docx", phase: "ready" }),
+        ]}
+      />,
     );
-    const card = container.querySelector("[data-attachment-card]") as HTMLElement;
+    const [card, arabic] = [...container.querySelectorAll<HTMLElement>("[data-attachment-card]")] as [HTMLElement, HTMLElement];
     expect(card.textContent).toContain("جارٍ الرفع 60%");
-    const bdis = card.querySelectorAll("bdi");
-    expect(bdis[0]?.getAttribute("dir")).toBe("auto");
-    expect(bdis[1]?.textContent).toBe(".pdf");
+    for (const [el, stem, ext] of [[card, "Quarterly report", ".pdf"], [arabic, "تقرير الربع", ".docx"]] as const) {
+      const line = el.querySelector("[data-attachment-name]") as HTMLElement;
+      // الاتّجاه من نصّ الاسم نفسه — والجذع لا يُعزل، وإلا تخطّته خوارزميّة dir=auto
+      expect(line.getAttribute("dir")).toBe("auto");
+      expect(line.firstElementChild?.tagName).toBe("SPAN");
+      expect(line.firstElementChild?.hasAttribute("dir")).toBe(false);
+      expect(line.firstElementChild?.textContent).toBe(stem);
+      expect(line.lastElementChild?.tagName).toBe("BDI");
+      expect(line.lastElementChild?.getAttribute("dir")).toBe("ltr");
+      expect(line.lastElementChild?.textContent).toBe(ext);
+      expect(line.className).toMatch(/\bw-fit\b/);
+      expect(line.className).toMatch(/\bmax-w-full\b/);
+    }
     expect(card.className).toMatch(/\bps-2\b/);
     expect(card.className).not.toMatch(/\bpl-|\bpr-/);
   });
