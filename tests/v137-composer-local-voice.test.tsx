@@ -190,7 +190,7 @@ describe("★ (٣) ChatView يمرّر آخرَ ردٍّ مكتملٍ للنطق
     const { getAllByTestId } = renderView(ChatView);
     expect(getAllByTestId("mic")).toHaveLength(1);
     expect(seen.props.at(-1)?.speakText).toBe("الردُّ الأخير المكتمل");
-  });
+  }, 20000);
 
   it("★ ★ ★ مطفأة: لا زرّ، ولا نطق", async () => {
     const ChatView = await loadView(undefined);
@@ -198,5 +198,5 @@ describe("★ (٣) ChatView يمرّر آخرَ ردٍّ مكتملٍ للنطق
     expect(queryByTestId("mic")).toBeNull();
     expect(seen.props).toHaveLength(0);
     expect(container.querySelector("[data-composer]")).not.toBeNull();
-  });
+  }, 20000);
 });

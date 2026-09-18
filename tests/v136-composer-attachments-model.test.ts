@@ -10,6 +10,7 @@ import {
   classifyUploadFailure,
   displayFileName,
   fromServerFile,
+  isIndexingStalled,
   isPasteableImage,
   localizeServerMessage,
   pastedImageName,
@@ -230,5 +231,30 @@ describe("★ (٤) الإرسال والدلالة: المحادثة لا الر
     expect(attachmentNotice(linked("i", "fi", "ready", "image/png"))).toBe("imageAttachmentNotice");
     expect(attachmentNotice(linked("d", "fd", "ready_for_rag"))).toBe("ragAttachmentReady");
     expect(attachmentNotice([...linked("d", "fd", "ready_for_rag"), ...linked("e", "fe", "chunking")])).toBe("attachmentNotice");
+  });
+});
+
+describe("★ (٥) كشفُ التجهيز المتوقّف — من بيانات الخادم", () => {
+  const now = Date.parse("2026-09-18T12:00:00Z");
+  const ago = (s: number) => new Date(now - s * 1000).toISOString();
+  const opts = { leaseMs: 150_000, queuedGraceMs: 90_000 };
+
+  it("★ ★ ★ نبضٌ أقدم من عقد الإيجار ⇒ متوقّف؛ ونبضٌ حيّ ⇒ بطءٌ مشروع", () => {
+    expect(isIndexingStalled({ status: "embedding" }, { status: "running", heartbeat_at: ago(263) }, now, opts)).toBe(true);
+    expect(isIndexingStalled({ status: "embedding" }, { status: "running", heartbeat_at: ago(20) }, now, opts)).toBe(false);
+    expect(isIndexingStalled({ status: "embedding" }, { status: "running", heartbeat_at: null }, now, opts)).toBe(true);
+  });
+
+  it("★ ★ ★ مستحقّةٌ في الطابور بلا التقاط ⇒ متوقّفة؛ وموعدُها لم يحن ⇒ لا", () => {
+    expect(isIndexingStalled({ status: "ready" }, { status: "queued", available_at: ago(300) }, now, opts)).toBe(true);
+    expect(isIndexingStalled({ status: "embedding" }, { status: "retrying", available_at: ago(30) }, now, opts)).toBe(false);
+    expect(isIndexingStalled({ status: "embedding" }, { status: "retrying", available_at: new Date(now + 60_000).toISOString() }, now, opts)).toBe(false);
+  });
+
+  it("★ ★ ★ لا وظيفةَ والملفُّ ينتظر ⇒ متوقّف؛ والحالاتُ النهائيّة لا تُستأنف أبدًا", () => {
+    expect(isIndexingStalled({ status: "ready" }, null, now, opts)).toBe(true);
+    expect(isIndexingStalled({ status: "ready_for_rag" }, { status: "running", heartbeat_at: ago(9999) }, now, opts)).toBe(false);
+    expect(isIndexingStalled({ status: "rag_failed" }, null, now, opts)).toBe(false);
+    expect(isIndexingStalled({ status: "embedding" }, { status: "completed" }, now, opts)).toBe(false);
   });
 });

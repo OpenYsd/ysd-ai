@@ -86,8 +86,10 @@ export async function POST(
   if ("error" in enq) return json({ error: enq.error }, 500);
 
   // 2) تصريف request-driven (SKIP LOCKED يمنع تشغيلًا مزدوجًا)
+  //    — وتصريفٌ واحدٌ في العمليّة: إن كان غيرُه جاريًا بقيت الوظيفةُ في الطابور
+  //    (أُدرجت أعلاه) وعاد الطلبُ فورًا بدل تصريفٍ موازٍ يتجاوز حدَّ الذاكرة.
   const workerId = `req:${crypto.randomUUID().slice(0, 8)}`;
-  await drainOwnJobs(supabase, { workerId, maxJobs: 5 });
+  const drained = await drainOwnJobs(supabase, { workerId, maxJobs: 5 });
 
   // 3) أعد حالة الملف والوظيفة (مصدر الحقيقة: قاعدة البيانات)
   const [{ data: fresh }, job] = await Promise.all([
@@ -95,7 +97,7 @@ export async function POST(
     getLatestJobForFile(supabase, id, user.id),
   ]);
   const ok = fresh?.status === "ready_for_rag";
-  return json({ file: fresh, job, skipped: false }, ok ? 200 : 202);
+  return json({ file: fresh, job, skipped: false, queued: drained.busy }, ok ? 200 : 202);
 }
 
 function json(body: unknown, status: number) {

@@ -19,9 +19,11 @@ export async function GET(req: NextRequest) {
 
   const projectIdRaw = req.nextUrl.searchParams.get("projectId") ?? undefined;
   const conversationIdRaw = req.nextUrl.searchParams.get("conversationId") ?? undefined;
+  const clientUploadIdRaw = req.nextUrl.searchParams.get("clientUploadId") ?? undefined;
   const projectId = queryFilter.safeParse(projectIdRaw);
   const conversationId = queryFilter.safeParse(conversationIdRaw);
-  if (!projectId.success || !conversationId.success)
+  const clientUploadId = queryFilter.safeParse(clientUploadIdRaw);
+  if (!projectId.success || !conversationId.success || !clientUploadId.success)
     return json({ error: "معرّف غير صحيح | Invalid id" }, 400);
 
   let q = supabase
@@ -33,6 +35,8 @@ export async function GET(req: NextRequest) {
     .limit(300);
   if (projectId.data) q = q.eq("project_id", projectId.data);
   if (conversationId.data) q = q.eq("conversation_id", conversationId.data);
+  // مصالحةُ رفعٍ انقطع ردُّه: هل حُفظ الملفُّ الذي اختاره العميل بهذا المعرّف؟
+  if (clientUploadId.data) q = q.eq("metadata->>client_upload_id", clientUploadId.data);
 
   const [{ data: files, error }, usage, limits] = await Promise.all([
     q,

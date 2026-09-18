@@ -78,6 +78,8 @@ interface ProcessableRow {
   storage_path: string;
   original_name: string;
   mime_type: string;
+  /** البيانات الوصفيّة القائمة (ومنها `client_upload_id`) — تُدمج ولا تُستبدل */
+  metadata?: Record<string, unknown> | null;
 }
 
 /** هل هذا النوع صورة؟ (لا استخراج نص في هذه المرحلة) */
@@ -140,7 +142,7 @@ export async function processFile(
       status: "ready",
       extracted_text: text,
       extraction_error: null,
-      metadata: { ...(result.meta ?? {}), extracted_chars: text.length },
+      metadata: { ...(row.metadata ?? {}), ...(result.meta ?? {}), extracted_chars: text.length },
       updated_at: now(),
     })
     .eq("id", row.id);
