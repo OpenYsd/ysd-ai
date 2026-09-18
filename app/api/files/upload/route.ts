@@ -64,9 +64,10 @@ export async function POST(req: NextRequest) {
   const parsed = uploadFieldsSchema.safeParse({
     projectId: toId(form.get("projectId")),
     conversationId: toId(form.get("conversationId")),
+    clientUploadId: toId(form.get("clientUploadId")),
   });
   if (!parsed.success) return json({ error: "بيانات غير صحيحة | Invalid fields" }, 400);
-  const { projectId, conversationId } = parsed.data;
+  const { projectId, conversationId, clientUploadId } = parsed.data;
 
   // النوع: الامتداد وMIME معًا — يمنع التنفيذيات والسكريبتات والمضغوطات
   const allowed = resolveAllowedType(fileEntry.name, fileEntry.type);
@@ -75,6 +76,26 @@ export async function POST(req: NextRequest) {
       { error: "نوع الملف غير مدعوم. المسموح: PDF, DOCX, TXT, MD, PNG, JPG, WEBP | Unsupported file type" },
       400,
     );
+
+  /**
+   * ★ إعادةُ رفعِ ملفٍّ حُفظ لا تُنشئ ملفًّا ثانيًا.
+   *
+   * الصفُّ يُدرج قبل التخزين والاستخراج، فقد يُحفظ الملفُّ كاملًا ثم يصل
+   * العميلَ 502 من الوسيط (رُصد حيًّا). فالعميل يُرسل معرّفًا ثابتًا للملف
+   * المختار، ومن يعيد الرفعَ بالمعرّف نفسه يُعاد إليه الملفُّ القائم — قبل
+   * فحص الحصّة، فلا يُرفض لأنّ ملفَّه نفسَه عُدَّ عليه.
+   */
+  if (clientUploadId) {
+    const { data: existing } = await supabase
+      .from("files")
+      .select(PUBLIC_FILE_FIELDS)
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .eq("metadata->>client_upload_id", clientUploadId)
+      .limit(1)
+      .maybeSingle();
+    if (existing) return json({ file: existing, reused: true }, 200);
+  }
 
   // الحدود من الإعداد المركزي
   const [limits, usage] = await Promise.all([
@@ -130,6 +151,7 @@ export async function POST(req: NextRequest) {
     mime_type: fileEntry.type.split(";")[0]?.trim().toLowerCase(),
     size_bytes: fileEntry.size,
     status: "uploaded",
+    metadata: clientUploadId ? { client_upload_id: clientUploadId } : {},
   });
   if (insertError) {
     console.error(`[files] insert failed: code=${insertError.code}`);
@@ -154,6 +176,7 @@ export async function POST(req: NextRequest) {
     storage_path: storagePath,
     original_name: safeName,
     mime_type: fileEntry.type,
+    metadata: clientUploadId ? { client_upload_id: clientUploadId } : {},
   });
 
   const { data: fresh } = await supabase
