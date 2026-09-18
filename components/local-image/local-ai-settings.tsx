@@ -14,9 +14,16 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { fetchCapabilities, probeEngine, type EngineCapabilities } from "@/lib/local-image/client";
-import { LOCAL_ENGINE_ORIGIN, isLocalImageEnabled } from "@/lib/local-image/flag";
+import { ENGINE_TOKEN_KEY, LOCAL_ENGINE_ORIGIN, isLocalImageEnabled } from "@/lib/local-image/flag";
+import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 
-const TOKEN_KEY = "ysd.localEngineToken";
+/**
+ * ★ المفتاحُ يُستورد ولا يُكتب.
+ *
+ * كان حرفًا هنا وحرفًا في راية الصوت. حرفان متطابقان اليوم يكفيان لأن
+ * ينزلق أحدُهما غدًا، فتكتب اللوحةُ في مفتاحٍ لا يقرؤه الزرّ.
+ */
+const TOKEN_KEY = ENGINE_TOKEN_KEY;
 
 export function LocalAiSettings() {
   const [token, setToken] = useState("");
@@ -41,7 +48,10 @@ export function LocalAiSettings() {
     void check();
   }, [token, check]);
 
-  if (!isLocalImageEnabled()) {
+  const imageOn = isLocalImageEnabled();
+  const voiceOn = isLocalVoiceEnabled();
+
+  if (!imageOn && !voiceOn) {
     /**
      * ★ الميزةُ المطفأة تغيب — ولا تُعرض «قريبًا».
      *
@@ -49,6 +59,17 @@ export function LocalAiSettings() {
      */
     return null;
   }
+
+  /**
+   * ★ ويكفي أن تشتعل إحداهما.
+   *
+   * كان الشرطُ على الصور وحدَها، فلو أُطلق الصوتُ دونها لاختفت اللوحةُ
+   * التي يُلصق فيها الرمز — ولا سبيلَ عندئذٍ إلى تهيئة ميزةٍ مشتعلة.
+   * والمحرّكُ واحدٌ يخدمهما معًا، فلوحتُه تتبع أيَّهما اشتعل.
+   */
+  const serves = imageOn && voiceOn ? "الصور والصوت المحلّيين"
+    : imageOn ? "توليد الصور المحلّي"
+      : "الصوت المحلّي";
 
   const status =
     alive === null ? "غير مفحوص"
@@ -65,8 +86,9 @@ export function LocalAiSettings() {
         <span data-testid="engine-status" className="rounded bg-slate-100 px-2 py-0.5 text-xs">{status}</span>
       </header>
 
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-slate-500" data-testid="engine-serves">
         يعمل على جهازك على <code>{LOCAL_ENGINE_ORIGIN}</code>. شغّله ثم الصق الرمز الذي يطبعه عند الإقلاع.
+        {" "}هذا الاتصال نفسه يشغّل {serves} — رمزٌ واحدٌ يكفيهما.
       </p>
 
       <div className="flex gap-2">

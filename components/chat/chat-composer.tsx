@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Loader2, Paperclip, Square, Upload } from "lucide-react";
 import { AttachmentCard } from "@/components/chat/attachment-card";
+import { MicButton } from "@/components/local-voice/mic-button";
 import {
   acceptAttribute,
   attachmentNotice,
@@ -26,6 +27,16 @@ import {
   type ComposerAttachment,
 } from "@/lib/chat/composer-attachments";
 import { useI18n } from "@/lib/i18n";
+import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
+
+/**
+ * ★ رايةُ الصوت تُقرأ من مصدرها الوحيد، مرّةً للوحدة.
+ *
+ * `NEXT_PUBLIC_*` تُخبَز وقتَ البناء، فالقيمةُ ثابتةٌ طوال الجلسة. وغيابُها أو
+ * أيُّ قيمةٍ غيرِ `"1"` ⇒ لا زرَّ ميكروفون ولا طلبَ إلى الحلقة المحلّيّة —
+ * كما كان شريطُ الكتابة القديم يفعل حرفًا بحرف.
+ */
+const localVoiceEnabled = isLocalVoiceEnabled();
 
 const hasFiles = (e: { dataTransfer: DataTransfer | null }) =>
   Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -50,6 +61,7 @@ export function ChatComposer({
   onRemoveAttachment,
   onRetryAttachment,
   sendBlocked,
+  voiceSpeakText,
 }: {
   input: string;
   setInput: (v: string) => void;
@@ -71,6 +83,8 @@ export function ChatComposer({
   onRetryAttachment: (key: string) => void;
   /** رفعٌ جارٍ: الرسالة لن ترى ملفًّا لم يُربط بعد */
   sendBlocked: boolean;
+  /** آخرُ ردٍّ مكتملٍ للمساعد — يُنطق بعد اكتماله لا أثناء تدفّقه */
+  voiceSpeakText?: string | null;
 }) {
   const { t } = useI18n();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -250,6 +264,20 @@ export function ChatComposer({
             e.target.value = "";
           }}
         />
+        {/**
+          * ★ النصُ المفرَّغ يُوضَع في حقل الإدخال وحسب.
+          *
+          * فيمضي بعدها في مسار الإرسال القائم، فيمرّ على
+          * `detectImageIntent` الموجود كما يمرّ عليه ما يُكتب باليد.
+          * ولا موجِّهَ نيّةٍ ثانٍ — ولا يمسّ المرفقات ولا بوّابةَ إرسالها.
+          */}
+        {localVoiceEnabled ? (
+          <MicButton
+            onTranscript={(text) => setInput(text)}
+            speakText={voiceSpeakText}
+            busy={Boolean(disabled) || generating}
+          />
+        ) : null}
         <div className="flex-1" />
         {generating ? (
           <button
