@@ -10,6 +10,7 @@ import { FILES_BUCKET } from "@/lib/files/service";
 import { extractText } from "@/lib/files/extract";
 import { chunkText, contentHash, type Chunk } from "./chunking";
 import { getEmbeddingProvider } from "./embeddings";
+import { f2llmEnabled } from "./embedding-space";
 
 const INSERT_BATCH = 16;
 
@@ -63,6 +64,11 @@ export async function prepareFileForRag(
       .eq("id", file.id);
     return { ok: false, error };
   };
+
+  // هذا المسار القديم يكتب عمود e5 (384) وحده — لا يُستعمل مع فضاء F2LLM؛ الطابور (worker.ts) هو المسار الوحيد له
+  if (f2llmEnabled()) {
+    return { ok: false, error: "مسار التجهيز القديم غير مدعوم مع فضاء F2LLM — استخدم POST /api/files/:id/rag." };
+  }
 
   // الصور غير مدعومة (بلا OCR في هذه المرحلة)
   if (file.mime_type.startsWith("image/")) {
