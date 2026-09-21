@@ -17,46 +17,9 @@ import { createFakeRagDb } from "./helpers/fake-rag-db";
 const USER = "11111111-1111-4111-8111-111111111111";
 const FLAG = "YSD_RAG_EMBEDDING_MODEL";
 
-const fake = vi.hoisted(() => ({
-  batches: [] as number[],
-  embedded: [] as string[],
-  queries: [] as Array<{ text: string; dims: number }>,
-  failOnBatch: null as number | null,
-  forceDims: null as number | null,
-}));
+import { fake } from "./helpers/fake-embedder";
 
-vi.mock("@/lib/rag/embeddings", async () => {
-  const space = await import("@/lib/rag/embedding-space");
-  const dimsNow = () => fake.forceDims ?? (space.f2llmEnabled() ? 320 : 384);
-  /** متجهٌ حتميّ: أكياس كلماتٍ مجزَّأة في d خانة ثم تطبيع — نصّان متطابقان ⇒ تشابه 1، ومتباعدان ⇒ ≈ 0 */
-  const vec = (text: string, d: number): number[] => {
-    const v = new Array<number>(d).fill(0);
-    for (const tok of text.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean)) {
-      let h = 2166136261;
-      for (let i = 0; i < tok.length; i++) h = Math.imul(h ^ tok.charCodeAt(i), 16777619) >>> 0;
-      v[h % d]! += 1;
-    }
-    const n = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
-    return v.map((x) => x / n);
-  };
-  const provider = {
-    id: "fake",
-    get dims() {
-      return dimsNow();
-    },
-    embedQuery: async (text: string) => {
-      fake.queries.push({ text, dims: dimsNow() });
-      return vec(text, dimsNow());
-    },
-    embedPassages: async (texts: string[]) => {
-      fake.batches.push(texts.length);
-      if (fake.failOnBatch !== null && fake.batches.length === fake.failOnBatch) throw new Error("simulated crash");
-      fake.embedded.push(...texts);
-      return texts.map((t) => vec(t, dimsNow()));
-    },
-  };
-  return { getEmbeddingProvider: () => provider, getEmbeddingModelState: () => ({ state: "ready", model: "fake", dims: dimsNow(), instances: 1 }) };
-});
+vi.mock("@/lib/rag/embeddings", async () => (await import("./helpers/fake-embedder")).embeddingsMock());
 
 import { drainOwnJobs, runRagJob } from "@/lib/rag/worker";
 import { enqueueRagJob, type RagJob } from "@/lib/rag/jobs";
@@ -82,7 +45,7 @@ function newDb(schema: "v1" | "v2" = "v2") {
 }
 
 async function index(db: ReturnType<typeof createFakeRagDb>, fileRow: Record<string, unknown>, jobType?: string): Promise<RagJob> {
-  const enq = await enqueueRagJob(db.client, { userId: USER, fileId: fileRow.id as string, contentHash: contentHash(fileRow.extracted_text as string), ...(jobType ? { jobType } : {}) });
+  const enq = await enqueueRagJob(db.client, { userId: USER, fileId: fileRow.id as string, contentHash: contentHash(fileRow.extracted_text as string), ...(jobType ? { jobType } : {}), ...(jobType === RAG_JOB_TYPE_F2LLM ? { keySuffix: TAG } : {}) });
   if ("error" in enq) throw new Error(enq.error);
   await drainOwnJobs(db.client, { workerId: "w:test" });
   return enq.job;
@@ -90,11 +53,7 @@ async function index(db: ReturnType<typeof createFakeRagDb>, fileRow: Record<str
 const jobsOf = (db: ReturnType<typeof createFakeRagDb>, fileId: unknown) => db.tables.rag_jobs!.filter((j) => j.file_id === fileId);
 
 beforeEach(() => {
-  fake.batches.length = 0;
-  fake.embedded.length = 0;
-  fake.queries.length = 0;
-  fake.failOnBatch = null;
-  fake.forceDims = null;
+  fake.reset();
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -250,7 +209,7 @@ describe("★ (٤) انقطاع واستئناف، وإعادة التشغيل،
     const snapshot = JSON.stringify(chunkTexts(db, file.id).map((c) => [c.id, c.embedding_v2, c.embedding_v2_model]));
     fake.batches.length = 0;
 
-    const again = await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(3)), jobType: RAG_JOB_TYPE_F2LLM });
+    const again = await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(3)), jobType: RAG_JOB_TYPE_F2LLM, keySuffix: TAG });
     expect(again).toMatchObject({ created: false });
     expect(await drainOwnJobs(db.client, { workerId: "w:again" })).toMatchObject({ processed: 0 });
     expect(fake.batches).toEqual([]);
@@ -287,7 +246,7 @@ describe("★ (٤) انقطاع واستئناف، وإعادة التشغيل،
     flagOn();
     const db = newDb();
     const file = db.addFile({ extracted_text: doc(2), status: "ready_for_rag", rag_content_hash: contentHash(doc(2)) });
-    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)), jobType: RAG_JOB_TYPE_F2LLM });
+    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)), jobType: RAG_JOB_TYPE_F2LLM, keySuffix: TAG });
     flagOff();
     const before = db.calls.length;
     await drainOwnJobs(db.client, { workerId: "w:off" });
@@ -308,6 +267,26 @@ describe("★ (٤) انقطاع واستئناف، وإعادة التشغيل،
     expect(jobsOf(db, file.id)[0]!.status).toBe("retrying");
     expect(chunkTexts(db, file.id).every((c) => c.embedding_v2 === null && c.embedding_v2_model === null && c.embedding === null)).toBe(true);
     expect(file.rag_v2_model).toBeNull();
+  });
+});
+
+describe("★ مفتاح idempotency لوظائف v2 يحمل وسم النموذج", () => {
+  it("★ ★ ★ وظيفةٌ مكتملةٌ بنموذجٍ قديم لا تمنع تجهيزًا بنموذجٍ جديد؛ والمفتاح القديم لـe5 حرفيًّا كما كان", async () => {
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2) });
+    const h = contentHash(doc(2));
+    const base = { userId: USER, fileId: file.id as string, contentHash: h };
+    const first = await enqueueRagJob(db.client, { ...base, jobType: RAG_JOB_TYPE_F2LLM, keySuffix: "tag-1" });
+    if ("error" in first) throw new Error(first.error);
+    db.tables.rag_jobs!.find((j) => j.id === first.job.id)!.status = "completed";
+    // نفس النموذج ⇒ منجَز
+    expect(await enqueueRagJob(db.client, { ...base, jobType: RAG_JOB_TYPE_F2LLM, keySuffix: "tag-1" })).toMatchObject({ created: false });
+    // نموذجٌ جديد ⇒ وظيفةٌ جديدة
+    expect(await enqueueRagJob(db.client, { ...base, jobType: RAG_JOB_TYPE_F2LLM, keySuffix: "tag-2" })).toMatchObject({ created: true });
+    // e5: بلا لاحقة ⇒ المفتاح القديم بالضبط
+    const e5 = await enqueueRagJob(db.client, base);
+    if ("error" in e5) throw new Error(e5.error);
+    expect(db.tables.rag_jobs!.find((j) => j.id === e5.job.id)!.idempotency_key).toBe(`${file.id}:${h}:rag_prepare`);
   });
 });
 
@@ -403,6 +382,22 @@ describe("★ (٦) مسار /rag — «جاهز» يعني جاهزًا في ا�
     expect(file.rag_v2_model).toBe(TAG);
     const second = await callRoute(db, file.id as string);
     expect(second.body.skipped).toBe(true);
+  });
+
+  it("★ ★ ★ ملفٌّ جُهِّز في F2LLM وحده ثم رجع الفضاء إلى e5 (تراجع): لا يُتخطّى؛ POST /rag يُعيد تضمينه بـe5 ثم يُتخطّى", async () => {
+    flagOn();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(3) });
+    await index(db, file, RAG_JOB_TYPE_F2LLM); // v2 وحده: لا متجه e5
+    expect(chunkTexts(db, file.id).every((c) => c.embedding === null)).toBe(true);
+    flagOff();
+    const v2Before = JSON.stringify(chunkTexts(db, file.id).map((c) => [c.id, c.embedding_v2, c.embedding_v2_model]));
+    const first = await callRoute(db, file.id as string);
+    expect(first.body.skipped).toBe(false);
+    expect(first.body.job!.job_type).toBe(RAG_JOB_TYPE_E5);
+    for (const c of chunkTexts(db, file.id)) expect((c.embedding as number[]).length).toBe(384);
+    expect(JSON.stringify(chunkTexts(db, file.id).map((c) => [c.id, c.embedding_v2, c.embedding_v2_model]))).toBe(v2Before); // v2 خامل لا يُمسّ
+    expect((await callRoute(db, file.id as string)).body.skipped).toBe(true);
   });
 
   it("★ ★ ★ العَلَم مطفأ: ملفٌّ جاهز يُتخطّى كما كان، ووظيفته من النوع القديم", async () => {

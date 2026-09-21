@@ -88,7 +88,7 @@ export async function POST(
     fileId: id,
     contentHash: docHash,
     // نوع وظيفة مستقلّ لفضاء F2LLM (مفتاح idempotency مستقلّ) — e5 يبقى على النوع الافتراضي كما كان
-    ...(space.id === "f2llm" ? { jobType: space.jobType } : {}),
+    ...(space.id === "f2llm" ? { jobType: space.jobType, keySuffix: space.modelTag as string } : {}),
   });
   if ("error" in enq) return json({ error: enq.error }, 500);
 

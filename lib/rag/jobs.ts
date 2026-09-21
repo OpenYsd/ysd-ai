@@ -58,11 +58,16 @@ export async function enqueueRagJob(
     fileId: string;
     contentHash: string;
     jobType?: string;
+    /**
+     * يدخل في مفتاح idempotency — لوظائف الفضاء F2LLM: وسمُ النموذج بعينه. فوظيفةٌ مكتملةٌ بنموذجٍ قديم لا تمنع
+     * تجهيزًا بنموذجٍ جديد (إصدار artifact آخر) ولو كان المحتوى نفسه. الغياب ⇒ المفتاح القديم حرفيًّا (e5).
+     */
+    keySuffix?: string;
     maxAttempts?: number;
   },
 ): Promise<{ job: RagJob; created: boolean } | { error: string }> {
   const jobType = params.jobType ?? "rag_prepare";
-  const idempotencyKey = `${params.fileId}:${params.contentHash}:${jobType}`;
+  const idempotencyKey = `${params.fileId}:${params.contentHash}:${jobType}${params.keySuffix ? `:${params.keySuffix}` : ""}`;
 
   // وظيفة نشطة قائمة؟
   const { data: active } = await supabase
