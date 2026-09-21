@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "model": {
+    "id": "f2llm-v2-80m",
+    "upstream": "codefuse-ai/F2LLM-v2-80M",
+    "upstreamUrl": "https://huggingface.co/codefuse-ai/F2LLM-v2-80M",
+    "revision": "ad88d7a126711f1490cd4bad645dc9d3acc2af6a",
+    "revisionDate": "2026-09-03",
+    "license": "Apache-2.0",
+    "licenseSource": "model card front matter (license: apache-2.0); the upstream repository ships no LICENSE file",
+    "architecture": "Qwen3Model (8 layers, hidden 320), tie_word_embeddings, 151,936 vocab",
+    "parameters": 80084288,
+    "dims": 320,
+    "pooling": "last token (the EOS <|im_end|> the tokenizer appends), then L2 normalisation",
+    "queryPrompt": "Instruct: Given a question, retrieve passages that can help answer the question.\nQuery: ",
+    "documentPrompt": "",
+    "maxTokens": 512,
+    "citation": "Zhang, Liao, Yu, Di, Wang. F2LLM-v2. arXiv:2603.19223"
+  },
+  "upstreamFiles": [
+    {
+      "path": "1_Pooling/config.json",
+      "sha256": "a54b6b51dc807a767429ea7e879a1507c5c90781460e98ec409c78540f9fd464",
+      "bytes": 297
+    },
+    {
+      "path": "README.md",
+      "sha256": "1b3fc060474405651dc6f39a3f93dbd1ad01f6e84784bae148d144786014a711",
+      "bytes": 8797
+    },
+    {
+      "path": "added_tokens.json",
+      "sha256": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680",
+      "bytes": 707
+    },
+    {
+      "path": "config.json",
+      "sha256": "6adc1b382b3aed8453ae99665c01713189737936a3caf2638cb9083c97fd7013",
+      "bytes": 941
+    },
+    {
+      "path": "config_sentence_transformers.json",
+      "sha256": "0d68b69297f1e04931794d6a0240334fc5fd3d6f0560b5bd904231864cd0aa7d",
+      "bytes": 224
+    },
+    {
+      "path": "merges.txt",
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "bytes": 1671853
+    },
+    {
+      "path": "model.safetensors",
+      "sha256": "2177fbd79bd6259904a54514e0e313efd28704acd98bfe276a06b2c638f2e4c1",
+      "bytes": 160178064
+    },
+    {
+      "path": "modules.json",
+      "sha256": "73348a3d8f8ae4cc5f851dc6b98be3ea819390b814e83656d5eebbadf75fe43e",
+      "bytes": 385
+    },
+    {
+      "path": "special_tokens_map.json",
+      "sha256": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+      "bytes": 613
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc",
+      "bytes": 8399930
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea",
+      "bytes": 9762
+    },
+    {
+      "path": "vocab.json",
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "bytes": 2776833
+    }
+  ],
+  "recipe": {
+    "exporter": "torch.onnx.export (legacy TorchScript, dynamo=False)",
+    "opset": 17,
+    "attention": "eager",
+    "exportWrapper": "Wrap(model) with attribute name `m`; forward(input_ids, attention_mask) -> last_hidden_state; use_cache=False",
+    "exportExampleInputs": "tokenizer([QUERY_PROMPT + 'ما هي فوائد قواعد البيانات؟', 'تخزن قواعد البيانات المعلومات بطريقة منظمة وتتيح الوصول السريع والآمن إليها.'], padding=True)",
+    "embeddingTable": "row-wise symmetric int8, scale = max|row|/127, clip [-127,127]; Gather(int8)->Cast(float)->Mul(Gather(scale))",
+    "dynamicQuantization": "onnxruntime.quantization.quantize_dynamic, weight_type=QUInt8, op_types_to_quantize=[MatMul], MatMulConstBOnly=True",
+    "excludedFromQuantization": "all MatMul nodes whose name contains `down_proj` (8 nodes)",
+    "acceptance": "cosine vs PyTorch fp32 golden vectors: mean >= 0.992 and min >= 0.985; token ids identical"
+  },
+  "build": {
+    "python": "3.14.5",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "packages": {
+      "torch": "2.14.0+cpu",
+      "transformers": "5.17.0",
+      "onnx": "1.23.0",
+      "onnxruntime": "1.30.0",
+      "numpy": "2.5.3",
+      "safetensors": "0.8.0",
+      "tokenizers": "0.23.2",
+      "protobuf": "7.36.2",
+      "ml_dtypes": "0.6.0",
+      "sympy": "1.14.0",
+      "packaging": "26.3"
+    },
+    "lockfile": "scripts/f2llm/requirements-build.lock.txt"
+  },
+  "artifact": {
+    "tag": "f2llm-v2-80m@ad88d7a1.onnx-fcd9084eb3f4",
+    "files": [
+      {
+        "path": "model.onnx",
+        "sha256": "fcd9084eb3f4603aab426cfa747292b674e5da760ea60fa5348ea801270a667d",
+        "bytes": 96946815
+      },
+      {
+        "path": "tokenizer.json",
+        "sha256": "7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc",
+        "bytes": 8399930
+      },
+      {
+        "path": "tokenizer_config.json",
+        "sha256": "3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea",
+        "bytes": 9762
+      },
+      {
+        "path": "LICENSE-Apache-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358
+      },
+      {
+        "path": "NOTICE-F2LLM.md",
+        "sha256": "bed92cde4def18e996cd9f4d0f146062bfc6f13180bdb8d51045b4e64126af7f",
+        "bytes": 1857
+      }
+    ],
+    "verification": {
+      "goldenItems": 23,
+      "goldenMeanCosine": 0.994852,
+      "goldenMinCosine": 0.991225
+    }
+  }
+}
