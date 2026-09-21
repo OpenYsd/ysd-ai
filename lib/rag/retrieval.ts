@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
+import { getActiveSpace } from "./embedding-space";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -20,6 +21,12 @@ import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
  */
 export const MIN_SIMILARITY = 0.78;
 export const RETRIEVAL_CONFIDENCE = 0.8;
+/**
+ * عتبات فضاء F2LLM — **مستقلّة** عن عتبات e5: للفضاءين توزيعا تشابهٍ مختلفان (F2LLM أوسع بكثير)،
+ * فلا تُستعار 0.78 و0.80. مُعايَرة على مجموعة أكبر بكثير من الاثني عشر سؤالًا — انظر docs/F2LLM_MIGRATION.md.
+ */
+export const F2LLM_MIN_SIMILARITY = 0.5;
+export const F2LLM_RETRIEVAL_CONFIDENCE = 0.5;
 /** أقصى عدد مقاطع تدخل السياق */
 export const MAX_SNIPPETS = 6;
 /** أقصى مقاطع من ملف واحد — تنويع النتائج */
@@ -72,6 +79,9 @@ export async function getContextFileIds(
     .eq("user_id", userId)
     .eq("status", "ready_for_rag")
     .is("deleted_at", null);
+  const space = getActiveSpace();
+  // فضاء F2LLM: لا يدخل السياقَ إلا ملفٌّ مكتمل التضمين فيه — لا نتائج جزئية ولا خلط فضاءين
+  if (space.id === "f2llm") q = q.eq("rag_v2_model", space.modelTag as string);
   q = projectId
     ? q.or(`conversation_id.eq.${conversationId},project_id.eq.${projectId}`)
     : q.eq("conversation_id", conversationId);
@@ -135,6 +145,9 @@ export async function retrieveSnippets(
   if (fileIds.length === 0) return { snippets: [], searched: false, topSimilarity: 0 };
   if (timings) timings.skipped = false;
 
+  // الفضاء يُحسم مرّة: سؤالٌ ودالةُ بحثٍ ووسمُ نموذجٍ منه — فلا يُبحث بمتجه نموذجٍ في مقاطع آخر
+  const space = getActiveSpace();
+  const isV2 = space.id === "f2llm";
   const provider = getEmbeddingProvider();
   /**
    * يُبنى موضعيًّا لا باستيراد دالة.
@@ -156,12 +169,20 @@ export async function retrieveSnippets(
   }
 
   const tSearch = Date.now();
-  const { data, error } = await supabase.rpc("match_file_chunks", {
-    p_query_embedding: JSON.stringify(queryEmbedding),
-    p_file_ids: fileIds,
-    p_match_count: 16,
-    p_min_similarity: MIN_SIMILARITY,
-  });
+  const { data, error } = isV2
+    ? await supabase.rpc(space.rpc, {
+        p_query_embedding: JSON.stringify(queryEmbedding),
+        p_file_ids: fileIds,
+        p_model: space.modelTag,
+        p_match_count: 16,
+        p_min_similarity: F2LLM_MIN_SIMILARITY,
+      })
+    : await supabase.rpc("match_file_chunks", {
+        p_query_embedding: JSON.stringify(queryEmbedding),
+        p_file_ids: fileIds,
+        p_match_count: 16,
+        p_min_similarity: MIN_SIMILARITY,
+      });
   if (timings) {
     timings.searchMs = Date.now() - tSearch;
     timings.totalMs = Date.now() - tTotal;
@@ -176,7 +197,7 @@ export async function retrieveSnippets(
   const topSimilarity = rows[0]?.similarity ?? 0;
 
   // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
-  if (topSimilarity < RETRIEVAL_CONFIDENCE) {
+  if (topSimilarity < (isV2 ? F2LLM_RETRIEVAL_CONFIDENCE : RETRIEVAL_CONFIDENCE)) {
     if (timings) {
       timings.postprocessMs = Date.now() - tPost;
       timings.totalMs = Date.now() - tTotal;

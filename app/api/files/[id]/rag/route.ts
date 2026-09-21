@@ -5,6 +5,8 @@ import { BUCKET_RAG_RUN, consumeRateLimit } from "@/lib/rate-limit-distributed";
 import { contentHash } from "@/lib/rag/chunking";
 import { enqueueRagJob, getLatestJobForFile } from "@/lib/rag/jobs";
 import { drainOwnJobs, LEASE_SECONDS } from "@/lib/rag/worker";
+import { getActiveSpace } from "@/lib/rag/embedding-space";
+import { isFileEmbeddedInSpace } from "@/lib/rag/space-readiness";
 import { PUBLIC_FILE_FIELDS } from "@/lib/files/service";
 
 export const runtime = "nodejs";
@@ -34,6 +36,8 @@ export async function POST(
   if (!rate.allowed)
     return json({ error: "محاولات تجهيز كثيرة — انتظر قليلًا | Too many attempts" }, 429);
 
+  // فضاء التضمين الفعّال (e5 افتراضيًّا). أعمدة v2 لا تُلمس إلا مع العَلَم — فالمسار القديم لا يشترط الترحيل.
+  const space = getActiveSpace();
   const { data: row } = await supabase
     .from("files")
     .select("id, status, mime_type, extracted_text, rag_content_hash")
@@ -71,7 +75,8 @@ export async function POST(
       .from("file_chunks")
       .select("id", { count: "exact", head: true })
       .eq("file_id", id);
-    if ((count ?? 0) > 0) {
+    // «جاهز» = جاهز في الفضاء الفعّال: ملفٌّ جاهزٌ في e5 وحده لا يُتخطّى إن كان الفضاء F2LLM
+    if ((count ?? 0) > 0 && (await isFileEmbeddedInSpace(supabase, id, space, count ?? 0))) {
       const { data: fresh } = await supabase.from("files").select(PUBLIC_FILE_FIELDS).eq("id", id).single();
       return json({ file: fresh, skipped: true, totalChunks: count }, 200);
     }
@@ -82,6 +87,8 @@ export async function POST(
     userId: user.id,
     fileId: id,
     contentHash: docHash,
+    // نوع وظيفة مستقلّ لفضاء F2LLM (مفتاح idempotency مستقلّ) — e5 يبقى على النوع الافتراضي كما كان
+    ...(space.id === "f2llm" ? { jobType: space.jobType } : {}),
   });
   if ("error" in enq) return json({ error: enq.error }, 500);
 
