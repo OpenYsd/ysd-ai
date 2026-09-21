@@ -77,15 +77,18 @@ describe("★ تراجع 0048 يزيل v2 وحده", () => {
   const stmts = down.split(";").map((s) => s.trim()).filter(Boolean);
 
   it("★ ★ ★ كل عبارةٍ drop ... if exists لكائنٍ من v2 حصرًا", () => {
-    expect(stmts).toHaveLength(6);
+    expect(stmts).toHaveLength(7);
     for (const s of stmts) {
-      expect(s).toMatch(/^(drop function if exists match_file_chunks_v2|drop index if exists idx_chunks_embedding_v2|alter table file_chunks drop constraint if exists file_chunks_embedding_v2_model_pair|alter table file_chunks drop column if exists (embedding_v2_model|embedding_v2)|alter table files drop column if exists rag_v2_model)\b/);
+      expect(s).toMatch(/^(?:delete from rag_jobs where job_type = 'rag_prepare_f2llm'$)|^(drop function if exists match_file_chunks_v2|drop index if exists idx_chunks_embedding_v2|alter table file_chunks drop constraint if exists file_chunks_embedding_v2_model_pair|alter table file_chunks drop column if exists (embedding_v2_model|embedding_v2)|alter table files drop column if exists rag_v2_model)\b/);
     }
   });
 
   it("★ ★ ★ لا يحذف العمود القديم ولا يمسّ الجداول", () => {
     expect(down).not.toMatch(/drop column if exists embedding\s*;/);
-    expect(down).not.toMatch(/drop table|truncate|delete from|drop function if exists match_file_chunks\s*\(/);
+    expect(down).not.toMatch(/drop table|truncate|drop function if exists match_file_chunks\s*\(/);
+    // الحذف الوحيد: وظائف v2 (سجلّاتُ عمل) — لا ملفات ولا مقاطع ولا وظائف e5
+    expect(down.match(/delete from/g)).toHaveLength(1);
+    expect(down).toContain("delete from rag_jobs where job_type = 'rag_prepare_f2llm'");
   });
 });
 
