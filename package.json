@@ -55,6 +55,7 @@
     "jsdom": "^25.0.1",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
+    "pg": "^8.23.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.0",
