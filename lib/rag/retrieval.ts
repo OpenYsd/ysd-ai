@@ -22,11 +22,32 @@ import { getActiveSpace } from "./embedding-space";
 export const MIN_SIMILARITY = 0.78;
 export const RETRIEVAL_CONFIDENCE = 0.8;
 /**
- * عتبات فضاء F2LLM — **مستقلّة** عن عتبات e5: للفضاءين توزيعا تشابهٍ مختلفان (F2LLM أوسع بكثير)،
- * فلا تُستعار 0.78 و0.80. مُعايَرة على مجموعة أكبر بكثير من الاثني عشر سؤالًا — انظر docs/F2LLM_MIGRATION.md.
+ * عتبات فضاء F2LLM — **مستقلّة** عن عتبات e5: توزيع التشابه فيه مختلف تمامًا (المتجهات المتّصلة بالسؤال تقع بين
+ * 0.3 و0.6 لا بين 0.8 و0.9)، فلا تُستعار 0.78 و0.80.
+ *
+ * مُعايَرة على 7 328 استعلامًا (لا على الاثني عشر سؤالًا) عبر مزوّد التطبيق نفسه — الطريقة والأرقام والقيود في
+ * docs/F2LLM_MIGRATION.md §Calibration. باختصار: أعلى مجموع متوازن (استرجاع − إيجابيات كاذبة) على نصف التطوير،
+ * وتأكّد على النصف المحجوز؛ الأسئلة العامّة غير ذات الصلة كلُّها تُرفض (إيجابيات كاذبة 0%).
+ *
+ * ★ هذه قيمة تجريبيّة لخطّ staging: تُضبط بلا إعادة بناء عبر YSD_F2LLM_RETRIEVAL_CONFIDENCE و
+ *   YSD_F2LLM_MIN_SIMILARITY (تُقرأ عند كل نداء؛ قيمٌ خارج [0.05، 0.95] تُتجاهل).
  */
-export const F2LLM_MIN_SIMILARITY = 0.5;
-export const F2LLM_RETRIEVAL_CONFIDENCE = 0.5;
+export const F2LLM_MIN_SIMILARITY = 0.36;
+export const F2LLM_RETRIEVAL_CONFIDENCE = 0.38;
+
+function envThreshold(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0.05 && n <= 0.95 ? n : null;
+}
+
+/** العتبتان الفعّالتان لفضاء F2LLM (الافتراضيّتان أو ما ضُبط في البيئة) — الأرضيّة لا تعلو الثقة أبدًا */
+export function getF2llmThresholds(): { min: number; confidence: number } {
+  const confidence = envThreshold("YSD_F2LLM_RETRIEVAL_CONFIDENCE") ?? F2LLM_RETRIEVAL_CONFIDENCE;
+  const min = Math.min(envThreshold("YSD_F2LLM_MIN_SIMILARITY") ?? F2LLM_MIN_SIMILARITY, confidence);
+  return { min, confidence };
+}
 /** أقصى عدد مقاطع تدخل السياق */
 export const MAX_SNIPPETS = 6;
 /** أقصى مقاطع من ملف واحد — تنويع النتائج */
@@ -175,7 +196,7 @@ export async function retrieveSnippets(
         p_file_ids: fileIds,
         p_model: space.modelTag,
         p_match_count: 16,
-        p_min_similarity: F2LLM_MIN_SIMILARITY,
+        p_min_similarity: getF2llmThresholds().min,
       })
     : await supabase.rpc("match_file_chunks", {
         p_query_embedding: JSON.stringify(queryEmbedding),
@@ -197,7 +218,7 @@ export async function retrieveSnippets(
   const topSimilarity = rows[0]?.similarity ?? 0;
 
   // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
-  if (topSimilarity < (isV2 ? F2LLM_RETRIEVAL_CONFIDENCE : RETRIEVAL_CONFIDENCE)) {
+  if (topSimilarity < (isV2 ? getF2llmThresholds().confidence : RETRIEVAL_CONFIDENCE)) {
     if (timings) {
       timings.postprocessMs = Date.now() - tPost;
       timings.totalMs = Date.now() - tTotal;

@@ -14,6 +14,7 @@ import {
   resetEmbeddingSpaceWarningForTests,
 } from "@/lib/rag/embedding-space";
 import { F2LLM, F2LLM_RUNTIME_FILES } from "@/lib/rag/f2llm-manifest";
+import { F2LLM_MIN_SIMILARITY, F2LLM_RETRIEVAL_CONFIDENCE, MIN_SIMILARITY, RETRIEVAL_CONFIDENCE, getF2llmThresholds } from "@/lib/rag/retrieval";
 import {
   F2LLM_REQUIRED_MALLOC_ENV,
   F2LLM_SESSION_OPTIONS,
@@ -212,5 +213,39 @@ describe("★ التجميع: حالة الرمز الأخير ثم تطبيع L
     await embedWithRuntime(r, "long");
     expect(r.seen[0]).toHaveLength(512);
     expect(r.seen[0]![511]).toBe(999);
+  });
+});
+
+describe("★ عتبات الاسترجاع", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("★ ★ ★ عتبات e5 كما كانت حرفيًّا، وعتبات F2LLM مستقلّة عنها (لا تُستعار 0.78/0.80)", () => {
+    expect(MIN_SIMILARITY).toBe(0.78);
+    expect(RETRIEVAL_CONFIDENCE).toBe(0.8);
+    expect(F2LLM_RETRIEVAL_CONFIDENCE).not.toBe(RETRIEVAL_CONFIDENCE);
+    expect(F2LLM_MIN_SIMILARITY).not.toBe(MIN_SIMILARITY);
+    // توزيع F2LLM أدنى بكثير — عتبة 0.8 كانت سترفض كل شيء تقريبًا
+    expect(F2LLM_RETRIEVAL_CONFIDENCE).toBeLessThan(0.6);
+    expect(F2LLM_MIN_SIMILARITY).toBeLessThanOrEqual(F2LLM_RETRIEVAL_CONFIDENCE);
+  });
+
+  it("الافتراضيّتان بلا متغيّرات بيئة", () => {
+    vi.stubEnv("YSD_F2LLM_RETRIEVAL_CONFIDENCE", "");
+    vi.stubEnv("YSD_F2LLM_MIN_SIMILARITY", "");
+    expect(getF2llmThresholds()).toEqual({ min: F2LLM_MIN_SIMILARITY, confidence: F2LLM_RETRIEVAL_CONFIDENCE });
+  });
+
+  it("★ ★ ★ تجاوزٌ من البيئة (لخطّ staging)، والأرضيّة لا تعلو الثقة أبدًا", () => {
+    vi.stubEnv("YSD_F2LLM_RETRIEVAL_CONFIDENCE", "0.45");
+    vi.stubEnv("YSD_F2LLM_MIN_SIMILARITY", "0.4");
+    expect(getF2llmThresholds()).toEqual({ min: 0.4, confidence: 0.45 });
+    vi.stubEnv("YSD_F2LLM_MIN_SIMILARITY", "0.7"); // أعلى من الثقة ⇒ تُخفَض إليها
+    expect(getF2llmThresholds()).toEqual({ min: 0.45, confidence: 0.45 });
+  });
+
+  it.each(["abc", "-1", "0", "0.01", "1.5", "NaN", "Infinity"])("قيمةٌ غير صالحة %j تُتجاهل فتبقى القيمة المُعايَرة", (bad) => {
+    vi.stubEnv("YSD_F2LLM_RETRIEVAL_CONFIDENCE", bad);
+    vi.stubEnv("YSD_F2LLM_MIN_SIMILARITY", bad);
+    expect(getF2llmThresholds()).toEqual({ min: F2LLM_MIN_SIMILARITY, confidence: F2LLM_RETRIEVAL_CONFIDENCE });
   });
 });
