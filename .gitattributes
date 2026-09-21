@@ -1,3 +1,5 @@
 # F2LLM provenance files are hashed (manifest.json): never let autocrlf rewrite them
 scripts/f2llm/** text eol=lf
 tests/fixtures/f2llm-golden.json text eol=lf
+# Shell entrypoint runs in a Linux container: CRLF would break the shebang
+docker-entrypoint.sh text eol=lf

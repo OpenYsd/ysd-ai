@@ -36,3 +36,7 @@ scripts/.tmp-*.mjs
 
 # ملفات Supabase CLI المؤقتة — معرّفات مشروع لا تدخل المستودع
 supabase/.temp/
+
+# ---------- نموذج F2LLM المبنيّ (93MB) — لا يدخل Git؛ يُبنى بـ scripts/f2llm/build-linux.sh ----------
+/f2llm-artifact/*
+!/f2llm-artifact/.gitkeep
