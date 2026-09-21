@@ -1,0 +1,3 @@
+# F2LLM provenance files are hashed (manifest.json): never let autocrlf rewrite them
+scripts/f2llm/** text eol=lf
+tests/fixtures/f2llm-golden.json text eol=lf
