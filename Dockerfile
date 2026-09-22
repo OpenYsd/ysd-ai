@@ -109,6 +109,25 @@ RUN npm run embeddings:prefetch \
     && test -d /app/.model-cache \
     && echo "حجم كاش النموذج:" && du -sh /app/.model-cache
 
+# ---------- 2ج) نموذج F2LLM المثبَّت (اختياري — يُخبز فقط عند F2LLM_BAKE=1) ----------
+# ★ الافتراضي F2LLM_BAKE=0: لا يُنسخ شيء والصورة كما كانت (مجلّد فارغ). فلا يزيد حجم صورة الإنتاج ولا
+#   تتغيّر بصمتها الوظيفية بسبب هذا الترحيل.
+# ★ عند 1: يُنسخ مجلّد f2llm-artifact/ من سياق البناء (يُبنى بـ scripts/f2llm/build-linux.sh) ثم
+#   يُفحص بـ verify-artifact.mjs بالبصمة والحجم والوسم مقابل scripts/f2llm/manifest.json.
+#   أي اختلاف بايتيّ = فشل البناء. فلا يدخل الصورةَ artifact مجهول المصدر.
+FROM node:22-bookworm-slim AS f2llm-model
+ARG F2LLM_BAKE=0
+WORKDIR /w
+COPY scripts/f2llm/manifest.json scripts/f2llm/verify-artifact.mjs ./scripts/f2llm/
+COPY f2llm-artifact/ /in/
+RUN mkdir -p /out/f2llm-v2-80m \
+    && if [ "$F2LLM_BAKE" = "1" ]; then \
+         node scripts/f2llm/verify-artifact.mjs /in \
+         && cp /in/model.onnx /in/tokenizer.json /in/tokenizer_config.json /in/artifact.json \
+               /in/LICENSE-Apache-2.0.txt /in/NOTICE-F2LLM.md /out/f2llm-v2-80m/ \
+         && du -sh /out/f2llm-v2-80m; \
+       fi
+
 # ---------- 3) التشغيل ----------
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
@@ -134,6 +153,12 @@ COPY --from=builder --chown=node:node /app/public ./public
 # نموذج Embeddings المخبوز — مقروء لمستخدم node غير الجذر
 COPY --from=builder --chown=node:node /app/.model-cache ./.model-cache
 
+# نموذج F2LLM المثبَّت (فارغ ما لم يُبنَ بـ F2LLM_BAKE=1) — لا يُحمَّل إلا إن اشتعل عَلَم staging
+COPY --from=f2llm-model --chown=node:node /out ./.f2llm-model
+# نقطة الدخول: تضبط MALLOC_* لـ glibc قبل Node وفقط عند طلب فضاء F2LLM (انظر الملف)
+COPY --chown=node:node docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod 755 /app/docker-entrypoint.sh
+
 # حارس: صورة بلا نموذج تعني تنزيلًا من الإنترنت في مسار حيّ — نفشل هنا لا هناك
 RUN test -d /app/.model-cache && test -n "$(ls -A /app/.model-cache)" \
     || (echo "خطأ: كاش نموذج Embeddings مفقود في الصورة" && exit 1)
@@ -156,4 +181,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "const p=process.env.PORT||3000;fetch('http://127.0.0.1:'+p+'/api/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # خادم Node دائم — standalone ينتج server.js بدل next start
+# ENTRYPOINT لا يغيّر شيئًا في المسار الافتراضي (exec مباشر)؛ يضبط MALLOC_* فقط لعَلَم F2LLM.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

@@ -517,14 +517,17 @@ describe("★ (٥) الحدود القائمة", () => {
   });
 
   it("★ ★ ★ ولا ترحيلَ جديدًا في هذه المرحلة", () => {
-    /** المراقبةُ والتعافي لا يحتاجان مخطّطًا — و0047 مُطبَّقٌ رسميًّا */
+    /**
+     * المراقبةُ والتعافي لا يحتاجان مخطّطًا — و0047 مُطبَّقٌ رسميًّا.
+     * (فرع تجربة F2LLM: يُضيف الترحيلَ الوحيد 0048 — إضافيًّا محضًا، وله حارسُه في v139-f2llm-migration.)
+     */
     const { readdirSync } = require("node:fs") as typeof import("node:fs");
     const versions = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
       .map((f) => f.slice(0, f.indexOf("_")));
     const legacyNums = versions.filter((v) => v.length === 4).map(Number);
     expect(legacyNums).toContain(47);
-    expect(Math.max(...legacyNums)).toBe(47);
+    expect(Math.max(...legacyNums)).toBe(48);
     expect(new Set(versions).size).toBe(versions.length);
   });
 });
