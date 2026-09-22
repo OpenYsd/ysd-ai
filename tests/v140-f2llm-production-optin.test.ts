@@ -62,6 +62,24 @@ describe("★ docker-entrypoint.sh — موافقةُ الإنتاج الصري�
     expect(nonProdBranch).toContain("export MALLOC_TRIM_THRESHOLD_=65536");
   });
 
+  it("★ ★ ★ سقف كومة V8 (--max-old-space-size) يُضبط في كلا فرعَي الاشتعال، ولا يُضبط في فرع الرفض", () => {
+    const prodBranch = /\*prod\*\)([\s\S]*?);;/.exec(entrypoint)?.[1] ?? "";
+    const grantedBlock = /if \[ "\$\{YSD_F2LLM_PRODUCTION_OPT_IN:-\}" = "1" \][\s\S]*?else/.exec(prodBranch)?.[0] ?? "";
+    const refusedBlock = prodBranch.slice(grantedBlock.length);
+    expect(grantedBlock, "فرع الموافقة موجود").not.toBe("");
+    expect(grantedBlock).toMatch(/NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --max-old-space-size=\d+"/);
+    expect(refusedBlock).not.toContain("NODE_OPTIONS");
+
+    const nonProdBranch = /\*\)\s*\n(\s*export MALLOC_MMAP_THRESHOLD_[\s\S]*?);;/.exec(entrypoint)?.[1] ?? "";
+    expect(nonProdBranch).toMatch(/NODE_OPTIONS="\$\{NODE_OPTIONS:-\} --max-old-space-size=\d+"/);
+  });
+
+  it("★ ★ ★ سقف كومة V8 يُضاف إلى NODE_OPTIONS القائم لا يستبدله — لا يمحو ضبطًا آخر للمنصّة", () => {
+    const capLines = entrypoint.split("\n").filter((l) => l.includes("--max-old-space-size"));
+    expect(capLines.length).toBeGreaterThan(0);
+    for (const l of capLines) expect(l).toContain('NODE_OPTIONS="${NODE_OPTIONS:-}');
+  });
+
   it("exec \"$@\" يبقى آخر سطرٍ فعليّ — الإشارات تصل Node مباشرةً", () => {
     const lines = entrypoint.split("\n").map((l) => l.trim()).filter(Boolean);
     expect(lines.at(-1)).toBe('exec "$@"');
