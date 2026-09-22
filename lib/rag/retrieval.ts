@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
+import { getActiveSpace } from "./embedding-space";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -20,6 +21,33 @@ import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
  */
 export const MIN_SIMILARITY = 0.78;
 export const RETRIEVAL_CONFIDENCE = 0.8;
+/**
+ * عتبات فضاء F2LLM — **مستقلّة** عن عتبات e5: توزيع التشابه فيه مختلف تمامًا (المتجهات المتّصلة بالسؤال تقع بين
+ * 0.3 و0.6 لا بين 0.8 و0.9)، فلا تُستعار 0.78 و0.80.
+ *
+ * مُعايَرة على 7 328 استعلامًا (لا على الاثني عشر سؤالًا) عبر مزوّد التطبيق نفسه — الطريقة والأرقام والقيود في
+ * docs/F2LLM_MIGRATION.md §Calibration. باختصار: أعلى مجموع متوازن (استرجاع − إيجابيات كاذبة) على نصف التطوير،
+ * وتأكّد على النصف المحجوز؛ الأسئلة العامّة غير ذات الصلة كلُّها تُرفض (إيجابيات كاذبة 0%).
+ *
+ * ★ هذه قيمة تجريبيّة لخطّ staging: تُضبط بلا إعادة بناء عبر YSD_F2LLM_RETRIEVAL_CONFIDENCE و
+ *   YSD_F2LLM_MIN_SIMILARITY (تُقرأ عند كل نداء؛ قيمٌ خارج [0.05، 0.95] تُتجاهل).
+ */
+export const F2LLM_MIN_SIMILARITY = 0.36;
+export const F2LLM_RETRIEVAL_CONFIDENCE = 0.38;
+
+function envThreshold(name: string): number | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0.05 && n <= 0.95 ? n : null;
+}
+
+/** العتبتان الفعّالتان لفضاء F2LLM (الافتراضيّتان أو ما ضُبط في البيئة) — الأرضيّة لا تعلو الثقة أبدًا */
+export function getF2llmThresholds(): { min: number; confidence: number } {
+  const confidence = envThreshold("YSD_F2LLM_RETRIEVAL_CONFIDENCE") ?? F2LLM_RETRIEVAL_CONFIDENCE;
+  const min = Math.min(envThreshold("YSD_F2LLM_MIN_SIMILARITY") ?? F2LLM_MIN_SIMILARITY, confidence);
+  return { min, confidence };
+}
 /** أقصى عدد مقاطع تدخل السياق */
 export const MAX_SNIPPETS = 6;
 /** أقصى مقاطع من ملف واحد — تنويع النتائج */
@@ -72,6 +100,9 @@ export async function getContextFileIds(
     .eq("user_id", userId)
     .eq("status", "ready_for_rag")
     .is("deleted_at", null);
+  const space = getActiveSpace();
+  // فضاء F2LLM: لا يدخل السياقَ إلا ملفٌّ مكتمل التضمين فيه — لا نتائج جزئية ولا خلط فضاءين
+  if (space.id === "f2llm") q = q.eq("rag_v2_model", space.modelTag as string);
   q = projectId
     ? q.or(`conversation_id.eq.${conversationId},project_id.eq.${projectId}`)
     : q.eq("conversation_id", conversationId);
@@ -135,6 +166,9 @@ export async function retrieveSnippets(
   if (fileIds.length === 0) return { snippets: [], searched: false, topSimilarity: 0 };
   if (timings) timings.skipped = false;
 
+  // الفضاء يُحسم مرّة: سؤالٌ ودالةُ بحثٍ ووسمُ نموذجٍ منه — فلا يُبحث بمتجه نموذجٍ في مقاطع آخر
+  const space = getActiveSpace();
+  const isV2 = space.id === "f2llm";
   const provider = getEmbeddingProvider();
   /**
    * يُبنى موضعيًّا لا باستيراد دالة.
@@ -156,12 +190,20 @@ export async function retrieveSnippets(
   }
 
   const tSearch = Date.now();
-  const { data, error } = await supabase.rpc("match_file_chunks", {
-    p_query_embedding: JSON.stringify(queryEmbedding),
-    p_file_ids: fileIds,
-    p_match_count: 16,
-    p_min_similarity: MIN_SIMILARITY,
-  });
+  const { data, error } = isV2
+    ? await supabase.rpc(space.rpc, {
+        p_query_embedding: JSON.stringify(queryEmbedding),
+        p_file_ids: fileIds,
+        p_model: space.modelTag,
+        p_match_count: 16,
+        p_min_similarity: getF2llmThresholds().min,
+      })
+    : await supabase.rpc("match_file_chunks", {
+        p_query_embedding: JSON.stringify(queryEmbedding),
+        p_file_ids: fileIds,
+        p_match_count: 16,
+        p_min_similarity: MIN_SIMILARITY,
+      });
   if (timings) {
     timings.searchMs = Date.now() - tSearch;
     timings.totalMs = Date.now() - tTotal;
@@ -176,7 +218,7 @@ export async function retrieveSnippets(
   const topSimilarity = rows[0]?.similarity ?? 0;
 
   // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
-  if (topSimilarity < RETRIEVAL_CONFIDENCE) {
+  if (topSimilarity < (isV2 ? getF2llmThresholds().confidence : RETRIEVAL_CONFIDENCE)) {
     if (timings) {
       timings.postprocessMs = Date.now() - tPost;
       timings.totalMs = Date.now() - tTotal;

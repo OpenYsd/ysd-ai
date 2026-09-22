@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkEnv } from "@/lib/env";
 import { getEmbeddingModelState } from "@/lib/rag/embeddings";
+import { f2llmEnabled } from "@/lib/rag/embedding-space";
+import { probeF2llmV2Column } from "./f2llm-probe";
 import { getRagRuntimeConfig } from "@/lib/rag/runtime-config";
 import { isRateSecretConfigured } from "@/lib/auth/invite-guard";
 import { getAdminClient } from "@/lib/supabase/admin";
@@ -116,6 +118,9 @@ export async function runHealthChecks(
           ? { status: "down", detail: "vector_probe_failed" }
           : { status: "ok" };
 
+    // فضاء F2LLM (العَلَم فقط، staging): الترحيل 0048 مطبَّق؟ — الفحص في ملفٍّ مستقلّ (انظر رأسه)
+    if (f2llmEnabled()) checks.pgvector_v2 = await probeF2llmV2Column(supabase);
+
     // Storage: وصول الخدمة (لا تفتيش إداري) — أي استجابة HTTP = الخدمة تعمل
     checks.storage = await deps.probeStorageReachable();
   } catch {
@@ -149,7 +154,7 @@ export async function runHealthChecks(
   const emb = getEmbeddingModelState();
   checks.embeddings = {
     status: emb.state === "failed" ? "down" : "ok",
-    detail: `${emb.state} (${emb.model} · ${emb.dims}d · instances=${emb.instances})`,
+    detail: `${emb.state} (${emb.model} · ${emb.dims}d · instances=${emb.instances}${emb.space ? ` · space=${emb.space}` : ""})`,
   };
 
   // ---- التطبيق ----
