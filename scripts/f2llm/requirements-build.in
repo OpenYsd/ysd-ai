@@ -1,0 +1,9 @@
+# Top-level pins for the F2LLM artifact build (Python 3.14.x). The full transitive lock is
+# requirements-build.lock.txt — install THAT to reproduce the artifact:
+#   python -m venv .venv-f2llm
+#   .venv-f2llm/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu -r scripts/f2llm/requirements-build.lock.txt
+torch==2.14.0+cpu
+transformers==5.17.0
+onnx==1.23.0
+onnxruntime==1.30.0
+numpy==2.5.3

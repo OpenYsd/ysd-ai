@@ -9,6 +9,9 @@
  * ملاحظات نموذج E5: الاستعلام يسبقه "query: " والمقاطع "passage: ".
  */
 
+import { f2llmEnabled } from "./embedding-space";
+import { getF2llmProvider, getF2llmState } from "./f2llm-embeddings";
+
 export interface EmbeddingProvider {
   readonly id: string;
   readonly dims: number;
@@ -76,7 +79,10 @@ export function getEmbeddingModelState(): {
   model: string;
   dims: number;
   instances: number;
+  /** حاضرٌ فقط حين يكون فضاء F2LLM هو الفعّال (العَلَم) — غيابه يعني e5 كما كان */
+  space?: "f2llm";
 } {
+  if (f2llmEnabled()) return getF2llmState();
   return { state: modelState, model: MODEL_ID, dims: DIMS, instances: instanceCount };
 }
 
@@ -194,8 +200,13 @@ class LocalTransformersProvider implements EmbeddingProvider {
 
 let providerSingleton: EmbeddingProvider | null = null;
 
-/** نقطة الاستبدال الوحيدة لمزود Embeddings */
+/**
+ * نقطة الاستبدال الوحيدة لمزود Embeddings.
+ *
+ * الافتراضي e5 كما كان. وفضاء F2LLM لا يُختار إلا إذا اشتعل العَلَم (staging فقط) — انظر embedding-space.ts.
+ */
 export function getEmbeddingProvider(): EmbeddingProvider {
+  if (f2llmEnabled()) return getF2llmProvider();
   if (!providerSingleton) providerSingleton = new LocalTransformersProvider();
   return providerSingleton;
 }

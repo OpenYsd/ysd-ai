@@ -1,0 +1,9 @@
+# F2LLM provenance files are hashed (manifest.json): never let autocrlf rewrite them
+scripts/f2llm/** text eol=lf
+tests/fixtures/f2llm-golden.json text eol=lf
+# Shell entrypoint runs in a Linux container: CRLF would break the shebang
+docker-entrypoint.sh text eol=lf
+# v139-f2llm-migration.test.ts strips `--` line comments with a `$`-anchored
+# regex that never matches before a lone trailing \r: CRLF silently defeats it
+supabase/migrations/0048_f2llm_embedding_v2.sql text eol=lf
+supabase/rollbacks/0048_f2llm_embedding_v2.down.sql text eol=lf

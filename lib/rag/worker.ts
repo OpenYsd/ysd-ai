@@ -9,8 +9,10 @@ import { FILES_BUCKET } from "@/lib/files/service";
 import { extractText } from "@/lib/files/extract";
 import { chunkText, contentHash, type Chunk } from "./chunking";
 import { getEmbeddingProvider } from "./embeddings";
+import { getActiveSpace, RAG_JOB_TYPE_F2LLM } from "./embedding-space";
 import { getRagLimits } from "./pipeline";
 import { getRagRuntimeConfig } from "./runtime-config";
+import { tryAcquireDrainSlot } from "./drain-gate";
 import {
   claimRagJob,
   completeRagJob,
@@ -35,6 +37,7 @@ interface FileRow {
   original_name: string;
   mime_type: string;
   extracted_text: string | null;
+  status: string;
 }
 
 class PermanentError extends Error {
@@ -76,7 +79,7 @@ async function loadFile(
 ): Promise<FileRow | null> {
   const { data } = await supabase
     .from("files")
-    .select("id, user_id, storage_path, original_name, mime_type, extracted_text")
+    .select("id, user_id, storage_path, original_name, mime_type, extracted_text, status")
     .eq("id", fileId)
     .eq("user_id", userId)
     .is("deleted_at", null)
@@ -142,6 +145,21 @@ export async function runRagJob(
     if (!(await stillOwnsJob(supabase, job.id, workerId))) throw new CancelledError();
   };
 
+  /**
+   * فضاء التضمين يُحسم مرّة واحدة لكل وظيفة من عَلَم العملية — لا من نوع الوظيفة:
+   * فالعملية التي لا تحمّل إلا نموذجًا واحدًا لا تكتب إلا متجهاته، ولا يُخلط عمودان أبدًا.
+   */
+  const space = getActiveSpace();
+  const isV2 = space.id === "f2llm";
+  if (!isV2 && job.job_type === RAG_JOB_TYPE_F2LLM) {
+    // وظيفة فضاءٍ غير مفعّل هنا: لا نمسّ الملف (قد يكون جاهزًا في e5) ولا نكتب متجهًا من نموذجٍ آخر
+    await failRagJob(supabase, job, workerId, "cancelled", "f2llm_disabled", "فضاء F2LLM غير مفعّل في هذه العملية.");
+    perfLog(job, job.file_id, "cancelled", { code: "f2llm_disabled" });
+    return { ok: false, status: "cancelled" };
+  }
+  /** إضافة v2 لملفٍّ جاهزٍ أصلًا في e5: لا تُقلب حالتُه ولا يُكسر جاهزيتُه القديمة إن فشلت */
+  let backfill = false;
+
   try {
     const file = await loadFile(supabase, job.file_id, job.user_id);
     if (!file) throw new CancelledError(); // حُذف أثناء المعالجة
@@ -165,6 +183,7 @@ export async function runRagJob(
 
     const chunksCurrent =
       fileState?.rag_content_hash === docHash && (existingCount ?? 0) > 0;
+    backfill = isV2 && chunksCurrent && file.status === "ready_for_rag";
 
     if (!chunksCurrent) {
       let chunks = await buildChunks(supabase, file);
@@ -211,7 +230,13 @@ export async function runRagJob(
       // ثبّت hash المحتوى — علامة أن المقاطع تخص هذا المحتوى (تمكّن الاستكمال)
       await supabase
         .from("files")
-        .update({ rag_content_hash: docHash, rag_total_chunks: chunks.length, updated_at: now() })
+        .update({
+          rag_content_hash: docHash,
+          rag_total_chunks: chunks.length,
+          updated_at: now(),
+          // مقاطعُ جديدة: لا يبقى وسمُ «مكتمل في v2» لمحتوى سابق
+          ...(isV2 ? { rag_v2_model: null } : {}),
+        })
         .eq("id", file.id);
       perfLog(job, file.id, "chunked", { chunks: chunks.length, ms: Date.now() - t0 });
     } else {
@@ -219,7 +244,25 @@ export async function runRagJob(
     }
 
     // ===== 2) embedding (المقاطع بلا embedding فقط — قابل للاستكمال) =====
-    await supabase.from("files").update({ status: "embedding", updated_at: now() }).eq("id", file.id);
+    if (!backfill) {
+      await supabase.from("files").update({ status: "embedding", updated_at: now() }).eq("id", file.id);
+    }
+    if (isV2) {
+      // متجهٌ بوسمِ نموذجٍ آخر لا يُبقى: يُصفَّر فيُعاد تضمينه (المتجه والوسم يسافران معًا)
+      await supabase
+        .from("file_chunks")
+        .update({ embedding_v2: null, embedding_v2_model: null })
+        .eq("file_id", file.id)
+        .neq("embedding_v2_model", space.modelTag as string);
+    }
+    const countEmbedded = async (): Promise<number> => {
+      const base = supabase
+        .from("file_chunks")
+        .select("id", { count: "exact", head: true })
+        .eq("file_id", file.id);
+      const q = isV2 ? base.eq("embedding_v2_model", space.modelTag as string) : base.not("embedding", "is", null);
+      return (await q).count ?? 0;
+    };
     const { count: total } = await supabase
       .from("file_chunks")
       .select("id", { count: "exact", head: true })
@@ -229,12 +272,13 @@ export async function runRagJob(
     const provider = getEmbeddingProvider();
     const embedBatch = getRagRuntimeConfig().embedDbBatch;
     let embedded = totalChunks;
+    let lastDone = -1;
     for (;;) {
       const { data: pending } = await supabase
         .from("file_chunks")
         .select("id, content")
         .eq("file_id", file.id)
-        .is("embedding", null)
+        .is(space.vectorColumn, null)
         .order("chunk_index", { ascending: true })
         .limit(embedBatch);
       if (!pending || pending.length === 0) break;
@@ -248,17 +292,20 @@ export async function runRagJob(
       for (let i = 0; i < pending.length; i++) {
         const { error } = await supabase
           .from("file_chunks")
-          .update({ embedding: JSON.stringify(vectors[i]) })
+          .update(
+            isV2
+              ? { embedding_v2: JSON.stringify(vectors[i]), embedding_v2_model: space.modelTag }
+              : { embedding: JSON.stringify(vectors[i]) },
+          )
           .eq("id", pending[i]!.id);
         if (error) throw new Error("embedding persist failed"); // transient
       }
 
-      const doneCount =
-        (await supabase
-          .from("file_chunks")
-          .select("id", { count: "exact", head: true })
-          .eq("file_id", file.id)
-          .not("embedding", "is", null)).count ?? 0;
+      const doneCount = await countEmbedded();
+      // كل دفعةٍ حُفظت يجب أن ترفع العدّ. إن لم يرتفع (تحديثٌ لم يمسّ صفًّا — كتصفيةِ سياسة RLS — بلا خطأ)
+      // فالحلقة كانت ستعيد تضمين الدفعة نفسها بلا نهاية؛ نقطعها بخطأٍ عابر فتُعاد الوظيفة بتراجع ثم تفشل.
+      if (doneCount <= lastDone) throw new Error("embedding made no progress"); // transient
+      lastDone = doneCount;
       embedded = doneCount;
       // النبضة تكشف الإلغاء/فقدان القفل
       const alive = await heartbeatRagJob(supabase, job.id, workerId, {
@@ -269,12 +316,8 @@ export async function runRagJob(
     }
 
     // ===== 3) تحقق نهائي =====
-    const { count: withEmb } = await supabase
-      .from("file_chunks")
-      .select("id", { count: "exact", head: true })
-      .eq("file_id", file.id)
-      .not("embedding", "is", null);
-    if ((withEmb ?? 0) !== totalChunks || totalChunks === 0)
+    const withEmb = await countEmbedded();
+    if (withEmb !== totalChunks || totalChunks === 0)
       throw new Error("final verify failed"); // transient — سيُعاد
 
     await assertFileAlive(supabase, file.id, file.user_id); // قبل الإعلان النهائي
@@ -287,6 +330,8 @@ export async function runRagJob(
         rag_content_hash: docHash,
         rag_error: null,
         updated_at: now(),
+        // الملف مكتمل التضمين في هذا الفضاء — وحده يجعل مقاطعه مرئيّة لدالة بحث v2
+        ...(isV2 ? { rag_v2_model: space.modelTag } : {}),
       })
       .eq("id", file.id);
     await completeRagJob(supabase, job.id, workerId, totalChunks);
@@ -295,6 +340,7 @@ export async function runRagJob(
       ms: Date.now() - t0,
       rss_start: rssStart,
       rss_end: rssMb(),
+      ...(isV2 ? { space: "f2llm", backfill: backfill ? 1 : 0 } : {}),
     });
     return { ok: true, status: "completed" };
   } catch (err) {
@@ -320,14 +366,17 @@ export async function runRagJob(
     );
     // مزامنة حالة الملف للعرض
     const willRetry = !permanent && job.attempts < job.max_attempts;
-    await supabase
-      .from("files")
-      .update({
-        status: willRetry ? "embedding" : "rag_failed",
-        rag_error: permanent ? safeMsg : "تعذّر التجهيز مؤقتًا — سيُعاد.",
-        updated_at: now(),
-      })
-      .eq("id", job.file_id);
+    // فشلُ إضافةِ v2 لا يُفسد ملفًّا جاهزًا في e5: حالتُه تبقى، وتفشل الوظيفة وحدها
+    if (!backfill) {
+      await supabase
+        .from("files")
+        .update({
+          status: willRetry ? "embedding" : "rag_failed",
+          rag_error: permanent ? safeMsg : "تعذّر التجهيز مؤقتًا — سيُعاد.",
+          updated_at: now(),
+        })
+        .eq("id", job.file_id);
+    }
     return { ok: false, status: willRetry ? "retrying" : "failed" };
   }
 }
@@ -336,24 +385,35 @@ export async function runRagJob(
  * تصريف وظائف المستخدم الحالي (request-driven): يلتقط ويشغّل بشكل تسلسلي
  * حتى نفاد الوظائف المتاحة أو انتهاء ميزانية الوقت. الحالة كلها في قاعدة البيانات.
  * التقاط SKIP LOCKED يمنع تشغيل نفس الوظيفة مرتين حتى مع طلبات متزامنة.
+ *
+ * ★ وتصريفٌ واحدٌ في العمليّة في آنٍ واحد (`drain-gate`).
+ *
+ *   إن كانت البوّابةُ مشغولة عاد فورًا بـ`busy` دون أن يلتقط شيئًا: وظيفةُ
+ *   المستدعي أُدرجت قبلُ وتبقى في الطابور، ولا تُلتقط وظيفةٌ ثم تُترك.
  */
 export async function drainOwnJobs(
   supabase: SupabaseClient,
   opts: { workerId: string; maxJobs?: number; deadlineMs?: number } = {
     workerId: "req",
   },
-): Promise<{ processed: number; lastStatus: string | null }> {
-  const maxJobs = opts.maxJobs ?? 10;
-  const deadline = Date.now() + (opts.deadlineMs ?? 250_000);
-  let processed = 0;
-  let lastStatus: string | null = null;
+): Promise<{ processed: number; lastStatus: string | null; busy: boolean }> {
+  const release = tryAcquireDrainSlot();
+  if (!release) return { processed: 0, lastStatus: null, busy: true };
+  try {
+    const maxJobs = opts.maxJobs ?? 10;
+    const deadline = Date.now() + (opts.deadlineMs ?? 250_000);
+    let processed = 0;
+    let lastStatus: string | null = null;
 
-  while (processed < maxJobs && Date.now() < deadline) {
-    const job = await claimRagJob(supabase, opts.workerId);
-    if (!job) break;
-    const res = await runRagJob(supabase, job, opts.workerId);
-    lastStatus = res.status;
-    processed++;
+    while (processed < maxJobs && Date.now() < deadline) {
+      const job = await claimRagJob(supabase, opts.workerId);
+      if (!job) break;
+      const res = await runRagJob(supabase, job, opts.workerId);
+      lastStatus = res.status;
+      processed++;
+    }
+    return { processed, lastStatus, busy: false };
+  } finally {
+    release();
   }
-  return { processed, lastStatus };
 }

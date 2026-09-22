@@ -674,6 +674,41 @@ const dict = {
     ar: "الملف جاهز — اسأل عن محتواه وسيجيب YSD AI من مقاطعه مع ذكر المصادر.",
     en: "File ready — ask about its content and YSD AI will answer from it with sources.",
   },
+  /**
+   * مرفقات شريط الكتابة (عدّة ملفّات). الحدود تأتي من الخادم، فلا رقمَ في هذه
+   * النصوص؛ ورسالة الخادم التفصيليّة تظهر في تلميح البطاقة.
+   */
+  attachmentQueued: { ar: "في الانتظار", en: "Waiting" },
+  attachmentUploading: { ar: "جارٍ الرفع", en: "Uploading" },
+  attachmentErrUnsupported: { ar: "نوع غير مدعوم", en: "Unsupported type" },
+  attachmentErrEmpty: { ar: "الملف فارغ", en: "Empty file" },
+  attachmentErrTooLarge: { ar: "أكبر من الحد المسموح", en: "Over the size limit" },
+  attachmentErrQuota: { ar: "بلغت حد الملفات أو التخزين", en: "File or storage limit reached" },
+  attachmentErrRateLimited: { ar: "عمليات رفع كثيرة — أعد المحاولة بعد قليل", en: "Too many uploads — retry shortly" },
+  attachmentErrNetwork: { ar: "تعذّر الرفع — تحقّق من الاتصال", en: "Upload failed — check your connection" },
+  attachmentErrServer: { ar: "تعذّر الرفع", en: "Upload failed" },
+  attachmentErrAuth: { ar: "انتهت الجلسة — سجّل الدخول من جديد", en: "Session expired — sign in again" },
+  attachmentErrNotFound: { ar: "المحادثة غير موجودة", en: "Conversation not found" },
+  attachmentErrExtract: { ar: "تعذّر استخراج النص", en: "Text extraction failed" },
+  attachmentErrUnlink: { ar: "تعذّرت الإزالة — أعد المحاولة", en: "Couldn't remove — try again" },
+  attachmentErrStalled: { ar: "توقّف التجهيز — أعد المحاولة", en: "Preparation stalled — try again" },
+  attachmentVerifying: { ar: "نتحقّق من حفظ الملف…", en: "Checking whether the file was saved…" },
+  removeAttachment: { ar: "إزالة المرفق", en: "Remove attachment" },
+  retryUpload: { ar: "إعادة الرفع", en: "Retry upload" },
+  retryExtract: { ar: "إعادة المعالجة", en: "Retry processing" },
+  processingNotRemovable: {
+    ar: "يُعالج على الخادم — يمكن إزالته بعد اكتمال المعالجة",
+    en: "Processing on the server — you can remove it once processing finishes",
+  },
+  dropToAttach: { ar: "أفلت الملفات هنا لإرفاقها", en: "Drop files to attach" },
+  attachmentsInChat: { ar: "ملفات في هذه المحادثة", en: "files in this chat" },
+  showChatFiles: { ar: "عرض ملفات المحادثة", en: "Show this chat's files" },
+  hideChatFiles: { ar: "إخفاء ملفات المحادثة", en: "Hide this chat's files" },
+  waitForUploads: {
+    ar: "انتظر اكتمال رفع الملفات قبل الإرسال — الرسالة لا ترى ملفًا لم يكتمل رفعه.",
+    en: "Wait for uploads to finish before sending — the message can't see a file that hasn't finished uploading.",
+  },
+  uploadProgressLabel: { ar: "تقدّم رفع الملف", en: "Upload progress" },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },
   betaTitle: { ar: "النسخة التجريبية الخاصة", en: "Private Beta" },
   betaIntro: {

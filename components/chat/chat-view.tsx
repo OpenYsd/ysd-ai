@@ -12,22 +12,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
-  ArrowUp,
   Check,
   ChevronDown,
   Copy,
   FileText,
-  Image as ImageIcon,
-  Loader2,
-  Paperclip,
   Pencil,
   Flag,
   RefreshCw,
-  RotateCw,
-  Square,
-  X,
 } from "lucide-react";
-import { uploadWithProgress } from "@/components/files/upload";
+import { ChatComposer } from "@/components/chat/chat-composer";
+import { useComposerAttachments } from "@/components/chat/use-composer-attachments";
 import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -56,7 +50,6 @@ import { detectImageIntent } from "@/lib/local-image/intent";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
-import { MicButton } from "@/components/local-voice/mic-button";
 
 export interface ChatModel {
   id: string;
@@ -189,6 +182,8 @@ export interface Attachment {
    * لا تأتي أبدًا — لأن anyReady يشترط ready_for_rag الذي لا تبلغه الصورة.
    */
   mime?: string | null;
+  /** الحجم بالبايت — يظهر على البطاقة بعد إعادة التحميل كما قبلها */
+  size?: number | null;
   ragTotal?: number | null;
   ragDone?: number | null;
   ragError?: string | null;
@@ -358,10 +353,6 @@ export function ChatView({
   const [modelOpen, setModelOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>(
-    initialAttachments ?? [],
-  );
-  const [attachProgress, setAttachProgress] = useState<number | null>(null);
 
   const convIdRef = useRef<string | null>(conversationId);
   const abortRef = useRef<AbortController | null>(null);
@@ -747,132 +738,29 @@ export function ChatView({
     }
   }, []);
 
-  /** متابعة تجهيز RAG بالتقدم الحقيقي (استطلاع حالة الملف) */
-  const pollRagStatus = useCallback(async (fileId: string) => {
-    for (let i = 0; i < 200; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const res = await fetch(`/api/files/${fileId}`);
-      if (!res.ok) return;
-      const j = (await res.json()) as {
-        file?: {
-          status: string;
-          rag_total_chunks?: number | null;
-          rag_done_chunks?: number | null;
-          rag_error?: string | null;
-        };
-      };
-      const f = j.file;
-      if (!f) return;
-      setAttachments((prev) =>
-        prev.map((a) =>
-          a.id === fileId
-            ? {
-                ...a,
-                status: f.status,
-                ragTotal: f.rag_total_chunks,
-                ragDone: f.rag_done_chunks,
-                ragError: f.rag_error,
-              }
-            : a,
-        ),
-      );
-      // حالات نهائية فقط. "ready" **ليست** نهائية هنا: هي حالة المستند **قبل**
-      // بدء التجهيز — وإدراجها كان يوقف الاستطلاع عند أول دورة (بعد 1.5ث) قبل
-      // أن يبلغ الملف chunking، فتبقى الشارة عالقة على «تم استخراج النص»
-      // ورسالة انتظار RAG ظاهرة إلى الأبد رغم اكتمال التجهيز في القاعدة.
-      if (["ready_for_rag", "rag_failed", "failed"].includes(f.status)) return;
-    }
-  }, []);
-
   /**
-   * إعادة تجهيز ملف فشل — آمنة ضد chunks المكررة:
-   * المسار idempotent عبر rag_content_hash، والـpipeline يحذف chunks الملف
-   * قبل أي إدراج (lib/rag/pipeline.ts)، والوظيفة محمية بفهرس فريد جزئي.
+   * مرفقات شريط الكتابة — عدّة ملفّات، تقدّمٌ لكلٍّ منها، إزالةٌ وإعادة محاولة.
+   *
+   * ★ الدلالة كما هي: الملف يُربط **بالمحادثة** عند رفعه ويدخل سياق كل رسالةٍ
+   *   لاحقة. لا علاقة بين ملفٍّ ورسالةٍ بعينها في المخطّط، فلا يُرسم مرفقٌ داخل
+   *   فقاعة رسالة — انظر docs/chat-composer-attachments.md.
    */
-  const retryRag = useCallback(
-    async (fileId: string) => {
-      setAttachments((prev) =>
-        prev.map((a) => (a.id === fileId ? { ...a, status: "chunking", ragError: null } : a)),
-      );
-      const res = await fetch(`/api/files/${fileId}/rag`, { method: "POST" });
-      if (!res.ok) {
-        setAttachments((prev) =>
-          prev.map((a) => (a.id === fileId ? { ...a, status: "rag_failed" } : a)),
-        );
-        return;
-      }
-      void pollRagStatus(fileId);
-    },
-    [pollRagStatus],
-  );
-
-  /** إرفاق ملف: رفع + ربط بالمحادثة + تجهيز تلقائي للذكاء الاصطناعي (RAG) */
-  const attachFile = useCallback(
-    async (file: File) => {
-      setError(null);
-      const convId = await ensureConversation();
-      if (!convId) {
-        setError(t("sendError"));
-        return;
-      }
-      setAttachProgress(0);
-      const handle = uploadWithProgress({
-        file,
-        conversationId: convId,
-        onProgress: setAttachProgress,
-      });
-      const res = await handle.done;
-      setAttachProgress(null);
-      if (res.ok && res.file) {
-        const uploaded = res.file;
-        // لا نستدعي router.refresh هنا — يُعيد بناء المكوّن ويمسح حالة المرفقات؛
-        // المرفقات تبقى في حالة العميل وتُحمّل من الخادم عند التحديث/التنقل
-        setAttachments((prev) => [
-          ...prev,
-          {
-            id: uploaded.id,
-            name: uploaded.original_name,
-            status: uploaded.status,
-            mime: uploaded.mime_type,
-          },
-        ]);
-        // المستندات الجاهزة النص: ابدأ التجهيز للذكاء الاصطناعي تلقائيًا.
-        // الصور مستثناة — تنتهي عند ready ولا تدخل RAG (بلا OCR).
-        if (!uploaded.mime_type.startsWith("image/") && uploaded.status === "ready") {
-          // لو فشل إدراج الوظيفة، أعلن الفشل بدل ترك الاستطلاع يدور بلا طائل
-          void (async () => {
-            const res = await fetch(`/api/files/${uploaded.id}/rag`, { method: "POST" }).catch(
-              () => null,
-            );
-            if (!res || !res.ok) {
-              setAttachments((prev) =>
-                prev.map((a) => (a.id === uploaded.id ? { ...a, status: "rag_failed" } : a)),
-              );
-            }
-          })();
-          void pollRagStatus(uploaded.id);
-        }
-      } else if (res.error && res.error !== "aborted") {
-        setError(res.error === "network" ? t("sendError") : res.error);
-      }
-    },
-    [ensureConversation, pollRagStatus, t],
-  );
-
-  /** إزالة ملف من سياق المحادثة دون حذفه */
-  const unlinkAttachment = useCallback(async (fileId: string) => {
-    await fetch(`/api/files/${fileId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: null }),
-    });
-    setAttachments((prev) => prev.filter((a) => a.id !== fileId));
-  }, []);
+  const composerAttachments = useComposerAttachments({
+    conversationId,
+    initial: initialAttachments,
+    ensureConversation,
+    locale,
+    onConversationError: () => setError(t("sendError")),
+  });
+  const attachmentsBlockSend = composerAttachments.sendBlocked;
+  const markAttachmentsSent = composerAttachments.markSent;
 
   const send = useCallback(
     async (textOverride?: string) => {
       const text = (textOverride ?? input).trim();
       if (!text || generating || !modelId) return;
+      // ملفٌّ في منتصف رفعه لم يُربط بعد: الرسالة لن تراه — فالإرسال ينتظره
+      if (attachmentsBlockSend) return;
 
       // v0.6.6 — منع الإرسال المزدوج:
       // `generating` حالة React لا تُضبط إلا داخل streamRequest، أي **بعد**
@@ -896,6 +784,8 @@ export function ChatView({
 
         const tempUserId = `tmp-u-${Date.now()}`;
         setMessages((prev) => [...prev, { id: tempUserId, role: "user", content: text }]);
+        // ما رُبط من المسوّدة صار سياقًا للمحادثة — لا مرفقًا لهذه الرسالة وحدها
+        markAttachmentsSent();
 
         /**
          * ★ نيّةُ الصورة تُفحص قبل مغادرةِ الطلب للشبكة.
@@ -930,7 +820,7 @@ export function ChatView({
         sendLockRef.current = false;
       }
     },
-    [input, generating, modelId, streamRequest, ensureConversation, t],
+    [input, generating, modelId, streamRequest, ensureConversation, t, attachmentsBlockSend, markAttachmentsSent],
   );
 
   const regenerate = useCallback(async () => {
@@ -1258,21 +1148,18 @@ export function ChatView({
               <p className="text-[14.5px] text-ink-dim">{t("welcomeSub")}</p>
             </div>
 
-            <AttachmentBar
-              attachments={attachments}
-              progress={attachProgress}
-              onUnlink={(id) => void unlinkAttachment(id)}
-              onRetry={(id) => void retryRag(id)}
-            />
-            <Composer
+            <ChatComposer
               input={input}
               setInput={setInput}
               voiceSpeakText={voiceSpeakText}
               onSend={() => void send()}
               onStop={stop}
-              onAttach={(f) => void attachFile(f)}
-              attachBusy={attachProgress !== null}
               attachLabel={t("attachFile")}
+              attachments={composerAttachments.attachments}
+              onFiles={(files) => void composerAttachments.addFiles(files)}
+              onRemoveAttachment={(key) => void composerAttachments.remove(key)}
+              onRetryAttachment={(key) => void composerAttachments.retry(key)}
+              sendBlocked={attachmentsBlockSend}
               generating={generating}
               disabled={noProvider}
               taRef={taRef}
@@ -1582,21 +1469,18 @@ export function ChatView({
 
           <div className="px-4 md:px-6 pb-4 pt-1">
             <div className="max-w-[760px] mx-auto">
-              <AttachmentBar
-                attachments={attachments}
-                progress={attachProgress}
-                onUnlink={(id) => void unlinkAttachment(id)}
-                onRetry={(id) => void retryRag(id)}
-              />
-              <Composer
+              <ChatComposer
                 input={input}
                 setInput={setInput}
                 voiceSpeakText={voiceSpeakText}
                 onSend={() => void send()}
                 onStop={stop}
-                onAttach={(f) => void attachFile(f)}
-                attachBusy={attachProgress !== null}
                 attachLabel={t("attachFile")}
+                attachments={composerAttachments.attachments}
+                onFiles={(files) => void composerAttachments.addFiles(files)}
+                onRemoveAttachment={(key) => void composerAttachments.remove(key)}
+                onRetryAttachment={(key) => void composerAttachments.retry(key)}
+                sendBlocked={attachmentsBlockSend}
                 generating={generating}
                 disabled={noProvider}
                 taRef={taRef}
@@ -1647,136 +1531,6 @@ function MsgAction({
   );
 }
 
-/* ---------- المرفقات ---------- */
-function AttachmentBar({
-  attachments,
-  progress,
-  onUnlink,
-  onRetry,
-}: {
-  attachments: Attachment[];
-  progress: number | null;
-  onUnlink: (fileId: string) => void;
-  onRetry?: (fileId: string) => void;
-}) {
-  const { t } = useI18n();
-  if (attachments.length === 0 && progress === null) return null;
-
-  const isImage = (a: Attachment) => Boolean(a.mime?.startsWith("image/"));
-
-  const badge = (a: Attachment) => {
-    // ① جاهز للسؤال
-    if (a.status === "ready_for_rag")
-      return { label: t("ragReady"), cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" };
-    // ④ فشل — مع زر إعادة المحاولة أدناه
-    if (a.status === "rag_failed" || a.status === "failed")
-      return { label: t("ragFailed"), cls: "bg-red-500/15 text-red-400 border-red-500/30" };
-    // ② تجهيز الذكاء الاصطناعي (مع النسبة)
-    if (a.status === "chunking" || a.status === "embedding") {
-      const pct =
-        a.ragTotal && a.ragTotal > 0
-          ? Math.round(((a.ragDone ?? 0) / a.ragTotal) * 100)
-          : null;
-      return {
-        label: `${t("ragPreparing")}${pct !== null ? ` ${pct}%` : "…"}`,
-        cls: "bg-amber-500/15 text-amber-400 border-amber-500/30",
-        spinning: true,
-      };
-    }
-    // ③ استخراج النص جارٍ
-    if (a.status === "processing" || a.status === "extracting")
-      return { label: t("statusProcessing"), cls: "bg-amber-500/15 text-amber-400 border-amber-500/30", spinning: true };
-    if (a.status === "ready") {
-      // الصورة تنتهي هنا — لا نص ولا RAG. قول «تم استخراج النص» لها كذب صريح.
-      return isImage(a)
-        ? { label: t("imageNoAiContext"), cls: "bg-raised text-ink-faint border-line" }
-        : { label: t("textExtracted"), cls: "bg-raised text-ink-dim border-line" };
-    }
-    return { label: t("statusUploaded"), cls: "bg-raised text-ink-faint border-line" };
-  };
-
-  const anyReady = attachments.some((a) => a.status === "ready_for_rag");
-  // الصور لا تبلغ ready_for_rag أبدًا (بلا OCR)، فوعدها بمرحلة RAG وعدٌ لا يُنجَز.
-  const allImages = attachments.length > 0 && attachments.every(isImage);
-  const anyPending = attachments.some(
-    (a) => !isImage(a) && !["ready_for_rag", "rag_failed", "failed"].includes(a.status),
-  );
-
-  return (
-    <div className="mb-2 space-y-1.5">
-      {attachments.map((a) => {
-        const b = badge(a);
-        return (
-          <div
-            key={a.id}
-            className="flex items-center gap-2 rounded-xl border border-line bg-surface/70 px-3 py-2"
-          >
-            {b.spinning ? (
-              <Loader2 size={13} className="animate-spin text-amber-400 shrink-0" />
-            ) : isImage(a) ? (
-              <ImageIcon size={13} className="text-ink-faint shrink-0" />
-            ) : (
-              <FileText size={13} className="text-primary-glow shrink-0" />
-            )}
-            <span className="text-[12px] text-ink truncate flex-1" dir="ltr">
-              {a.name}
-            </span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-md border shrink-0 ${b.cls}`}>
-              {b.label}
-            </span>
-            {/* ④ إعادة المحاولة عند الفشل — آمنة: المسار idempotent عبر rag_content_hash
-                والـpipeline يحذف chunks الملف قبل الإدراج، فلا تكرار. الصور مستثناة. */}
-            {!isImage(a) && (a.status === "rag_failed" || a.status === "failed") && onRetry && (
-              <button
-                onClick={() => onRetry(a.id)}
-                title={a.ragError ?? t("ragRetry")}
-                aria-label={t("ragRetry")}
-                className="p-1 rounded text-ink-faint hover:text-primary-glow shrink-0 transition-colors"
-              >
-                <RotateCw size={12} />
-              </button>
-            )}
-            <button
-              onClick={() => onUnlink(a.id)}
-              title={t("removeFromContext")}
-              aria-label={t("removeFromContext")}
-              className="p-1 rounded text-ink-faint hover:text-red-400 shrink-0 transition-colors"
-            >
-              <X size={12} />
-            </button>
-          </div>
-        );
-      })}
-      {progress !== null && (
-        <div className="flex items-center gap-2 rounded-xl border border-primary/40 bg-surface/70 px-3 py-2">
-          <Loader2 size={13} className="animate-spin text-primary-glow shrink-0" />
-          <div className="flex-1 h-1.5 rounded-full bg-raised overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${progress}%`,
-                background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
-              }}
-            />
-          </div>
-          <span className="text-[10.5px] text-ink-faint" dir="ltr">
-            {progress}%
-          </span>
-        </div>
-      )}
-      {attachments.length > 0 && (
-        <p className="text-[10.5px] text-ink-faint leading-relaxed px-1">
-          {allImages
-            ? t("imageAttachmentNotice")
-            : anyReady && !anyPending
-              ? t("ragAttachmentReady")
-              : t("attachmentNotice")}
-        </p>
-      )}
-    </div>
-  );
-}
-
 /* ---------- مصادر الرد ---------- */
 function SourcesList({ sources, devMode }: { sources: MsgSource[]; devMode?: boolean }) {
   const { t } = useI18n();
@@ -1820,141 +1574,3 @@ function SourcesList({ sources, devMode }: { sources: MsgSource[]; devMode?: boo
   );
 }
 
-/* ---------- شريط الكتابة ---------- */
-function Composer({
-  input,
-  setInput,
-  onSend,
-  onStop,
-  onAttach,
-  attachBusy,
-  attachLabel,
-  generating,
-  disabled,
-  taRef,
-  autoGrow,
-  placeholder,
-  sendLabel,
-  stopLabel,
-  composerLabel,
-  centered,
-  voiceSpeakText,
-}: {
-  input: string;
-  setInput: (v: string) => void;
-  onSend: () => void;
-  onStop: () => void;
-  onAttach: (file: File) => void;
-  attachBusy: boolean;
-  attachLabel: string;
-  generating: boolean;
-  disabled?: boolean;
-  taRef: React.RefObject<HTMLTextAreaElement | null>;
-  autoGrow: () => void;
-  placeholder: string;
-  sendLabel: string;
-  stopLabel: string;
-  composerLabel: string;
-  centered?: boolean;
-  voiceSpeakText?: string | null;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  return (
-    <div
-      className={`rounded-2xl border bg-surface/90 backdrop-blur transition-all ${
-        centered
-          ? "border-primary/40 shadow-[0_0_50px_rgba(108,75,240,.12)]"
-          : "border-line focus-within:border-primary/50"
-      }`}
-    >
-      <textarea
-        ref={taRef}
-        value={input}
-        rows={1}
-        disabled={disabled}
-        aria-label={composerLabel}
-        /**
-         * ★ `aria-busy` لا `disabled` أثناء التوليد.
-         *
-         * تعطيلُ الحقل يسحب التركيز منه ويمنع الكتابة أثناء انتظار الرد —
-         * وكتابةُ الرسالة التالية أثناء الانتظار سلوكٌ مشروع. و`aria-busy`
-         * يُعلم قارئ الشاشة أن المنطقة تتغيّر بلا أن يمنع أحدًا من شيء.
-         */
-        aria-busy={generating}
-        onChange={(e) => {
-          setInput(e.target.value);
-          autoGrow();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            onSend();
-          }
-        }}
-        placeholder={placeholder}
-        className="w-full bg-transparent resize-none px-4 pt-3.5 pb-1 text-[14px] leading-relaxed placeholder-ink-faint text-ink-strong focus:outline-none disabled:opacity-50"
-        style={{ maxHeight: 180 }}
-      />
-      <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={disabled || attachBusy}
-          title={attachLabel}
-          aria-label={attachLabel}
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors disabled:opacity-40"
-        >
-          {attachBusy ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Paperclip size={14} />
-          )}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onAttach(f);
-            e.target.value = "";
-          }}
-        />
-          {/**
-            * ★ النصُ المفرَّغ يُوضَع في حقل الإدخال وحسب.
-            *
-            * فيمضي بعدها في مسار الإرسال القائم، فيمرّ على
-            * `detectImageIntent` الموجود كما يمرّ عليه ما يُكتب باليد.
-            * ولا موجِّهَ نيّةٍ ثانٍ.
-            */}
-          {localVoiceEnabled ? (
-            <MicButton
-              onTranscript={(text) => setInput(text)}
-              speakText={voiceSpeakText}
-              busy={Boolean(disabled) || generating}
-            />
-          ) : null}
-        <div className="flex-1" />
-        {generating ? (
-          <button
-            onClick={onStop}
-            className="h-9 px-4 rounded-xl text-[13px] font-medium text-ink-strong bg-raised border border-line hover:border-primary/40 transition-colors flex items-center gap-2"
-          >
-            <Square size={11} fill="currentColor" />
-            {stopLabel}
-          </button>
-        ) : (
-          <button
-            onClick={onSend}
-            disabled={!input.trim() || disabled}
-            className="h-9 px-4 rounded-xl text-[13px] font-medium text-white transition-all disabled:opacity-35 hover:brightness-110 flex items-center gap-1.5"
-            style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
-          >
-            {sendLabel}
-            <ArrowUp size={14} />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
