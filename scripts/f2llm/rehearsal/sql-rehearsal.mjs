@@ -10,7 +10,6 @@
  * lane only ever returns v2-tagged, fully-embedded, owned rows; the two spaces cannot mix; the migration is
  * idempotent; the down migration restores the exact pre-migration v1 state and can be re-applied.
  */
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -88,10 +88,14 @@ async function llm(req, res) {
 }
 
 // ---------------------------------------------------------------------------------------------- main
+const LOG = process.env.GW_LOG === "1";
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://gw");
     const p = url.pathname;
+    if (LOG && !p.startsWith("/__")) {
+      res.on("finish", () => console.log(`[gw] ${req.method} ${p}${url.search.slice(0, 80)} -> ${res.statusCode}`));
+    }
 
     if (p === "/__stats") return send(res, 200, { ...stats, objects: objects.size });
     if (p === "/__ping") return send(res, 200, { ok: true });
