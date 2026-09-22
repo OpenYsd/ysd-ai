@@ -110,19 +110,22 @@ RUN npm run embeddings:prefetch \
     && echo "حجم كاش النموذج:" && du -sh /app/.model-cache
 
 # ---------- 2ج) نموذج F2LLM المثبَّت (اختياري — يُخبز فقط عند F2LLM_BAKE=1) ----------
-# ★ الافتراضي F2LLM_BAKE=0: لا يُنسخ شيء والصورة كما كانت (مجلّد فارغ). فلا يزيد حجم صورة الإنتاج ولا
+# ★ الافتراضي F2LLM_BAKE=0: لا يُنزَّل شيء والصورة كما كانت (مجلّد فارغ). فلا يزيد حجم صورة الإنتاج ولا
 #   تتغيّر بصمتها الوظيفية بسبب هذا الترحيل.
-# ★ عند 1: يُنسخ مجلّد f2llm-artifact/ من سياق البناء (يُبنى بـ scripts/f2llm/build-linux.sh) ثم
-#   يُفحص بـ verify-artifact.mjs بالبصمة والحجم والوسم مقابل scripts/f2llm/manifest.json.
-#   أي اختلاف بايتيّ = فشل البناء. فلا يدخل الصورةَ artifact مجهول المصدر.
+# ★ عند 1: يُنزَّل الـartifact من F2LLM_ARTIFACT_URL (لا مجلّد f2llm-artifact/ محليّ — ذاك مُتجاهَل بـgit
+#   عمدًا، 93MB، وسياقُ بناءٍ محلّي قد لا يحمله؛ رأيناها تفشل صامتةً في تجربة staging). fetch-artifact.mjs
+#   يُنزِّل كلَّ ملفٍّ ويتحقّق من بصمته فور وصوله؛ ثم verify-artifact.mjs يفحص المجلّد كلَّه بالبصمة
+#   والحجم والوسم مقابل scripts/f2llm/manifest.json. أيّ اختلافٍ بايتيّ أو تنزيلٍ فاشل = فشل البناء.
+#   فلا يدخل الصورةَ artifact مجهول المصدر ولا يبني بصمت بلا نموذج.
 FROM node:22-bookworm-slim AS f2llm-model
 ARG F2LLM_BAKE=0
+ARG F2LLM_ARTIFACT_URL=https://github.com/OpenYsd/ysd-ai/releases/download/f2llm-artifact-ad88d7a1
 WORKDIR /w
-COPY scripts/f2llm/manifest.json scripts/f2llm/verify-artifact.mjs ./scripts/f2llm/
-COPY f2llm-artifact/ /in/
-RUN mkdir -p /out/f2llm-v2-80m \
+COPY scripts/f2llm/manifest.json scripts/f2llm/verify-artifact.mjs scripts/f2llm/fetch-artifact.mjs ./scripts/f2llm/
+RUN mkdir -p /out/f2llm-v2-80m /in \
     && if [ "$F2LLM_BAKE" = "1" ]; then \
-         node scripts/f2llm/verify-artifact.mjs /in \
+         node scripts/f2llm/fetch-artifact.mjs /in "$F2LLM_ARTIFACT_URL" \
+         && node scripts/f2llm/verify-artifact.mjs /in \
          && cp /in/model.onnx /in/tokenizer.json /in/tokenizer_config.json /in/artifact.json \
                /in/LICENSE-Apache-2.0.txt /in/NOTICE-F2LLM.md /out/f2llm-v2-80m/ \
          && du -sh /out/f2llm-v2-80m; \
