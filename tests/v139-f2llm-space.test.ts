@@ -4,10 +4,13 @@ import manifestJson from "../scripts/f2llm/manifest.json";
 import {
   E5_SPACE,
   F2LLM_FLAG_ENV,
+  F2LLM_PRODUCTION_OPT_IN_ENV,
+  F2LLM_PRODUCTION_OPT_IN_VALUE,
   F2LLM_SPACE,
   RAG_JOB_TYPE_E5,
   RAG_JOB_TYPE_F2LLM,
   f2llmEnabled,
+  f2llmProductionOptIn,
   f2llmRequested,
   getActiveSpace,
   isProductionEnvironment,
@@ -60,22 +63,72 @@ describe("★ العَلَم", () => {
     expect(s).toMatchObject({ dims: 384, vectorColumn: "embedding", rpc: "match_file_chunks", jobType: RAG_JOB_TYPE_E5, modelTag: null });
   });
 
-  it.each(["production", "Production", "prod", "prod-eu", "PRODUCTION"])("★ ★ ★ بيئة %s: العَلَم يُتجاهل مع تحذير — حارسٌ ثانٍ ضدّ إعدادٍ خاطئ", (name) => {
-    const env = { [F2LLM_FLAG_ENV]: "f2llm-v2-80m", RAILWAY_ENVIRONMENT_NAME: name };
-    expect(f2llmRequested(env)).toBe(true);
-    expect(isProductionEnvironment(env)).toBe(true);
+  it.each(["production", "Production", "prod", "prod-eu", "PRODUCTION"])(
+    "★ ★ ★ بيئة %s بلا عَلَم الموافقة: العَلَم يُتجاهل مع تحذير — حارسٌ ثانٍ ضدّ إعدادٍ خاطئ",
+    (name) => {
+      const env = { [F2LLM_FLAG_ENV]: "f2llm-v2-80m", RAILWAY_ENVIRONMENT_NAME: name };
+      expect(f2llmRequested(env)).toBe(true);
+      expect(isProductionEnvironment(env)).toBe(true);
+      expect(f2llmProductionOptIn(env)).toBe(false);
+      expect(f2llmEnabled(env)).toBe(false);
+      expect(getActiveSpace(env)).toBe(E5_SPACE);
+      expect(console.error).toHaveBeenCalledTimes(1);
+      f2llmEnabled(env);
+      expect(console.error).toHaveBeenCalledTimes(1); // يحذّر مرّة واحدة لا في كل نداء
+    },
+  );
+
+  it.each(["", "true", "yes", "on", " 1", "1 ", "01", "TRUE"])(
+    "★ ★ ★ عَلَم الموافقة بقيمةٍ غير المطابقة الحرفية %j لا يُفتح — لا تخمين ولا تطبيع",
+    (bad) => {
+      const env = { [F2LLM_FLAG_ENV]: "f2llm-v2-80m", RAILWAY_ENVIRONMENT_NAME: "production", [F2LLM_PRODUCTION_OPT_IN_ENV]: bad };
+      expect(f2llmProductionOptIn(env)).toBe(false);
+      expect(f2llmEnabled(env)).toBe(false);
+      expect(getActiveSpace(env)).toBe(E5_SPACE);
+    },
+  );
+
+  it("★ ★ ★ الإنتاج + عَلَمُ التجريب وحده بلا موافقة = مطفأ (كما كان)", () => {
+    const env = { [F2LLM_FLAG_ENV]: "f2llm-v2-80m", RAILWAY_ENVIRONMENT_NAME: "production" };
     expect(f2llmEnabled(env)).toBe(false);
-    expect(getActiveSpace(env)).toBe(E5_SPACE);
-    expect(console.error).toHaveBeenCalledTimes(1);
-    f2llmEnabled(env);
-    expect(console.error).toHaveBeenCalledTimes(1); // يحذّر مرّة واحدة لا في كل نداء
   });
 
-  it.each(["staging", "Staging", "preview", "pr-9", ""])("بيئة %j لا تُعدّ إنتاجًا", (name) => {
+  it("★ ★ ★ الإنتاج + عَلَمُ الموافقة وحده بلا عَلَم التجريب = مطفأ — الموافقة وحدها لا تُشعل شيئًا", () => {
+    const env = { RAILWAY_ENVIRONMENT_NAME: "production", [F2LLM_PRODUCTION_OPT_IN_ENV]: F2LLM_PRODUCTION_OPT_IN_VALUE };
+    expect(f2llmEnabled(env)).toBe(false);
+    expect(console.error).not.toHaveBeenCalled(); // لم يُطلَب الفضاء أصلًا، فلا تحذير
+  });
+
+  it.each(["production", "Production", "prod", "prod-eu", "PRODUCTION"])(
+    "★ ★ ★ بيئة %s + كِلا العَلَمين معًا = مشتعل، بلا تحذير",
+    (name) => {
+      const env = {
+        [F2LLM_FLAG_ENV]: "f2llm-v2-80m",
+        RAILWAY_ENVIRONMENT_NAME: name,
+        [F2LLM_PRODUCTION_OPT_IN_ENV]: F2LLM_PRODUCTION_OPT_IN_VALUE,
+      };
+      expect(f2llmProductionOptIn(env)).toBe(true);
+      expect(f2llmEnabled(env)).toBe(true);
+      expect(getActiveSpace(env)).toBe(F2LLM_SPACE);
+      expect(console.error).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["staging", "Staging", "preview", "pr-9", ""])("بيئة %j لا تُعدّ إنتاجًا — عَلَم الموافقة غير مطلوب فيها", (name) => {
     const env = { [F2LLM_FLAG_ENV]: "f2llm-v2-80m", RAILWAY_ENVIRONMENT_NAME: name };
     expect(isProductionEnvironment(env)).toBe(false);
     expect(f2llmEnabled(env)).toBe(true);
     expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("عَلَم الموافقة حاضرٌ في بيئةٍ غير إنتاجية: لا أثر ولا ضرر", () => {
+    const env = {
+      [F2LLM_FLAG_ENV]: "f2llm-v2-80m",
+      RAILWAY_ENVIRONMENT_NAME: "staging",
+      [F2LLM_PRODUCTION_OPT_IN_ENV]: F2LLM_PRODUCTION_OPT_IN_VALUE,
+    };
+    expect(f2llmEnabled(env)).toBe(true);
+    expect(getActiveSpace(env)).toBe(F2LLM_SPACE);
   });
 
   it("★ ★ ★ العَلَم يُقرأ عند كل نداء (لا تخزين) — التبديل بإعادة التشغيل لا بإعادة البناء", () => {
