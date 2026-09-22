@@ -53,6 +53,8 @@ function errorLabel(t: T, kind: AttachmentErrorKind | null): string {
       return t("attachmentErrExtract");
     case "indexFailed":
       return t("ragFailed");
+    case "indexStalled":
+      return t("attachmentErrStalled");
     case "unlinkFailed":
       return t("attachmentErrUnlink");
     default:
@@ -67,7 +69,7 @@ export function attachmentStatusLabel(t: T, a: ComposerAttachment): string {
     case "uploading":
       return a.progress !== null ? `${t("attachmentUploading")} ${a.progress}%` : t("attachmentUploading");
     case "processing":
-      return t("statusProcessing");
+      return a.serverStatus === "verifying" ? t("attachmentVerifying") : t("statusProcessing");
     case "indexing":
       return a.progress !== null ? `${t("ragPreparing")} ${a.progress}%` : t("ragPreparing");
     case "ready":

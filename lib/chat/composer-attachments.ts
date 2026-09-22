@@ -40,6 +40,8 @@ export type AttachmentErrorKind =
   | "notFound"
   | "extractFailed"
   | "indexFailed"
+  /** التجهيز متوقّفٌ بلا تقدّم بعد محاولات استئنافٍ محدودة — يُعاد يدويًّا */
+  | "indexStalled"
   | "unlinkFailed";
 
 export interface ComposerAttachment {
@@ -231,7 +233,9 @@ export type AttachmentAction =
   | { type: "uploadFailed"; key: string; kind: AttachmentErrorKind; retry: RetryKind | null; message?: string | null }
   | { type: "serverState"; fileId: string; file: ServerFileState }
   | { type: "ragRequested"; fileId: string }
-  | { type: "indexFailed"; fileId: string; message?: string | null }
+  | { type: "indexFailed"; fileId: string; message?: string | null; kind?: "indexFailed" | "indexStalled" }
+  /** رفعٌ انقطع ردُّه (5xx/شبكة): نسأل الخادم هل حُفظ قبل أن نعرض إعادة الرفع */
+  | { type: "verifying"; key: string }
   | { type: "retryQueued"; key: string }
   | { type: "unlinkFailed"; key: string; message?: string | null }
   | { type: "remove"; key: string }
@@ -316,7 +320,11 @@ export function attachmentsReducer(state: ComposerAttachment[], action: Attachme
       }));
     case "indexFailed":
       return patch(state, (a) => a.fileId === action.fileId, (a) => ({
-        ...a, phase: "error", progress: null, errorKind: "indexFailed", errorMessage: action.message ?? null, retry: "rag",
+        ...a, phase: "error", progress: null, errorKind: action.kind ?? "indexFailed", errorMessage: action.message ?? null, retry: "rag",
+      }));
+    case "verifying":
+      return patch(state, (a) => a.key === action.key, (a) => ({
+        ...a, phase: "processing", progress: null, serverStatus: "verifying", errorKind: null, errorMessage: null, retry: null,
       }));
     case "retryQueued":
       return patch(state, (a) => a.key === action.key, (a) => ({
@@ -371,4 +379,44 @@ export function attachmentNotice(attachments: ComposerAttachment[]): AttachmentN
   const anyReady = docs.some((a) => a.aiContext);
   const anyPending = docs.some((a) => !a.aiContext);
   return anyReady && !anyPending ? "ragAttachmentReady" : "attachmentNotice";
+}
+
+/** ما يعيده `GET /api/files/:id` عن آخر وظيفة تجهيز — الحقول التي تلزم كشفَ التوقّف */
+export interface RagJobView {
+  status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | string;
+  heartbeat_at?: string | null;
+  available_at?: string | null;
+  attempts?: number | null;
+  max_attempts?: number | null;
+}
+
+/**
+ * ★ هل توقّف التجهيز فعلًا — أم هو بطيءٌ فحسب؟
+ *
+ *   التجهيز يُدار بطلباتٍ (request-driven): إن أُعيد تشغيل الخادم أثناءه، أو
+ *   بقيت الوظيفةُ في الطابور خلف تصريفٍ آخر، فلا شيء يحرّكها حتى يصل طلبٌ جديد.
+ *   والقرار هنا من بيانات الخادم لا من ساعة الواجهة وحدها:
+ *
+ *   - `running` بنبضٍ أقدمَ من عقد الإيجار (+هامش) ⇒ العاملُ مات؛ الوظيفةُ
+ *     قابلةٌ للاستعادة (`claim_rag_job` يعيدها إلى `retrying`).
+ *   - `queued`/`retrying` مستحقّةٌ منذ مدّةٍ ولم يلتقطها أحد ⇒ لا تصريفَ يحملها.
+ *   - لا وظيفةَ أصلًا والملفُّ ينتظر التجهيز ⇒ طلبُ التجهيز لم يصل.
+ *
+ *   وما عدا ذلك بطءٌ مشروع (تحميل النموذج، دفعاتٌ كبيرة) — لا يُستعجل.
+ */
+export function isIndexingStalled(
+  file: Pick<ServerFileState, "status">,
+  job: RagJobView | null,
+  now: number,
+  opts: { leaseMs: number; queuedGraceMs: number },
+): boolean {
+  if (file.status === "ready_for_rag" || file.status === "rag_failed" || file.status === "failed") return false;
+  if (!job) return file.status === "ready" || file.status === "chunking" || file.status === "embedding";
+  const age = (iso: string | null | undefined) => {
+    const t = iso ? Date.parse(iso) : NaN;
+    return Number.isFinite(t) ? now - t : Number.POSITIVE_INFINITY;
+  };
+  if (job.status === "running") return age(job.heartbeat_at) > opts.leaseMs;
+  if (job.status === "queued" || job.status === "retrying") return age(job.available_at) > opts.queuedGraceMs;
+  return false;
 }

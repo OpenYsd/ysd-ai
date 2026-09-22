@@ -30,6 +30,8 @@ export interface UploadResult {
   status?: number;
   /** ثواني `Retry-After` مع 429 — ليتوقّف الطابور بدل أن يُرسل ما سيُرفض حتمًا */
   retryAfterSec?: number;
+  /** الخادم وجد ملفًّا حُفظ بالمعرّف نفسه فأعاده بدل إنشاء نسخةٍ ثانية */
+  reused?: boolean;
 }
 
 export interface UploadHandle {
@@ -41,6 +43,8 @@ export function uploadWithProgress(opts: {
   file: File;
   projectId?: string | null;
   conversationId?: string | null;
+  /** معرّفٌ ثابتٌ للملف المختار — إعادةُ الرفع به لا تكرّر ملفًّا حُفظ */
+  clientUploadId?: string | null;
   onProgress?: (percent: number) => void;
 }): UploadHandle {
   const xhr = new XMLHttpRequest();
@@ -48,6 +52,7 @@ export function uploadWithProgress(opts: {
   form.append("file", opts.file);
   if (opts.projectId) form.append("projectId", opts.projectId);
   if (opts.conversationId) form.append("conversationId", opts.conversationId);
+  if (opts.clientUploadId) form.append("clientUploadId", opts.clientUploadId);
 
   const retryAfter = () => {
     const n = Number(xhr.getResponseHeader("Retry-After"));
@@ -66,8 +71,11 @@ export function uploadWithProgress(opts: {
           const body = JSON.parse(xhr.responseText) as {
             file?: UploadedFileRow;
             error?: string;
+            reused?: boolean;
           };
-          if (xhr.status === 201 && body.file) resolve({ ok: true, file: body.file, status: xhr.status });
+          // 201 ملفٌّ جديد · 200 ملفٌّ حُفظ من قبل بالمعرّف نفسه (إعادة رفع)
+          if ((xhr.status === 201 || xhr.status === 200) && body.file)
+            resolve({ ok: true, file: body.file, status: xhr.status, reused: Boolean(body.reused) });
           else resolve({ ok: false, error: body.error ?? `HTTP ${xhr.status}`, status: xhr.status, retryAfterSec: retryAfter() });
         } catch {
           resolve({ ok: false, error: `HTTP ${xhr.status}`, status: xhr.status, retryAfterSec: retryAfter() });

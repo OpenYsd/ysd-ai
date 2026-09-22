@@ -11,6 +11,7 @@ import { chunkText, contentHash, type Chunk } from "./chunking";
 import { getEmbeddingProvider } from "./embeddings";
 import { getRagLimits } from "./pipeline";
 import { getRagRuntimeConfig } from "./runtime-config";
+import { tryAcquireDrainSlot } from "./drain-gate";
 import {
   claimRagJob,
   completeRagJob,
@@ -336,24 +337,35 @@ export async function runRagJob(
  * تصريف وظائف المستخدم الحالي (request-driven): يلتقط ويشغّل بشكل تسلسلي
  * حتى نفاد الوظائف المتاحة أو انتهاء ميزانية الوقت. الحالة كلها في قاعدة البيانات.
  * التقاط SKIP LOCKED يمنع تشغيل نفس الوظيفة مرتين حتى مع طلبات متزامنة.
+ *
+ * ★ وتصريفٌ واحدٌ في العمليّة في آنٍ واحد (`drain-gate`).
+ *
+ *   إن كانت البوّابةُ مشغولة عاد فورًا بـ`busy` دون أن يلتقط شيئًا: وظيفةُ
+ *   المستدعي أُدرجت قبلُ وتبقى في الطابور، ولا تُلتقط وظيفةٌ ثم تُترك.
  */
 export async function drainOwnJobs(
   supabase: SupabaseClient,
   opts: { workerId: string; maxJobs?: number; deadlineMs?: number } = {
     workerId: "req",
   },
-): Promise<{ processed: number; lastStatus: string | null }> {
-  const maxJobs = opts.maxJobs ?? 10;
-  const deadline = Date.now() + (opts.deadlineMs ?? 250_000);
-  let processed = 0;
-  let lastStatus: string | null = null;
+): Promise<{ processed: number; lastStatus: string | null; busy: boolean }> {
+  const release = tryAcquireDrainSlot();
+  if (!release) return { processed: 0, lastStatus: null, busy: true };
+  try {
+    const maxJobs = opts.maxJobs ?? 10;
+    const deadline = Date.now() + (opts.deadlineMs ?? 250_000);
+    let processed = 0;
+    let lastStatus: string | null = null;
 
-  while (processed < maxJobs && Date.now() < deadline) {
-    const job = await claimRagJob(supabase, opts.workerId);
-    if (!job) break;
-    const res = await runRagJob(supabase, job, opts.workerId);
-    lastStatus = res.status;
-    processed++;
+    while (processed < maxJobs && Date.now() < deadline) {
+      const job = await claimRagJob(supabase, opts.workerId);
+      if (!job) break;
+      const res = await runRagJob(supabase, job, opts.workerId);
+      lastStatus = res.status;
+      processed++;
+    }
+    return { processed, lastStatus, busy: false };
+  } finally {
+    release();
   }
-  return { processed, lastStatus };
 }
