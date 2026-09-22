@@ -96,7 +96,9 @@ describe("ترقيم الترحيلات", () => {
   it("متّصل وفريد وآخره 0048", () => {
     const nums = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
-      .map((f) => Number(f.slice(0, 4)))
+      .map((f) => f.slice(0, f.indexOf("_")))
+      .filter((v) => v.length === 4)
+      .map(Number)
       .sort((a, b) => a - b);
     expect(new Set(nums).size).toBe(nums.length);
     expect(nums.at(-1)).toBe(48);
