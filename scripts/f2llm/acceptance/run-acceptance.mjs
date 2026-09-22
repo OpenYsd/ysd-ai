@@ -37,6 +37,8 @@ const OUT = resolve(arg("--out", join(root, ".acceptance-out")));
 const PDF = arg("--pdf");
 const MEM = arg("--mem", "512m");
 const FLAG = arg("--flag", "f2llm-v2-80m"); // "" runs the same acceptance on the e5 default path (comparison only)
+const RAILWAY_ENV = arg("--railway-env", "staging"); // e.g. "production" to exercise the production opt-in gate for real
+const PROD_OPT_IN = argv.includes("--prod-opt-in"); // adds YSD_F2LLM_PRODUCTION_OPT_IN=1 — meaningless unless --railway-env matches /prod/i
 const APP_PORT = Number(arg("--app-port", 3100));
 const INDEX_TIMEOUT_MS = Number(arg("--index-timeout-min", 20)) * 60 * 1000;
 const REST_PORT = 3001;
@@ -124,9 +126,18 @@ async function setupInfra() {
   if (docker("image", "inspect", IMAGE).status !== 0) throw new Error(`image ${IMAGE} not found — build it first`);
   docker("network", "create", NET);
   docker("network", "connect", "--alias", "pg", NET, PG_CONTAINER);
-  log("database: fresh chain 0001..0048");
-  const r = sh("bash", [join(root, "scripts/f2llm/rehearsal/apply-chain.sh")], { cwd: root });
-  if (r.status !== 0 || !/applied through 0048/.test(r.stdout)) throw new Error("apply-chain failed: " + r.stdout + r.stderr);
+  // Stop at 47, then apply 0048 directly — matching docs/F2LLM_MIGRATION.md's rehearsal runbook. The later
+  // timestamped migrations (20260821...) assume incremental Supabase-managed history (a production-readiness
+  // hardening pass keyed off objects/comments left by earlier real applies) and abort on a bare fresh chain
+  // apply; that gap is pre-existing and unrelated to F2LLM, so it is worked around here rather than "fixed".
+  log("database: fresh chain 0001..0047, then 0048 directly");
+  const r47 = sh("bash", [join(root, "scripts/f2llm/rehearsal/apply-chain.sh"), "47"], { cwd: root });
+  if (r47.status !== 0 || !/applied through 0047/.test(r47.stdout)) throw new Error("apply-chain (47) failed: " + r47.stdout + r47.stderr);
+  const r48 = sh("docker", ["exec", "-i", PG_CONTAINER, "psql", "-U", "postgres", "-d", "ysd", "-v", "ON_ERROR_STOP=1", "-q"], {
+    cwd: root,
+    input: readFileSync(join(root, "supabase/migrations/0048_f2llm_embedding_v2.sql"), "utf8"),
+  });
+  if (r48.status !== 0) throw new Error("0048 apply failed: " + r48.stdout + r48.stderr);
   admin = new pg.Client({ connectionString: PG_ADMIN_URL });
   await admin.connect();
   await admin.query("set session_replication_role = replica");
@@ -164,8 +175,9 @@ function startApp() {
     `RATE_LIMIT_HMAC_SECRET=${randomBytes(32).toString("hex")}`,
     "YSD_ENABLE_TEST_PROVIDER=1",
     `YSD_TEST_PROVIDER_URL=http://host.docker.internal:${GW_PORT}/llm/v1/chat/completions`,
-    "RAILWAY_ENVIRONMENT_NAME=staging",
+    `RAILWAY_ENVIRONMENT_NAME=${RAILWAY_ENV}`,
     ...(FLAG ? [`YSD_RAG_EMBEDDING_MODEL=${FLAG}`] : []),
+    ...(PROD_OPT_IN ? ["YSD_F2LLM_PRODUCTION_OPT_IN=1"] : []),
   ];
   const args = ["run", "-d", "--name", APP, `--memory=${MEM}`, `--memory-swap=${MEM}`, "--restart=on-failure:5", "-p", `${APP_PORT}:3000`, ...env.flatMap((e) => ["-e", e]), IMAGE];
   const r = docker(...args);
@@ -224,7 +236,9 @@ const inspect = () => {
 };
 
 // ---------------------------------------------------------------------------------------------- scenarios
-const DOC_NAMES = ["docs/OPERATIONS.md", "docs/DESIGN-v0.9-evidence-mode.md", "CHANGELOG.md", "docs/local-pairing.md", "README.md"];
+// docs/local-pairing.md only exists on staging (an excluded feature there); substituted with a doc that
+// exists on every branch this harness might run against, same spirit (a real, sizeable repo document).
+const DOC_NAMES = ["docs/OPERATIONS.md", "docs/DESIGN-v0.9-evidence-mode.md", "CHANGELOG.md", "docs/DEPLOYMENT.md", "README.md"];
 const QUESTIONS = [
   "كم أعلى استهلاك للذاكرة عند معالجة خمسة ملفات متزامنة؟",
   "ما الحد الأقصى لطول الاقتباس في وضع الأدلة؟",
@@ -342,11 +356,14 @@ async function main() {
   await sleep(1500);
   results.phases.boot = { liveMs: bootMs };
 
-  // the entrypoint must have exported the glibc tunables into the node process (and only when the flag is on)
-  const env1 = docker("exec", APP, "sh", "-c", "tr '\\0' '\\n' < /proc/1/environ | grep -E '^(MALLOC_|YSD_RAG_EMBEDDING_MODEL|YSD_LOW_MEMORY)' | sort").stdout.trim();
+  // the entrypoint must have exported the glibc tunables into the node process — and only when the space is
+  // genuinely expected to be active: flag on, AND (not a production-named env, OR the explicit opt-in is set).
+  const env1 = docker("exec", APP, "sh", "-c", "tr '\\0' '\\n' < /proc/1/environ | grep -E '^(MALLOC_|YSD_RAG_EMBEDDING_MODEL|YSD_F2LLM_PRODUCTION_OPT_IN|RAILWAY_ENVIRONMENT_NAME|YSD_LOW_MEMORY)' | sort").stdout.trim();
   results.notes.push("pid1 env: " + env1.replace(/\n/g, " "));
-  if (FLAG) check("entrypoint exported MALLOC_MMAP_THRESHOLD_/MALLOC_TRIM_THRESHOLD_ =65536 into the server process", /MALLOC_MMAP_THRESHOLD_=65536/.test(env1) && /MALLOC_TRIM_THRESHOLD_=65536/.test(env1), env1.replace(/\n/g, " "));
-  else check("flag off: entrypoint leaves the default path untouched (no MALLOC_* exported)", !/MALLOC_/.test(env1), env1.replace(/\n/g, " "));
+  const isProdName = /prod/i.test(RAILWAY_ENV);
+  const expectActive = Boolean(FLAG) && (!isProdName || PROD_OPT_IN);
+  if (expectActive) check("entrypoint exported MALLOC_MMAP_THRESHOLD_/MALLOC_TRIM_THRESHOLD_ =65536 into the server process", /MALLOC_MMAP_THRESHOLD_=65536/.test(env1) && /MALLOC_TRIM_THRESHOLD_=65536/.test(env1), env1.replace(/\n/g, " "));
+  else check(`space not expected active (flag=${FLAG || "off"} railway-env=${RAILWAY_ENV} prod-opt-in=${PROD_OPT_IN}): no MALLOC_* exported`, !/MALLOC_/.test(env1), env1.replace(/\n/g, " "));
 
   // ---- M0 health
   phase = "M0-health";
@@ -471,7 +488,7 @@ async function main() {
   check("repeat POST /rag on ready files is skipped (idempotent, no re-embedding)", rag3.every((r) => r.status === 200 && r.json?.skipped === true), rag3.map((r) => `${r.status}${r.json?.skipped ? "s" : ""}`).join(","));
   const gw = await fetch(`http://127.0.0.1:${GW_PORT}/__stats`).then((r) => r.json());
   results.phases.gateway = gw;
-  check("retrieval used the v2 RPC and never the 384-d RPC (no space mixing)", FLAG ? (gw.rpc?.match_file_chunks_v2 ?? 0) > 0 && (gw.rpc?.match_file_chunks ?? 0) === 0 : (gw.rpc?.match_file_chunks ?? 0) > 0 && (gw.rpc?.match_file_chunks_v2 ?? 0) === 0, JSON.stringify(gw.rpc));
+  check("retrieval used the v2 RPC and never the 384-d RPC (no space mixing)", expectActive ? (gw.rpc?.match_file_chunks_v2 ?? 0) > 0 && (gw.rpc?.match_file_chunks ?? 0) === 0 : (gw.rpc?.match_file_chunks ?? 0) > 0 && (gw.rpc?.match_file_chunks_v2 ?? 0) === 0, JSON.stringify(gw.rpc));
   check("the scripted provider served every accepted chat request", gw.llm >= chatOk(chatResults) + chatOk(chats3), `llm calls ${gw.llm}, max concurrent ${gw.llmMaxActive}`);
   results.phases.chat = { duringIndexing: { sent: chatResults.length, ok: chatOk(chatResults) }, afterIndexing: { sent: chats3.length, ok: chatOk(chats3) } };
 
@@ -482,12 +499,12 @@ async function main() {
   results.phases.mainContainer = main;
   const db = await dbSummary(ids);
   results.phases.db = db;
-  if (FLAG) {
+  if (expectActive) {
     check("every chunk has a finite unit-norm 320-d v2 vector tagged with the pinned model", db.chunks.no_v2 == 0 && db.chunks.wrong_dims == 0 && db.chunks.wrong_tag == 0 && db.nonFinite === 0 && db.badNorm === 0 && db.vectorsChecked === Number(db.chunks.chunks), `chunks=${db.chunks.chunks} checked=${db.vectorsChecked} nonFinite=${db.nonFinite} badNorm=${db.badNorm}`);
     check("no 384-d vector was written while the F2LLM space was active (spaces not mixed)", Number(db.chunks.has_v1) === 0, `has_v1=${db.chunks.has_v1}`);
     check("every file carries rag_v2_model = the pinned tag", db.files.every((f) => f.rag_v2_model === MODEL_TAG && f.status === "ready_for_rag"));
   } else {
-    check("e5 default path: 384-d vectors only", Number(db.chunks.has_v1) === Number(db.chunks.chunks));
+    check(`e5 default path (flag=${FLAG || "off"} railway-env=${RAILWAY_ENV} prod-opt-in=${PROD_OPT_IN}): 384-d vectors only — the production guard held`, Number(db.chunks.has_v1) === Number(db.chunks.chunks));
   }
   check("no duplicate chunk indexes", db.duplicateChunkIndexes === 0);
   check("all jobs completed, none failed", db.jobs.every((j) => j.status === "completed"), JSON.stringify(db.jobs));
