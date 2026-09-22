@@ -20,6 +20,8 @@ export interface RagWorkerAdapter {
   drain(opts: { deadlineMs?: number; maxJobs?: number }): Promise<{
     processed: number;
     lastStatus: string | null;
+    /** تصريفٌ آخر جارٍ في العمليّة — لم يُلتقط شيء، والوظائف باقية في الطابور */
+    busy: boolean;
   }>;
 }
 

@@ -24,18 +24,28 @@
  * ★ وإعادةُ تركيب المحادثة نفسها لا تُضيّع ما اختاره صاحبها
  *
  *   محادثةٌ جديدة تنتقل إلى `/chat/:id` بعد أول ردّ (`router.refresh`)، فيُفكّ
- *   المكوّن ويُركَّب غيرُه **للمحادثة نفسها**. كان التفكيك يُلغي الرفع ويُفرغ
- *   الطابور، فتختفي ملفّاتٌ أُرفقت في تلك اللحظة بلا خطأٍ ولا أثر.
+ *   المكوّن ويُركَّب غيرُه **للمحادثة نفسها**. فتُسلَّم المسوّدات عند التفكيك —
+ *   بملفّاتها ورفعها الجاري — مفتاحُها المحادثةُ التي اختيرت فيها، ولا يتبنّاها
+ *   إلا مكوّنٌ يُركَّب **لتلك المحادثة**. وتركيبُ محادثةٍ أخرى يُلغيها فورًا.
  *
- *   الآن تُسلَّم المسوّدات عند التفكيك — بملفّاتها ورفعها الجاري — مفتاحُها
- *   المحادثةُ التي اختيرت فيها. ولا يتبنّاها إلا مكوّنٌ يُركَّب **لتلك المحادثة**.
- *   وتركيبُ محادثةٍ أخرى (أو محادثةٍ جديدة) يُلغيها فورًا، وما لم يتبنَّه أحدٌ
- *   خلال مهلةٍ قصيرة يُلغى — فلا يظهر ملفُّ محادثةٍ في شريط أخرى، ولا يُرفع
- *   ملفٌّ إلى غير محادثته.
+ * ★ وردٌّ مقطوعٌ لا يعني ملفًّا لم يُحفظ
+ *
+ *   الخادم يُدرج الصفّ قبل التخزين والاستخراج، فقد يُحفظ الملفُّ كاملًا ثم يصل
+ *   502 من الوسيط (رُصد حيًّا). فلكلّ ملفٍّ مختارٍ معرّفٌ ثابت (`clientUploadId`)
+ *   يُرسل معه، وقبل عرض «أعد الرفع» بعد 5xx أو انقطاع نسأل الخادم: هل حُفظ؟
+ *   فإن وُجد تبنّيناه، وإن لم يوجد عرضنا الإعادة — والإعادةُ بالمعرّف نفسه
+ *   يُعيد الخادمُ لها الملفَّ إن حُفظ في الأثناء، فلا نسخةَ ثانية.
+ *
+ * ★ والتجهيزُ يُتابَع حتى ينتهي — بلا إلحاح
+ *
+ *   الاستطلاع يتباطأ حين لا يتغيّر شيء (حتى 15 ثانية) ولا يتوقّف بعد مدّةٍ
+ *   ثابتة. ويكشف الوظيفةَ المتوقّفة من بيانات الخادم (نبضٌ أقدمُ من عقد الإيجار،
+ *   أو وظيفةٌ مستحقّةٌ لم يلتقطها أحد) فيستأنفها بطلب تجهيزٍ واحد، مرّاتٍ
+ *   محدودةً متباعدة، ثم يعرض إعادةً يدويّة.
  */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { uploadWithProgress, type UploadHandle } from "@/components/files/upload";
+import { uploadWithProgress, type UploadHandle, type UploadResult } from "@/components/files/upload";
 import {
   attachmentsReducer,
   blocksSend,
@@ -43,10 +53,12 @@ import {
   classifyUploadFailure,
   fromServerFile,
   isImageMime,
+  isIndexingStalled,
   localizeServerMessage,
   validateSelection,
   type AttachmentAction,
   type ComposerAttachment,
+  type RagJobView,
   type ServerFileState,
 } from "@/lib/chat/composer-attachments";
 
@@ -54,11 +66,32 @@ const UPLOAD_CONCURRENCY = 2;
 /** انتظاراتٌ تلقائيّة بعد 429 لكل ملف — ثم خطأٌ بزرّ إعادة: لا حلقةَ بلا نهاية */
 const RATE_LIMIT_WAITS = 3;
 const RATE_LIMIT_WAIT_MAX_S = 60;
-const POLL_MS = 1500;
-const POLL_MAX = 200;
 const TERMINAL = new Set(["ready_for_rag", "rag_failed", "failed"]);
 /** مهلة تبنّي مسوّدات محادثةٍ فُكّ مكوّنها — بعدها يُلغى ما لم يتبنَّه أحد */
 const CARRY_GRACE_MS = 5000;
+
+/**
+ * توقيتات الاستطلاع والمصالحة والاستئناف — في موضعٍ واحد.
+ *
+ * - الاستطلاع يبدأ سريعًا ويتباطأ حين لا يتغيّر شيء، ويعود سريعًا مع أيّ تقدّم.
+ * - «متوقّف» = نبضٌ أقدمُ من عقد الإيجار (120 ث) بهامش، أو وظيفةٌ مستحقّةٌ منذ
+ *   90 ث بلا التقاط — ولا يُحكم بذلك قبل 30 ث من طلب التجهيز.
+ * - الاستئناف طلبُ تجهيزٍ واحد، بفاصل دقيقةٍ على الأقل، ثلاثَ مرّاتٍ في الأكثر.
+ *
+ * مُصدَّرةٌ ليضبطها الاختبار؛ ولا يغيّرها شيءٌ في التطبيق.
+ */
+export const COMPOSER_TIMINGS = {
+  pollMinMs: 1500,
+  pollMaxMs: 15_000,
+  pollFactor: 1.5,
+  pollHiddenMs: 30_000,
+  reconcileDelaysMs: [0, 2000, 4000, 8000, 12_000] as readonly number[],
+  stallLeaseMs: 150_000,
+  stallQueuedMs: 90_000,
+  stallMinAgeMs: 30_000,
+  nudgeGapMs: 60_000,
+  maxNudges: 3,
+};
 
 export interface InitialConversationFile {
   id: string;
@@ -82,6 +115,7 @@ interface CarriedDraft {
   handle: UploadHandle | null;
   sink: ProgressSink | null;
   rateWaits: number;
+  clientUploadId: string | null;
 }
 
 interface Carry {
@@ -107,6 +141,22 @@ export function discardCarriedAttachments() {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const newUploadId = () =>
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+        (Number(c) ^ (Math.random() * 16) >> (Number(c) / 4)).toString(16),
+      );
+
+const stalledMessage = (locale: "ar" | "en") =>
+  locale === "ar"
+    ? "لم يتقدّم التجهيز بعد محاولات استئناف — أعد المحاولة"
+    : "Preparation made no progress after resume attempts — try again";
+
+/** ردٌّ لا يُعرف معه مصيرُ الملف: انقطاعٌ (لا إلغاءٌ منّا) أو خطأُ خادمٍ/وسيط */
+const outcomeUnknown = (res: UploadResult) =>
+  res.error !== "aborted" && (!res.status || res.status >= 500);
 
 async function readError(res: Response | null, locale: "ar" | "en"): Promise<string | null> {
   if (!res) return null;
@@ -160,6 +210,8 @@ export function useComposerAttachments({
   const seq = useRef(0);
   const files = useRef(new Map<string, File>());
   const convOf = useRef(new Map<string, string>());
+  /** معرّفٌ ثابتٌ لكل ملفٍّ مختار — يعبر إعادة المحاولة وإعادة التركيب */
+  const uploadIds = useRef(new Map<string, string>());
   const handles = useRef(new Map<string, UploadHandle>());
   const sinks = useRef(new Map<string, ProgressSink>());
   /** آخر من ينتظر نتيجة كلّ رفع — منتظرٌ أقدم لا يعالجها مرّتين */
@@ -172,6 +224,12 @@ export function useComposerAttachments({
   const pausedUntil = useRef(0);
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rateWaits = useRef(new Map<string, number>());
+  /** مستنداتٌ تُبنّت بعد مصالحةٍ وهي ما زالت تُعالَج — يُطلب تجهيزُها حين يجهز نصُّها */
+  const autoRag = useRef(new Set<string>());
+  /** متى طُلب تجهيزُ كلّ ملف — لا يُحكم بالتوقّف قبل مهلةٍ من الطلب */
+  const ragRequestedAt = useRef(new Map<string, number>());
+  /** محاولاتُ الاستئناف التلقائيّ لكل ملف — محدودةٌ ومتباعدة */
+  const nudges = useRef(new Map<string, { count: number; at: number }>());
 
   /** الحالة المرجعيّة تتقدّم مع كل إجراء — التفكيك قد يقع قبل أن يُرسم آخرها */
   const update = useCallback((action: AttachmentAction) => {
@@ -179,55 +237,179 @@ export function useComposerAttachments({
     dispatch(action);
   }, []);
 
-  /** متابعة حالة ملفٍّ على الخادم حتى حالةٍ نهائيّة — استطلاعٌ واحدٌ لكل ملف */
-  const poll = useCallback(
-    async (fileId: string) => {
-      if (polling.current.has(fileId)) return;
-      polling.current.add(fileId);
-      try {
-        for (let i = 0; i < POLL_MAX; i++) {
-          await sleep(POLL_MS);
-          if (!mounted.current) return;
-          const current = stateRef.current.find((a) => a.fileId === fileId);
-          // أُزيل، أو أعلن العميل فشلَه (رفض إدراج الوظيفة): لا يُطمس الفشل بحالةٍ قديمة
-          if (!current || current.phase === "error") return;
-          const res = await fetch(`/api/files/${fileId}`).catch(() => null);
-          if (!res || !res.ok || !mounted.current) return;
-          const j = (await res.json().catch(() => null)) as { file?: ServerFileState } | null;
-          if (!j?.file) return;
-          update({ type: "serverState", fileId, file: j.file });
-          if (TERMINAL.has(j.file.status)) return;
-        }
-      } finally {
-        polling.current.delete(fileId);
+  /** استئنافُ تجهيزٍ متوقّف: طلبٌ واحد، ولا يُنتظر (قد يطول التصريف) */
+  const nudge = useCallback(
+    (fileId: string) => {
+      const now = Date.now();
+      const n = nudges.current.get(fileId) ?? { count: 0, at: 0 };
+      if (now - n.at < COMPOSER_TIMINGS.nudgeGapMs) return;
+      if (n.count >= COMPOSER_TIMINGS.maxNudges) {
+        update({ type: "indexFailed", fileId, kind: "indexStalled", message: stalledMessage(localeRef.current) });
+        return;
       }
+      nudges.current.set(fileId, { count: n.count + 1, at: now });
+      void (async () => {
+        const res = await fetch(`/api/files/${fileId}/rag`, { method: "POST" }).catch(() => null);
+        if (!mounted.current || !res) return;
+        // 200/202 (في الطابور)/409 (يعمل الآن)/429 (لاحقًا) — كلّها ليست فشلًا للملف
+        if (res.ok || res.status === 409 || res.status === 429) return;
+        update({ type: "indexFailed", fileId, message: await readError(res, localeRef.current) });
+      })();
     },
     [update],
   );
 
   /**
+   * متابعة حالة ملفٍّ على الخادم حتى حالةٍ نهائيّة — استطلاعٌ واحدٌ لكل ملف.
+   * يتباطأ حين لا يتغيّر شيء، ولا ينقطع بعد مدّةٍ ثابتة، ويستأنف ما توقّف.
+   */
+  const poll = useCallback(
+    async (fileId: string) => {
+      if (polling.current.has(fileId)) return;
+      polling.current.add(fileId);
+      let delay = COMPOSER_TIMINGS.pollMinMs;
+      let lastSignature = "";
+      try {
+        for (;;) {
+          const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+          await sleep(hidden ? Math.max(delay, COMPOSER_TIMINGS.pollHiddenMs) : delay);
+          if (!mounted.current) return;
+          const current = stateRef.current.find((a) => a.fileId === fileId);
+          // أُزيل، أو أعلن العميل فشلَه: لا يُطمس الفشل بحالةٍ قديمة
+          if (!current || current.phase === "error") return;
+          const res = await fetch(`/api/files/${fileId}`).catch(() => null);
+          if (!mounted.current) return;
+          if (!res) {
+            // انقطاعٌ عابر: نحاول لاحقًا بتباطؤ، لا نتخلّى
+            delay = Math.min(delay * COMPOSER_TIMINGS.pollFactor, COMPOSER_TIMINGS.pollMaxMs);
+            continue;
+          }
+          if (!res.ok) return;
+          const j = (await res.json().catch(() => null)) as { file?: ServerFileState; job?: RagJobView | null } | null;
+          if (!j?.file) return;
+          const file = j.file;
+          update({ type: "serverState", fileId, file });
+
+          if (autoRag.current.has(fileId) && file.status === "ready" && !isImageMime(file.mime_type)) {
+            autoRag.current.delete(fileId);
+            requestRagRef.current(fileId);
+            delay = COMPOSER_TIMINGS.pollMinMs;
+            continue;
+          }
+          const after = stateRef.current.find((a) => a.fileId === fileId);
+          if (!after || after.phase === "error" || TERMINAL.has(file.status)) return;
+          const waitingForRag = after.phase === "indexing" || autoRag.current.has(fileId);
+          if (!waitingForRag && after.phase !== "processing") return;
+
+          const signature = `${file.status}|${file.rag_done_chunks ?? ""}|${j.job?.status ?? ""}|${j.job?.heartbeat_at ?? ""}`;
+          delay = signature !== lastSignature
+            ? COMPOSER_TIMINGS.pollMinMs
+            : Math.min(delay * COMPOSER_TIMINGS.pollFactor, COMPOSER_TIMINGS.pollMaxMs);
+          lastSignature = signature;
+
+          const requestedAt = ragRequestedAt.current.get(fileId) ?? 0;
+          if (
+            after.phase === "indexing" &&
+            Date.now() - requestedAt >= COMPOSER_TIMINGS.stallMinAgeMs &&
+            isIndexingStalled(file, j.job ?? null, Date.now(), {
+              leaseMs: COMPOSER_TIMINGS.stallLeaseMs,
+              queuedGraceMs: COMPOSER_TIMINGS.stallQueuedMs,
+            })
+          ) {
+            nudge(fileId);
+          }
+        }
+      } finally {
+        polling.current.delete(fileId);
+      }
+    },
+    [nudge, update],
+  );
+
+  /**
    * تجهيز مستندٍ للذكاء الاصطناعي. الطلب يُصرّف الوظيفة بنفسه وقد يطول، فلا
-   * يُنتظر قبل الاستطلاع — كما كان. و409 («قيد التجهيز») ليس فشلًا.
+   * يُنتظر قبل الاستطلاع — كما كان. و409 («قيد التجهيز») و202 («في الطابور»)
+   * و429 ليست فشلًا: الاستطلاعُ يتابع، ويستأنف إن توقّف شيء.
    */
   const requestRag = useCallback(
     (fileId: string) => {
+      ragRequestedAt.current.set(fileId, Date.now());
       update({ type: "ragRequested", fileId });
       void (async () => {
         const res = await fetch(`/api/files/${fileId}/rag`, { method: "POST" }).catch(() => null);
         if (!mounted.current) return;
-        if (res && (res.ok || res.status === 409)) return;
+        if (!res || res.ok || res.status === 409 || res.status === 429) return;
         update({ type: "indexFailed", fileId, message: await readError(res, localeRef.current) });
       })();
       void poll(fileId);
     },
     [poll, update],
   );
+  const requestRagRef = useRef(requestRag);
+  requestRagRef.current = requestRag;
 
   const progressTo = useCallback(
     (key: string) => (percent: number) => {
       if (mounted.current && !removed.current.has(key)) update({ type: "uploadProgress", key, percent });
     },
     [update],
+  );
+
+  /** ملفٌّ حُفظ على الخادم — بردٍّ ناجح أو بعد مصالحة: يُتبنّى ويُتابَع تجهيزه */
+  const onSaved = useCallback(
+    (key: string, file: ServerFileState) => {
+      files.current.delete(key);
+      rateWaits.current.delete(key);
+      const doc = !isImageMime(file.mime_type);
+      const startRag = doc && file.status === "ready";
+      const alreadyIndexing = doc && (file.status === "chunking" || file.status === "embedding");
+      update({ type: "uploadDone", key, file, ragRequested: startRag || alreadyIndexing || file.status === "ready_for_rag" });
+      if (startRag) {
+        requestRag(file.id);
+      } else if (doc && (file.status === "uploaded" || file.status === "processing")) {
+        // حُفظ والاستخراجُ ما زال جاريًا (مصالحةٌ بعد ردٍّ مقطوع): يُطلب التجهيز حين يجهز النصّ
+        autoRag.current.add(file.id);
+        void poll(file.id);
+      } else if (alreadyIndexing) {
+        void poll(file.id);
+      }
+    },
+    [poll, requestRag, update],
+  );
+
+  /** بعد ردٍّ مقطوع: هل حُفظ الملف؟ نسأل الخادم قبل أن نعرض إعادة الرفع */
+  const reconcile = useCallback(
+    async (key: string, res: UploadResult) => {
+      const clientUploadId = uploadIds.current.get(key);
+      const epoch = life.current;
+      update({ type: "verifying", key });
+      if (clientUploadId) {
+        for (const wait of COMPOSER_TIMINGS.reconcileDelaysMs) {
+          if (wait > 0) await sleep(wait);
+          if (!mounted.current || epoch !== life.current || removed.current.has(key)) return;
+          const r = await fetch(`/api/files?clientUploadId=${encodeURIComponent(clientUploadId)}`).catch(() => null);
+          if (!mounted.current || epoch !== life.current || removed.current.has(key)) return;
+          if (!r?.ok) continue;
+          const j = (await r.json().catch(() => null)) as { files?: ServerFileState[] } | null;
+          const saved = j?.files?.[0];
+          if (saved) {
+            onSaved(key, saved);
+            return;
+          }
+        }
+      }
+      const failure = classifyUploadFailure(res.status, res.error);
+      update({
+        type: "uploadFailed",
+        key,
+        kind: failure.kind,
+        retry: failure.retry,
+        message: res.error && res.error !== "network" && res.error !== "aborted"
+          ? localizeServerMessage(res.error, localeRef.current)
+          : null,
+      });
+    },
+    [onSaved, update],
   );
 
   /** نتيجة رفعٍ جارٍ — لمن بدأه، أو لمن تبنّاه بعد إعادة التركيب */
@@ -243,11 +425,7 @@ export function useComposerAttachments({
       if (!mounted.current || removed.current.has(key)) return;
 
       if (res.ok && res.file) {
-        files.current.delete(key);
-        rateWaits.current.delete(key);
-        const startRag = !isImageMime(res.file.mime_type) && res.file.status === "ready";
-        update({ type: "uploadDone", key, file: res.file, ragRequested: startRag });
-        if (startRag) requestRag(res.file.id);
+        onSaved(key, res.file);
         return;
       }
       if (res.status === 429) {
@@ -262,6 +440,10 @@ export function useComposerAttachments({
         }
       }
       rateWaits.current.delete(key);
+      if (outcomeUnknown(res)) {
+        await reconcile(key, res);
+        return;
+      }
       const failure = classifyUploadFailure(res.status, res.error);
       update({
         type: "uploadFailed",
@@ -273,7 +455,7 @@ export function useComposerAttachments({
           : null,
       });
     },
-    [requestRag, update],
+    [onSaved, reconcile, update],
   );
 
   const runUpload = useCallback(
@@ -283,7 +465,12 @@ export function useComposerAttachments({
       if (!file || !conversationId) return;
       update({ type: "uploadStart", key });
       const sink: ProgressSink = { current: progressTo(key) };
-      const handle = uploadWithProgress({ file, conversationId, onProgress: (percent) => sink.current(percent) });
+      const handle = uploadWithProgress({
+        file,
+        conversationId,
+        clientUploadId: uploadIds.current.get(key) ?? null,
+        onProgress: (percent) => sink.current(percent),
+      });
       handles.current.set(key, handle);
       sinks.current.set(key, sink);
       await settleUpload(key, handle);
@@ -369,7 +556,10 @@ export function useComposerAttachments({
         type: "add",
         items: items.map(({ key, file }) => ({ key, name: file.name, size: file.size, mime: file.type })),
       });
-      for (const { key, file } of items) files.current.set(key, file);
+      for (const { key, file } of items) {
+        files.current.set(key, file);
+        uploadIds.current.set(key, newUploadId());
+      }
 
       const epoch = life.current;
       const conversationId = await ensureConversation();
@@ -408,6 +598,7 @@ export function useComposerAttachments({
       handles.current.get(key)?.abort();
       files.current.delete(key);
       convOf.current.delete(key);
+      uploadIds.current.delete(key);
       update({ type: "remove", key });
     },
     [update],
@@ -437,6 +628,8 @@ export function useComposerAttachments({
       }
       if (!a.fileId) return;
       if (a.retry === "rag") {
+        // إعادةٌ يدويّة: تبدأ محاولاتُ الاستئناف التلقائيّ من جديد
+        nudges.current.delete(a.fileId);
         requestRag(a.fileId);
         return;
       }
@@ -465,6 +658,7 @@ export function useComposerAttachments({
       for (const d of carry.drafts) {
         const { key, phase, fileId } = d.attachment;
         if (d.file) files.current.set(key, d.file);
+        if (d.clientUploadId) uploadIds.current.set(key, d.clientUploadId);
         convOf.current.set(key, owner);
         if (d.rateWaits > 0) rateWaits.current.set(key, d.rateWaits);
         if (d.handle) {
@@ -480,16 +674,18 @@ export function useComposerAttachments({
           });
         } else if (phase === "selected" && d.file) {
           pending.push(key);
-        } else if (phase === "uploading" || phase === "processing") {
-          // رفعٌ بلا مقبض لا تُعرف نتيجته: خطأٌ يُعاد يدويًّا، لا رفعٌ مكرَّرٌ صامت
-          update({ type: "uploadFailed", key, kind: "network", retry: d.file ? "upload" : null });
-        } else if (fileId && phase === "indexing") {
+        } else if (!fileId && (phase === "uploading" || phase === "processing")) {
+          // رفعٌ بلا مقبضٍ لا تُعرف نتيجته: نسأل الخادم قبل أيّ إعادة — لا رفعٌ مكرَّرٌ صامت
+          void reconcile(key, { ok: false, status: 0, error: "network" });
+        } else if (fileId && (phase === "indexing" || phase === "processing")) {
+          // مستندٌ حُفظ ونصُّه يُستخرج بعدُ: يُطلب تجهيزه حين يجهز، كما لو لم يُفكّ المكوّن
+          if (phase === "processing" && !isImageMime(d.attachment.mime)) autoRag.current.add(fileId);
           void poll(fileId);
         }
       }
       if (pending.length > 0) void enqueue(pending, owner);
     },
-    [enqueue, poll, progressTo, pump, settleUpload, update],
+    [enqueue, poll, progressTo, pump, reconcile, settleUpload, update],
   );
 
   const markSent = useCallback(() => update({ type: "markSent" }), [update]);
@@ -505,7 +701,7 @@ export function useComposerAttachments({
       clearTimeout(carry.timer);
       adopt(conversationId, carry);
     }
-    // تجهيزٌ بدأ قبل إعادة التحميل: يُتابَع بدل أن تبقى نسبتُه جامدة
+    // تجهيزٌ بدأ قبل إعادة التحميل: يُتابَع — ويُستأنف إن كان قد توقّف
     for (const a of stateRef.current) {
       if (a.scope === "context" && a.fileId && (a.serverStatus === "chunking" || a.serverStatus === "embedding")) {
         void poll(a.fileId);
@@ -515,6 +711,7 @@ export function useComposerAttachments({
     const inflight = handles.current;
     const fileMap = files.current;
     const convMap = convOf.current;
+    const idMap = uploadIds.current;
     const sinkMap = sinks.current;
     const waitMap = rateWaits.current;
     const removedSet = removed.current;
@@ -539,6 +736,7 @@ export function useComposerAttachments({
           handle,
           sink: sinkMap.get(a.key) ?? null,
           rateWaits: waitMap.get(a.key) ?? 0,
+          clientUploadId: idMap.get(a.key) ?? null,
         });
         byConversation.set(owner, list);
       }

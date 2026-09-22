@@ -28,7 +28,7 @@ export async function POST(
 
   const { data: row } = await supabase
     .from("files")
-    .select("id, storage_path, original_name, mime_type")
+    .select("id, storage_path, original_name, mime_type, metadata")
     .eq("id", id)
     .eq("user_id", user.id)
     .is("deleted_at", null)

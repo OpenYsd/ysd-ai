@@ -691,6 +691,8 @@ const dict = {
   attachmentErrNotFound: { ar: "المحادثة غير موجودة", en: "Conversation not found" },
   attachmentErrExtract: { ar: "تعذّر استخراج النص", en: "Text extraction failed" },
   attachmentErrUnlink: { ar: "تعذّرت الإزالة — أعد المحاولة", en: "Couldn't remove — try again" },
+  attachmentErrStalled: { ar: "توقّف التجهيز — أعد المحاولة", en: "Preparation stalled — try again" },
+  attachmentVerifying: { ar: "نتحقّق من حفظ الملف…", en: "Checking whether the file was saved…" },
   removeAttachment: { ar: "إزالة المرفق", en: "Remove attachment" },
   retryUpload: { ar: "إعادة الرفع", en: "Retry upload" },
   retryExtract: { ar: "إعادة المعالجة", en: "Retry processing" },
