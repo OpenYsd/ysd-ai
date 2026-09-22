@@ -55,7 +55,7 @@ describe("★ 0048 إضافيّ محض", () => {
 
   it("★ ★ ★ دالة v2: security definer بمسار بحث ثابت، ملكيّة مزدوجة، لا نتائج جزئية ولا خلط نماذج", () => {
     expect(up).toMatch(/create or replace function match_file_chunks_v2\(/);
-    expect(up).toMatch(/security definer set search_path = public, pg_temp/);
+    expect(up).toMatch(/security definer set search_path = public, extensions, pg_temp/);
     expect(up).toMatch(/auth\.uid\(\) is null/);
     expect(up).toMatch(/fc\.user_id = auth\.uid\(\)/);
     expect(up).toMatch(/f\.user_id = auth\.uid\(\)/);

@@ -43,6 +43,11 @@ create index if not exists idx_chunks_embedding_v2 on file_chunks
 
 -- دالة البحث v2 — نفس ضمانات match_file_chunks (auth.uid() + ملكية المقطع والملف)
 -- وزيادة: تطابق الوسم على المقطع والملف، فلا يُقرأ متجهٌ من نموذج آخر أبدًا.
+-- extensions في search_path: بعض القواعد (الإنتاج، بعد ترحيل التصليب) تنقل امتداد
+-- vector من public إلى extensions. بلا هذا الاسم لا يُحلّ vector_dims ولا <=> عند أول
+-- استدعاءٍ للدالة (يُحلَّل جسمها كسولًا، لا وقت الإنشاء) فتفشل بصمتٍ حتى أول استعلام.
+-- الإضافة آمنةٌ في القواعد التي لم تُنقَل: public تبقى أولًا، ولا نوع vector آخر في
+-- extensions يتعارض معه.
 create or replace function match_file_chunks_v2(
   p_query_embedding vector(320),
   p_file_ids uuid[],
@@ -58,7 +63,7 @@ create or replace function match_file_chunks_v2(
   similarity float,
   original_name text
 )
-language plpgsql security definer set search_path = public, pg_temp as $$
+language plpgsql security definer set search_path = public, extensions, pg_temp as $$
 begin
   -- بلا جلسة → لا نتائج إطلاقًا
   if auth.uid() is null then
