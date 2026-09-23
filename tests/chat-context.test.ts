@@ -5,11 +5,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { gatherChatContext, mergeServerTiming } from "../lib/chat/context";
 
-// getContextFileIds تُستدعى داخل الدالة — نتحكّم بها بالموك
+// getConversationFileScope تُستدعى داخل الدالة — نتحكّم بها بالموك
 vi.mock("../lib/rag/retrieval", () => ({
-  getContextFileIds: vi.fn(),
+  getConversationFileScope: vi.fn(),
 }));
-import { getContextFileIds } from "../lib/rag/retrieval";
+import { getConversationFileScope } from "../lib/rag/retrieval";
+
+/** اختصار: جاهزٌ فقط (الحالة الغالبة في هذه الاختبارات) */
+const ready = (ids: string[]) => ({ readyIds: ids, pendingIds: [] as string[], pending: [] });
 
 const delay = (ms: number, value: unknown) =>
   new Promise((res) => setTimeout(() => res(value), ms));
@@ -64,13 +67,13 @@ const baseParams = {
 };
 
 beforeEach(() => {
-  vi.mocked(getContextFileIds).mockReset();
+  vi.mocked(getConversationFileScope).mockReset();
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("gatherChatContext — الموازاة", () => {
   it("★ ينفّذ history و fileIds و convUpdate بالتوازي (المجموع ≈ الأطول لا الجمع)", async () => {
-    vi.mocked(getContextFileIds).mockImplementation(() => delay(120, ["f1"]) as Promise<string[]>);
+    vi.mocked(getConversationFileScope).mockImplementation(() => delay(120, ready(["f1"])) as never);
     const supabase = fakeSupabase({ historyMs: 120, convUpdateMs: 120 });
     const t0 = Date.now();
     const res = await gatherChatContext(supabase, baseParams);
@@ -82,7 +85,7 @@ describe("gatherChatContext — الموازاة", () => {
   });
 
   it("★ يستدعي تحديث المحادثة فعلًا (لا يُفقد)", async () => {
-    vi.mocked(getContextFileIds).mockResolvedValue([]);
+    vi.mocked(getConversationFileScope).mockResolvedValue(ready([]));
     const froms: string[] = [];
     const ops: string[] = [];
     const supabase = fakeSupabase({
@@ -96,7 +99,7 @@ describe("gatherChatContext — الموازاة", () => {
   });
 
   it("★ فشل تحديث updated_at (throw) لا يمنع الرد — يعيد السياق كاملًا", async () => {
-    vi.mocked(getContextFileIds).mockResolvedValue(["fA"]);
+    vi.mocked(getConversationFileScope).mockResolvedValue(ready(["fA"]));
     const supabase = {
       from(table: string) {
         if (table === "conversations") {
@@ -115,7 +118,7 @@ describe("gatherChatContext — الموازاة", () => {
   });
 
   it("فشل تحديث المحادثة (خطأ PostgREST في القيمة) يُسجَّل ولا يمنع", async () => {
-    vi.mocked(getContextFileIds).mockResolvedValue([]);
+    vi.mocked(getConversationFileScope).mockResolvedValue(ready([]));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const supabase = fakeSupabase({ convUpdateResult: { data: null, error: { message: "x" } } });
     const res = await gatherChatContext(supabase, baseParams);
@@ -124,7 +127,7 @@ describe("gatherChatContext — الموازاة", () => {
   });
 
   it("فشل جلب معرّفات الملفات ⇒ لا RAG (contextFileIds فارغة)، لا يمنع الرد", async () => {
-    vi.mocked(getContextFileIds).mockRejectedValue(new Error("files err"));
+    vi.mocked(getConversationFileScope).mockRejectedValue(new Error("files err"));
     vi.spyOn(console, "error").mockImplementation(() => {});
     const supabase = fakeSupabase({});
     const res = await gatherChatContext(supabase, baseParams);
@@ -133,7 +136,7 @@ describe("gatherChatContext — الموازاة", () => {
   });
 
   it("فشل جلب السياق ⇒ history فارغة (سلوك حالي)", async () => {
-    vi.mocked(getContextFileIds).mockResolvedValue([]);
+    vi.mocked(getConversationFileScope).mockResolvedValue(ready([]));
     const supabase = fakeSupabase({ historyResult: { data: null, error: { message: "x" } } });
     const res = await gatherChatContext(supabase, baseParams);
     expect(res.history).toEqual([]);

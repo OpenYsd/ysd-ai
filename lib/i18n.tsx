@@ -659,6 +659,14 @@ const dict = {
     ar: "جارٍ تجهيز الملف للذكاء الاصطناعي",
     en: "Preparing file for AI",
   },
+  /**
+   * ★ ملفٌّ جُهّز من قبل، وتبدّل فضاءُ البحث فصار يُجهَّز له.
+   *   العبارةُ تقول ما يجري بلا نبرةِ عطل: لا شيء ضاع، ولا شيء يُطلب من صاحبه.
+   */
+  ragPreparingSpace: {
+    ar: "جارٍ تجهيز الملف لفضاء البحث الحالي",
+    en: "Preparing file for the current AI search space",
+  },
   ragReady: { ar: "جاهز للمحادثة", en: "Ready for chat" },
   ragFailed: { ar: "فشل التجهيز", en: "Preparation failed" },
   ragPrepare: { ar: "تجهيز للذكاء الاصطناعي", en: "Prepare for AI" },
@@ -707,6 +715,17 @@ const dict = {
   waitForUploads: {
     ar: "انتظر اكتمال رفع الملفات قبل الإرسال — الرسالة لا ترى ملفًا لم يكتمل رفعه.",
     en: "Wait for uploads to finish before sending — the message can't see a file that hasn't finished uploading.",
+  },
+  /**
+   * ★ رسالةٌ واحدة تغطّي كلّ ما قبل الجاهزية: رفعٌ واستخراجٌ وفهرسة.
+   *
+   * التفريقُ بينها في النصّ يُغري بإرسالٍ مبكّر («انتهى الرفع إذن يمكنني
+   * السؤال») وهو بالضبط الخطأ الذي كان يقع. فالوعدُ واحد: لا إرسالَ قبل أن
+   * يصير الملف قابلًا للقراءة فعلًا.
+   */
+  filePreparing: {
+    ar: "الملف ما يزال قيد التجهيز — انتظر حتى يصبح جاهزًا قبل السؤال عن محتواه.",
+    en: "Your file is still being prepared — wait until it's ready before asking about its contents.",
   },
   uploadProgressLabel: { ar: "تقدّم رفع الملف", en: "Upload progress" },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { listModelOptions } from "@/lib/ai/registry";
+import { projectFilesForClient } from "@/lib/files/service";
 import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 import { loadConversationEvidence } from "@/lib/evidence/evidence-reader";
@@ -63,6 +64,7 @@ export default async function ConversationPage({
       supabase
         .from("files")
         // mime_type لازم: الواجهة تُفرّق به الصور (لا تدخل RAG) عن المستندات
+        // `needs_active_embedding` يُشتقّ من المقاطع (projectFilesForClient) — لا عمودَ v2 هنا
         .select("id, original_name, mime_type, size_bytes, status, rag_total_chunks, rag_done_chunks, rag_error")
         .eq("conversation_id", id)
         .eq("user_id", userId)
@@ -84,7 +86,7 @@ export default async function ConversationPage({
     return { ...o, minTier, locked: !tierAllows(policy.userTier, minTier) };
   });
 
-  const initialAttachments = (convFiles ?? []).map((f) => ({
+  const initialAttachments = (await projectFilesForClient(supabase, convFiles)).map((f) => ({
     id: f.id,
     name: f.original_name,
     status: f.status,
@@ -93,6 +95,7 @@ export default async function ConversationPage({
     ragTotal: f.rag_total_chunks,
     ragDone: f.rag_done_chunks,
     ragError: f.rag_error,
+    needsActiveEmbedding: f.needs_active_embedding,
   }));
 
   const candidates = [conv.model_id, prefs?.default_model_id];

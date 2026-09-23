@@ -47,6 +47,9 @@ import {
   buildSourcesContext,
   dedupeSourceCards,
   NO_MATCH_HINT,
+  FILES_PENDING_HINT,
+  getActiveSpaceForDiagnostics as getActiveSpace,
+  ensureActiveSpaceJobs,
   retrieveSnippets,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
@@ -68,6 +71,7 @@ import {
   type RecoveryStatus,
   type RecoveryTelemetry,
 } from "@/lib/evidence/evidence-recovery";
+import { drainOwnJobs } from "@/lib/rag/worker";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import {
   emptyRetrievalTimings,
@@ -679,7 +683,7 @@ export async function POST(req: NextRequest) {
   if (newTitle) convUpdate.title = newTitle;
 
   const tCtx = Date.now();
-  const { history, contextFileIds, dbMs } = await gatherChatContext(supabase, {
+  const { history, contextFileIds, pendingFileIds, pendingFiles, dbMs } = await gatherChatContext(supabase, {
     conversationId,
     userId,
     projectId: conv.project_id,
@@ -712,6 +716,58 @@ export async function POST(req: NextRequest) {
     }
     ragMs = Date.now() - tRag;
   }
+
+  /**
+   * ★ ملفٌّ مرفقٌ لم يجهز ليس ملفًّا غائبًا.
+   *
+   * كان المسار يتخطّى الاسترجاع عند فراغ `contextFileIds`، ولا فرق عنده بين
+   * «لا ملفات» و«ملفات تُفهرس الآن». فيخرج الجوابُ نافيًا وجودَ ملفٍ يراه
+   * المستخدم مرفوعًا أمامه — وهو أكثر ما يهدم الثقة في المرفقات.
+   *
+   * فيُصرَّح للنموذج بالحقيقة: ثمّة ملفٌّ، وتجهيزُه لم يكتمل بعد. ولا يُخترع
+   * محتوى ولا يُدَّعى استرجاع: الحقل خبرٌ عن الحالة لا مصدرٌ للإجابة.
+   */
+  /** دفاعيّة مقصودة: حقلٌ ناقص هنا كان سيُسقط طلبَ المحادثة كلَّه، لا الملفات وحدها */
+  const pending = pendingFileIds ?? [];
+  const filesAttachedButNotReady = contextFileIds.length === 0 && pending.length > 0;
+
+  /**
+   * ★ تبديلُ الفضاء يُصلَّح تلقائيًّا — لا ينتظر أحدًا.
+   *
+   *   ملفٌّ مفهرسٌ في e5 بينما F2LLM فعّال (أو العكس بعد تراجع) لا وظيفةَ
+   *   تعمل عليه ولا عميلَ يطلبها، فيبقى معلَّقًا إلى الأبد وتبقى المحادثة
+   *   محجوبة. الإدراجُ هنا يحرّكه، والتصريفُ غيرُ المنتظَر يُكمله، والبوّابةُ
+   *   تحدّ التزامن. ومتجهاتُ الفضاء الآخر لا تُمسّ: الأعمدةُ منفصلة.
+   */
+  if ((pendingFiles ?? []).some((p) => p.reason === "needs_active_embedding")) {
+    try {
+      const fixed = await ensureActiveSpaceJobs(supabase, userId, pendingFiles ?? []);
+      if (fixed.enqueued.length > 0) {
+        console.info(
+          `[files-pipeline] rid=${requestId} space_transition_enqueued=${fixed.enqueued.join("|")} skipped=${fixed.skipped}`,
+        );
+        void drainOwnJobs(supabase, { workerId: `chat:${requestId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
+          console.error(`[files-pipeline] rid=${requestId} space_transition_drain_failed err=${(err as Error).message?.slice(0, 120)}`),
+        );
+      }
+    } catch (err) {
+      console.error(`[files-pipeline] rid=${requestId} space_transition_failed err=${(err as Error).message?.slice(0, 120)}`);
+    }
+  }
+
+  /**
+   * تشخيصٌ بنيويّ لمسار الملفات — معرّفات وأعداد فقط، بلا اسم ملفٍ ولا محتوى
+   * ولا رمزٍ ولا سرّ. يجيب سؤالًا واحدًا كان يتعذّر جوابه من السجلّات:
+   * «حين قال النموذج إنه لا يرى ملفًا، ماذا كان يرى الخادمُ فعلًا؟»
+   */
+  console.info(
+    `[files-pipeline] rid=${requestId} conversation_id=${conversationId} ` +
+      `ready_file_ids=${contextFileIds.length > 0 ? contextFileIds.join("|") : "none"} ` +
+      `pending_file_ids=${pending.length > 0 ? pending.join("|") : "none"} ` +
+      `space=${getActiveSpace().id} space_model=${getActiveSpace().modelTag ?? "e5"} ` +
+      `retrieval_scope=${contextFileIds.length} retrieval_results=${ragSnippets.length} ` +
+      `attached_but_not_ready=${filesAttachedButNotReady}`,
+  );
   /**
    * Evidence Mode — **قرار خادمي، وشرطه وجود مصادر دخلت الموجّه فعلًا**.
    *
@@ -749,6 +805,8 @@ export async function POST(req: NextRequest) {
     systemPrompt = `${systemPrompt}\n\n${EVIDENCE_MODE_INSTRUCTIONS}`;
   } else if (ragSearchedNoMatch) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
+  } else if (filesAttachedButNotReady) {
+    systemPrompt = `${systemPrompt}\n\n${FILES_PENDING_HINT}`;
   }
 
   // إسناد التفاصيل المتخصصة: مصادر المستخدم أولًا، ثم سياقه الصريح. معرفة
@@ -1481,6 +1539,20 @@ export async function POST(req: NextRequest) {
           savedMeta = meta;
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
+          /**
+           * ★ ما رآه الخادمُ من ملفّات المحادثة لحظةَ هذا الردّ — أعدادٌ فقط.
+           *
+           *   «قال النموذجُ إنه لا يرى ملفًّا»: كان الجوابُ يتطلّب قراءةَ
+           *   السجلّات. وقد تعطّل نطاقُ الملفّات مرّةً بصمتٍ تامّ (قيمةُ حالةٍ
+           *   خارج النوع ⇒ نطاقٌ فارغٌ في كلّ نداء) ولم يلحظه قياسٌ لأنه لا يُقرأ
+           *   إلّا من السجلّات. الآن يُقرأ من الرسالة نفسِها: لا أسماء، ولا
+           *   معرّفات، ولا محتوى.
+           */
+          meta.files_scope = {
+            ready: contextFileIds.length,
+            pending: pending.length,
+            retrieved: ragSnippets.length,
+          };
           if (ragSnippets.length > 0) {
             // نفس التجميع المعروض — كي لا تفترق البطاقات بعد إعادة التحميل
             meta.sources = dedupeSourceCards(

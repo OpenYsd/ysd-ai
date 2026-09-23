@@ -182,9 +182,54 @@ describe("★ (٤) الإرسال والدلالة: المحادثة لا الر
   it("★ ★ ★ لا إرسال وملفٌّ في منتصف رفعه", () => {
     expect(blocksSend(reduce([add("k", "a.pdf", 1, "application/pdf")]))).toBe(true);
     expect(blocksSend(reduce([add("k", "a.pdf", 1, "application/pdf"), { type: "uploadStart", key: "k" }]))).toBe(true);
-    // التجهيز يطول (تضمينات): الملف مربوطٌ فعلًا، والإشعار يقول إنه لم يدخل السياق بعد
-    expect(blocksSend(linked("k", "f", "chunking"))).toBe(false);
     expect(blocksSend(reduce([add("k", "a.zip", 1, "application/zip"), { type: "uploadFailed", key: "k", kind: "unsupported", retry: null }]))).toBe(false);
+  });
+
+  /**
+   * ★ التجهيز يحجب الآن — وكان لا يحجب.
+   *
+   * القرار السابق: لا نسجن المحادثة بفهرسةٍ تطول، ونكتفي بإشعار. والواقع أن
+   * المستخدم يسأل رغم الإشعار (وهو محقّ: البطاقة أمامه)، فيخرج الاسترجاع
+   * فارغًا فينفي النموذجُ وجودَ ملفه. قيس حيًّا في الإنتاج، وهو أكثر ما يهدم
+   * الثقة في المرفقات. فالوعد الآن صريح: لا إرسالَ قبل أن يصير الملف مقروءًا.
+   */
+  it("★ ★ ★ التجهيز الجاري يحجب الإرسال — لا سؤال عن ملفٍ لا يُقرأ بعد", () => {
+    expect(blocksSend(linked("k", "f", "chunking"))).toBe(true);
+    expect(blocksSend(linked("k", "f", "embedding"))).toBe(true);
+    expect(blocksSend(linked("k", "f", "uploaded"))).toBe(true);
+    expect(blocksSend(linked("k", "f", "ready_for_rag"))).toBe(false);
+  });
+
+  /**
+   * ★ ولا يُسجن أحدٌ إلى الأبد.
+   *
+   * حجبٌ بلا مخرجٍ أسوأ من العطب الذي يعالجه: في الإنتاج الآن عشرة ملفات
+   * عالقة على `ready` لم تُفهرس قط. لو حجبت هذه أبدًا لتعطّلت محادثاتُها
+   * نهائيًّا. فالمتوقّف يصير `error` (كشفُ التوقّف قائمٌ في isStalled) —
+   * والخطأ لا يحجب، بل يعرض إعادةَ المحاولة.
+   */
+  it("★ ★ ★ المتوقّف والفاشل لا يحجبان — لا محادثةَ تُسجن بملفٍ عالق", () => {
+    const stalled = reduce([
+      add("k", "a.pdf", 1, "application/pdf"),
+      { type: "uploadDone", key: "k", ragRequested: true, file: { id: "f", status: "ready", mime_type: "application/pdf" } },
+      { type: "indexFailed", fileId: "f", kind: "indexStalled", message: "stalled" },
+    ]);
+    expect(stalled[0]).toMatchObject({ phase: "error" });
+    expect(blocksSend(stalled)).toBe(false);
+  });
+
+  /**
+   * ★ الصور: لا تُفهرس، فلا تُنتظر فهرسةٌ لا تأتي — لكنّ بايتاتها تُنتظر.
+   *
+   * الإعفاءُ من الفهرسة ليس إعفاءً من الرفع: صورةٌ في منتصف طريقها ليست
+   * مرفقةً بعد، وإرسالُ السؤال حينها يصل بلا صورة.
+   */
+  it("★ ★ ★ الصورة المرتبطة لا تحجب، والصورةُ في منتصف رفعها تحجب", () => {
+    expect(blocksSend(linked("k", "f", "ready", "image/png"))).toBe(false);
+    expect(blocksSend(reduce([add("k", "a.png", 1, "image/png")]))).toBe(true);
+    expect(
+      blocksSend(reduce([add("k", "a.png", 1, "image/png"), { type: "uploadStart", key: "k" }])),
+    ).toBe(true);
   });
 
   it("★ ★ ★ بعد الإرسال: المربوط صار سياقًا للمحادثة، والفاشل يبقى أمام صاحبه", () => {

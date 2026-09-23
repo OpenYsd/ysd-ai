@@ -74,6 +74,7 @@ const draft = (over: Partial<ComposerAttachment> & { key: string }): ComposerAtt
   serverStatus: null,
   ragRequested: false,
   aiContext: false,
+  spaceTransition: false,
   errorKind: null,
   errorMessage: null,
   retry: null,
@@ -201,11 +202,17 @@ describe("★ (٢) المداخل الثلاثة", () => {
 });
 
 describe("★ (٣) الإرسال والسياق", () => {
-  it("★ ★ ★ الإرسال معطّل ما دام ملفٌّ يُرفع، مع سببٍ مقروء", () => {
+  it("★ ★ ★ الإرسال معطّل ما دام ملفٌّ يُجهَّز، مع سببٍ مقروء", () => {
     render(<Harness locale="en" input="hello" sendBlocked attachments={[draft({ key: "a", phase: "uploading", progress: 5 })]} />);
     const send = screen.getByRole("button", { name: /send/ }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
-    expect(screen.getByText(/Wait for uploads to finish/)).toBeTruthy();
+    /**
+     * ★ رسالةٌ واحدة تغطّي الرفع والاستخراج والفهرسة معًا.
+     *
+     * «انتظر اكتمال الرفع» كانت تُغري بالسؤال فور انتهاء الرفع — والملفُّ
+     * حينها ما يزال يُفهرس. فالوعد الآن عن الجاهزية لا عن الرفع.
+     */
+    expect(screen.getByText(/still being prepared/)).toBeTruthy();
   });
 
   it("★ ★ ★ ملفّات المحادثة مطويّةٌ في زرٍّ واحد يفتحها", () => {

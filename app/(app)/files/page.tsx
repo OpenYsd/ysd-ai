@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getFileLimits, getFileUsage, PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { getFileLimits, getFileUsage, PUBLIC_FILE_FIELDS, projectFilesForClient } from "@/lib/files/service";
 import { FilesView } from "@/components/files/files-view";
 import type { UploadedFileRow } from "@/components/files/upload";
 
@@ -29,9 +29,12 @@ export default async function FilesPage() {
       getFileLimits(supabase, user.id),
     ]);
 
+  // `needs_active_embedding` يُشتقّ على الخادم: الواجهةُ لا تعرف فضاءات التضمين
+  const clientFiles = await projectFilesForClient(supabase, files);
+
   return (
     <FilesView
-      initialFiles={(files ?? []) as unknown as UploadedFileRow[]}
+      initialFiles={clientFiles as unknown as UploadedFileRow[]}
       projects={projects ?? []}
       usage={usage}
       limits={limits}

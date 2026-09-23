@@ -192,7 +192,7 @@ export function ChatComposer({
           </div>
           {(notice || sendBlocked) && (
             <p data-attachment-notice className="px-1.5 pb-1 text-[10.5px] leading-relaxed text-ink-faint">
-              {sendBlocked ? t("waitForUploads") : notice ? t(notice) : null}
+              {sendBlocked ? t("filePreparing") : notice ? t(notice) : null}
             </p>
           )}
         </div>
@@ -293,7 +293,7 @@ export function ChatComposer({
             type="button"
             onClick={onSend}
             disabled={!input.trim() || disabled || sendBlocked}
-            title={sendBlocked ? t("waitForUploads") : undefined}
+            title={sendBlocked ? t("filePreparing") : undefined}
             className="flex h-9 items-center gap-1.5 rounded-xl px-4 text-[13px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-35"
             style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
           >

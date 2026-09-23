@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { listModelOptions } from "@/lib/ai/registry";
-import { PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { PUBLIC_FILE_FIELDS, projectFilesForClient } from "@/lib/files/service";
 import { ProjectDetail } from "@/components/projects/project-detail";
 import type { UploadedFileRow } from "@/components/files/upload";
 
@@ -55,6 +55,9 @@ export default async function ProjectDetailPage({
       .limit(100),
   ]);
 
+  // `needs_active_embedding` يُشتقّ على الخادم: الواجهةُ لا تعرف فضاءات التضمين
+  const clientProjectFiles = await projectFilesForClient(supabase, projectFiles);
+
   const models = listModelOptions();
 
   const settings = project.model_settings as { default_model_id?: string } | null;
@@ -72,7 +75,7 @@ export default async function ProjectDetailPage({
       linkedConversations={linked ?? []}
       unlinkedConversations={unlinked ?? []}
       models={models}
-      files={(projectFiles ?? []) as unknown as UploadedFileRow[]}
+      files={clientProjectFiles as unknown as UploadedFileRow[]}
     />
   );
 }

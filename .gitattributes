@@ -7,3 +7,7 @@ docker-entrypoint.sh text eol=lf
 # regex that never matches before a lone trailing \r: CRLF silently defeats it
 supabase/migrations/0048_f2llm_embedding_v2.sql text eol=lf
 supabase/rollbacks/0048_f2llm_embedding_v2.down.sql text eol=lf
+# Same `$`-anchored comment stripping in v142-migration-0049.test.ts
+supabase/migrations/0049_file_content_fingerprint.sql text eol=lf
+# Cutover scripts run under bash: CRLF would break them on a Windows checkout
+scripts/cutover/** text eol=lf

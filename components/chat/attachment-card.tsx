@@ -70,8 +70,11 @@ export function attachmentStatusLabel(t: T, a: ComposerAttachment): string {
       return a.progress !== null ? `${t("attachmentUploading")} ${a.progress}%` : t("attachmentUploading");
     case "processing":
       return a.serverStatus === "verifying" ? t("attachmentVerifying") : t("statusProcessing");
-    case "indexing":
-      return a.progress !== null ? `${t("ragPreparing")} ${a.progress}%` : t("ragPreparing");
+    case "indexing": {
+      // ★ لا تُقال «إعادة تجهيز» بنبرة عطل: هو تجهيزٌ لفضاء البحث الحالي
+      const label = a.spaceTransition ? t("ragPreparingSpace") : t("ragPreparing");
+      return a.progress !== null ? `${label} ${a.progress}%` : label;
+    }
     case "ready":
       if (isImageMime(a.mime)) return t("imageNoAiContext");
       return a.aiContext ? t("ragReady") : t("textExtracted");
