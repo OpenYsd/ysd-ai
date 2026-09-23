@@ -450,14 +450,42 @@ export async function runRagJob(
  *   إن كانت البوّابةُ مشغولة عاد فورًا بـ`busy` دون أن يلتقط شيئًا: وظيفةُ
  *   المستدعي أُدرجت قبلُ وتبقى في الطابور، ولا تُلتقط وظيفةٌ ثم تُترك.
  */
+type DrainOpts = { workerId: string; maxJobs?: number; deadlineMs?: number };
+
+/**
+ * ★ طلبُ تصريفٍ وجد البوّابةَ مشغولةً يُؤجَّل — لا يُسقط.
+ *
+ *   كان يعود «مشغول» ويُنسى، والوظيفةُ في الطابور تنتظر طلبًا لاحقًا من
+ *   صاحبها. قيس على staging: وظيفةُ F2LLM أُدرجت 16:54:15 ولم تُنفَّذ إلّا
+ *   16:58:29 (مع أوّل سؤالٍ تالٍ) — وتنفيذُها نفسُه سبعُ ثوانٍ. فالتجهيزُ لم
+ *   يكن ملكَ الخادم فعلًا: كان يتوقّف حيث يتوقّف المستخدم.
+ *
+ *   فالمؤجَّلُ يُعاد حين تتحرّر البوّابة، واحدًا بعد واحد — فحدُّ الذاكرة
+ *   (تصريفٌ واحدٌ في العمليّة) باقٍ كما هو. والعميلُ المؤجَّل يحمل جلسةَ
+ *   صاحبه، فلا يرى تصريفُه إلا وظائفَه (RLS). وقائمةُ الانتظار محدودة.
+ */
+const deferredDrains: Array<{ supabase: SupabaseClient; opts: DrainOpts }> = [];
+export const MAX_DEFERRED_DRAINS = 8;
+
+/** عددُ طلبات التصريف المؤجَّلة — للقياس والاختبار */
+export function deferredDrainCount(): number {
+  return deferredDrains.length;
+}
+
 export async function drainOwnJobs(
   supabase: SupabaseClient,
-  opts: { workerId: string; maxJobs?: number; deadlineMs?: number } = {
+  opts: DrainOpts = {
     workerId: "req",
   },
 ): Promise<{ processed: number; lastStatus: string | null; busy: boolean }> {
   const release = tryAcquireDrainSlot();
-  if (!release) return { processed: 0, lastStatus: null, busy: true };
+  if (!release) {
+    if (!deferredDrains.some((d) => d.supabase === supabase)) {
+      if (deferredDrains.length >= MAX_DEFERRED_DRAINS) deferredDrains.shift();
+      deferredDrains.push({ supabase, opts });
+    }
+    return { processed: 0, lastStatus: null, busy: true };
+  }
   try {
     const maxJobs = opts.maxJobs ?? 10;
     const deadline = Date.now() + (opts.deadlineMs ?? 250_000);
@@ -474,5 +502,11 @@ export async function drainOwnJobs(
     return { processed, lastStatus, busy: false };
   } finally {
     release();
+    const next = deferredDrains.shift();
+    if (next) {
+      void drainOwnJobs(next.supabase, next.opts).catch((err) =>
+        console.error(`[rag-worker] deferred_drain_failed worker=${next.opts.workerId} err=${(err as Error).message?.slice(0, 120)}`),
+      );
+    }
   }
 }

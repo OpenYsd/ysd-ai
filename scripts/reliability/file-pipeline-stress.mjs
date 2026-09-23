@@ -820,7 +820,7 @@ async function main() {
 
   await runCycles(CYCLES, offset);
 
-  const audit = PHASE === 3 ? await finalAudit() : null;
+  const audit = PHASE >= 3 ? await finalAudit() : null;
   state.phases[PHASE] = { space: SPACE, cycles: counters.cycles, counters, violations: violations.length, at: new Date().toISOString() };
   saveState();
 

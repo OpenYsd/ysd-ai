@@ -20,7 +20,7 @@ vi.mock("@/lib/rag/jobs", async (importOriginal) => {
 });
 
 import { activeDrainCount, MAX_CONCURRENT_DRAINS, tryAcquireDrainSlot } from "@/lib/rag/drain-gate";
-import { drainOwnJobs } from "@/lib/rag/worker";
+import { deferredDrainCount, drainOwnJobs, MAX_DEFERRED_DRAINS } from "@/lib/rag/worker";
 
 const fakeSupabase = {} as never;
 
@@ -63,6 +63,47 @@ describe("★ (٢) drainOwnJobs — الإخفاق الحيّ: تصريفان م
 
     finishClaim(null);
     await expect(first).resolves.toEqual({ processed: 0, lastStatus: null, busy: false });
+  });
+
+  /**
+   * ★ ولا يُنسى — مقيسٌ على staging: وظيفةٌ أُدرجت والبوّابةُ مشغولة انتظرت
+   *   أربعَ دقائق حتى جاء طلبٌ تالٍ، وتنفيذُها سبعُ ثوانٍ.
+   */
+  it("★ ★ ★ ولا يُنسى: المؤجَّلُ يُعاد حين تتحرّر البوّابة — بجلسة صاحبه، بلا طلبٍ لاحق", async () => {
+    const clientA = { user: "a" } as never;
+    const clientB = { user: "b" } as never;
+    let finishClaim!: (v: null) => void;
+    jobs.claimRagJob.mockImplementationOnce(() => new Promise((r) => (finishClaim = r)));
+    jobs.claimRagJob.mockResolvedValue(null);
+
+    const first = drainOwnJobs(clientA, { workerId: "req:a" });
+    const second = await drainOwnJobs(clientB, { workerId: "req:b" });
+    expect(second.busy).toBe(true);
+    expect(deferredDrainCount()).toBe(1);
+    expect(jobs.claimRagJob).not.toHaveBeenCalledWith(clientB, "req:b");
+
+    finishClaim(null);
+    await first;
+    await vi.waitFor(() => expect(jobs.claimRagJob).toHaveBeenCalledWith(clientB, "req:b"));
+    await vi.waitFor(() => expect(activeDrainCount()).toBe(0));
+    expect(deferredDrainCount()).toBe(0);
+  });
+
+  it("★ ★ ★ وقائمةُ الانتظار محدودة، ولا تتكرّر الجلسةُ نفسُها فيها", async () => {
+    let finishClaim!: (v: null) => void;
+    jobs.claimRagJob.mockImplementationOnce(() => new Promise((r) => (finishClaim = r)));
+    jobs.claimRagJob.mockResolvedValue(null);
+    const first = drainOwnJobs({ user: "holder" } as never, { workerId: "req:holder" });
+    const same = { user: "same" } as never;
+    await drainOwnJobs(same, { workerId: "req:s1" });
+    await drainOwnJobs(same, { workerId: "req:s2" });
+    expect(deferredDrainCount()).toBe(1);
+    for (let i = 0; i < MAX_DEFERRED_DRAINS + 4; i++) await drainOwnJobs({ user: `u${i}` } as never, { workerId: `req:${i}` });
+    expect(deferredDrainCount()).toBe(MAX_DEFERRED_DRAINS);
+    finishClaim(null);
+    await first;
+    await vi.waitFor(() => expect(deferredDrainCount()).toBe(0));
+    await vi.waitFor(() => expect(activeDrainCount()).toBe(0));
   });
 
   it("★ ★ ★ وتصريفٌ ينهار يُحرّر البوّابة — لا تبقى مغلقةً بعد خطأ", async () => {
