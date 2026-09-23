@@ -87,6 +87,87 @@ interface MatchRow {
   original_name: string;
 }
 
+/**
+ * نطاق ملفات المحادثة — **الجاهز والمعلَّق معًا، لا الجاهز وحده**.
+ *
+ * ★ لماذا لا يكفي أن نعيد الجاهز.
+ *
+ * الاستدعاء القديم أعاد المعرّفات الجاهزة فقط، فصار «لا ملفات مرفقة» و«ملفٌّ
+ * مرفقٌ لم يكتمل تجهيزه» يخرجان من الدالة **بالشكل نفسه**: مصفوفة فارغة.
+ * ومسارُ المحادثة يتخطّى الاسترجاع كلَّه عند الفراغ، فيجيب النموذجُ أنه لا
+ * يرى ملفًّا — بينما البطاقةُ أمام المستخدم تقول إنه مرفوع. وهذا بالضبط ما
+ * يشكو منه المستخدم، وقد قيس حيًّا: عشرة ملفات في الإنتاج عالقة على `ready`
+ * (نصُّها مستخرَج، ولم تُفهرس قط) وواحدٌ عالقٌ على `processing`.
+ *
+ * فالتمييزُ هنا في مصدره: من يسأل يعرف أن ثمّة ملفًّا ينتظر، فيقول ذلك بدل
+ * أن ينفي وجوده.
+ *
+ * ★ ومعيارُ «جاهز» واحدٌ لا اثنان: ما تراه هذه الدالة قابلًا للاسترجاع هو
+ *   نفسه ما تعِد به الواجهة — لا تعريفَ ثانٍ في العميل.
+ */
+/** الفضاء الفعّال — للتشخيص البنيويّ وحده (أرقامٌ وأسماءُ فضاء، لا أسرار) */
+export function getActiveSpaceForDiagnostics(): { id: string; modelTag: string | null } {
+  const s = getActiveSpace();
+  return { id: s.id, modelTag: s.modelTag };
+}
+
+export interface ConversationFileScope {
+  /** قابلة للاسترجاع الآن في الفضاء الفعّال */
+  readyIds: string[];
+  /** مرفقة بالمحادثة ولم تصر قابلةً للاسترجاع بعد (تجهيزٌ جارٍ أو متعثّر) */
+  pendingIds: string[];
+}
+
+/** الحالات التي تعني «وصل الملف ونصُّه، والتجهيز لم يكتمل بعد» */
+const PENDING_STATUSES = ["uploaded", "processing", "extracting", "ready", "chunking", "embedding"] as const;
+
+export async function getConversationFileScope(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  projectId: string | null,
+): Promise<ConversationFileScope> {
+  const space = getActiveSpace();
+
+  /**
+   * ★ استعلامٌ واحد يجلب المرشّحين كلَّهم، والفرزُ في الذاكرة.
+   *
+   * استعلامان متوازيان كانا سيفتحان نافذةَ تعارض: ملفٌّ يكتمل تجهيزُه بين
+   * الاستعلامين فيظهر في القائمتين أو في لا واحدة. ولقطةٌ واحدة تُغلقها.
+   */
+  let q = supabase
+    .from("files")
+    .select("id, status, rag_v2_model")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .in("status", [...PENDING_STATUSES, "ready_for_rag"]);
+  q = projectId
+    ? q.or(`conversation_id.eq.${conversationId},project_id.eq.${projectId}`)
+    : q.eq("conversation_id", conversationId);
+  const { data } = await q.limit(50);
+
+  const readyIds: string[] = [];
+  const pendingIds: string[] = [];
+  for (const f of data ?? []) {
+    const id = f.id as string;
+    const status = f.status as string;
+    /**
+     * ★ «جاهز» = قابلٌ للاسترجاع في الفضاء الفعّال — لا مجرّد `ready_for_rag`.
+     *
+     * ملفٌّ مفهرسٌ في فضاءٍ غير الفعّال (e5 بينما F2LLM مشتعل، أو العكس بعد
+     * تراجع) ليس جاهزًا **ولا** غائبًا: هو ملفٌّ يحتاج إعادةَ تجهيز. وعدُّه
+     * معلَّقًا يُري المستخدم «قيد التجهيز» بدل أن يُنفى وجودُه — وهو الفرق
+     * الذي كشفه تفعيلُ F2LLM في الإنتاج (٢٠ ملفًّا صارت غير مرئية فجأة).
+     */
+    const retrievable =
+      status === "ready_for_rag" &&
+      (space.id !== "f2llm" || (f.rag_v2_model as string | null) === space.modelTag);
+    if (retrievable) readyIds.push(id);
+    else pendingIds.push(id);
+  }
+  return { readyIds, pendingIds };
+}
+
 /** ملفات سياق المحادثة: المرتبطة بها مباشرة + ملفات مشروعها — الجاهزة فقط */
 export async function getContextFileIds(
   supabase: SupabaseClient,
@@ -94,20 +175,8 @@ export async function getContextFileIds(
   conversationId: string,
   projectId: string | null,
 ): Promise<string[]> {
-  let q = supabase
-    .from("files")
-    .select("id, conversation_id, project_id")
-    .eq("user_id", userId)
-    .eq("status", "ready_for_rag")
-    .is("deleted_at", null);
-  const space = getActiveSpace();
-  // فضاء F2LLM: لا يدخل السياقَ إلا ملفٌّ مكتمل التضمين فيه — لا نتائج جزئية ولا خلط فضاءين
-  if (space.id === "f2llm") q = q.eq("rag_v2_model", space.modelTag as string);
-  q = projectId
-    ? q.or(`conversation_id.eq.${conversationId},project_id.eq.${projectId}`)
-    : q.eq("conversation_id", conversationId);
-  const { data } = await q.limit(50);
-  return (data ?? []).map((f) => f.id as string);
+  const { readyIds } = await getConversationFileScope(supabase, userId, conversationId, projectId);
+  return readyIds;
 }
 
 export interface RetrievalOutcome {
@@ -258,6 +327,16 @@ export async function retrieveSnippets(
 /** تُحقن عند وجود ملفات جاهزة لكن بلا تطابق — لتصريح "لم أجد" دون اختراع */
 export const NO_MATCH_HINT = `أرفق المستخدم ملفات جاهزة لكن لم يُعثر على أي مقطع ذي صلة بسؤاله الحالي.
 إن كان السؤال عن محتوى الملفات المرفقة، صرّح بوضوح: «لم أجد هذه المعلومة في الملفات المرفقة.» ولا تختلق إجابة من عندك عن محتواها.`;
+
+/**
+ * ★ ملفٌّ مرفقٌ يُجهَّز الآن — خبرٌ عن الحالة لا مصدرٌ للإجابة.
+ *
+ * الفرقُ عن `NO_MATCH_HINT` جوهريّ: هناك بُحث ولم يوجد، وهنا لم يُبحث بعد
+ * أصلًا. ونفيُ وجود الملف في هذه الحالة كذبٌ صريح على المستخدم الذي يرى
+ * بطاقتَه أمامه.
+ */
+export const FILES_PENDING_HINT = `أرفق المستخدم ملفًا أو أكثر، وتجهيزُها للبحث لم يكتمل بعد — فلا يمكن قراءة محتواها في هذه الرسالة.
+لا تنفِ وجود الملف ولا تقل إنه غير مرفق. إن كان السؤال عن محتواه فاذكر بوضوح أن الملف ما يزال قيد التجهيز واطلب إعادة السؤال بعد قليل. ولا تختلق شيئًا عن محتواه.`;
 
 /**
  * بناء كتلة سياق المصادر — منفصلة عن موجه النظام الأساسي،

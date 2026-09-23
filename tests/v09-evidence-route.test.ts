@@ -100,6 +100,7 @@ vi.mock("@/lib/chat/context", () => ({
   gatherChatContext: async () => ({
     history: [{ role: "user", content: "سؤال" }],
     contextFileIds: ["file-1"],
+    pendingFileIds: [],
     dbMs: 1,
   }),
 }));

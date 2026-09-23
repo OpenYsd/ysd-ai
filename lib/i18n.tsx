@@ -708,6 +708,17 @@ const dict = {
     ar: "انتظر اكتمال رفع الملفات قبل الإرسال — الرسالة لا ترى ملفًا لم يكتمل رفعه.",
     en: "Wait for uploads to finish before sending — the message can't see a file that hasn't finished uploading.",
   },
+  /**
+   * ★ رسالةٌ واحدة تغطّي كلّ ما قبل الجاهزية: رفعٌ واستخراجٌ وفهرسة.
+   *
+   * التفريقُ بينها في النصّ يُغري بإرسالٍ مبكّر («انتهى الرفع إذن يمكنني
+   * السؤال») وهو بالضبط الخطأ الذي كان يقع. فالوعدُ واحد: لا إرسالَ قبل أن
+   * يصير الملف قابلًا للقراءة فعلًا.
+   */
+  filePreparing: {
+    ar: "الملف ما يزال قيد التجهيز — انتظر حتى يصبح جاهزًا قبل السؤال عن محتواه.",
+    en: "Your file is still being prepared — wait until it's ready before asking about its contents.",
+  },
   uploadProgressLabel: { ar: "تقدّم رفع الملف", en: "Upload progress" },
   uploadToProject: { ar: "رفع ملف للمشروع", en: "Upload to project" },
   betaTitle: { ar: "النسخة التجريبية الخاصة", en: "Private Beta" },

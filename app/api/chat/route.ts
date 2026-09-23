@@ -47,6 +47,8 @@ import {
   buildSourcesContext,
   dedupeSourceCards,
   NO_MATCH_HINT,
+  FILES_PENDING_HINT,
+  getActiveSpaceForDiagnostics as getActiveSpace,
   retrieveSnippets,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
@@ -679,7 +681,7 @@ export async function POST(req: NextRequest) {
   if (newTitle) convUpdate.title = newTitle;
 
   const tCtx = Date.now();
-  const { history, contextFileIds, dbMs } = await gatherChatContext(supabase, {
+  const { history, contextFileIds, pendingFileIds, dbMs } = await gatherChatContext(supabase, {
     conversationId,
     userId,
     projectId: conv.project_id,
@@ -712,6 +714,34 @@ export async function POST(req: NextRequest) {
     }
     ragMs = Date.now() - tRag;
   }
+
+  /**
+   * ★ ملفٌّ مرفقٌ لم يجهز ليس ملفًّا غائبًا.
+   *
+   * كان المسار يتخطّى الاسترجاع عند فراغ `contextFileIds`، ولا فرق عنده بين
+   * «لا ملفات» و«ملفات تُفهرس الآن». فيخرج الجوابُ نافيًا وجودَ ملفٍ يراه
+   * المستخدم مرفوعًا أمامه — وهو أكثر ما يهدم الثقة في المرفقات.
+   *
+   * فيُصرَّح للنموذج بالحقيقة: ثمّة ملفٌّ، وتجهيزُه لم يكتمل بعد. ولا يُخترع
+   * محتوى ولا يُدَّعى استرجاع: الحقل خبرٌ عن الحالة لا مصدرٌ للإجابة.
+   */
+  /** دفاعيّة مقصودة: حقلٌ ناقص هنا كان سيُسقط طلبَ المحادثة كلَّه، لا الملفات وحدها */
+  const pending = pendingFileIds ?? [];
+  const filesAttachedButNotReady = contextFileIds.length === 0 && pending.length > 0;
+
+  /**
+   * تشخيصٌ بنيويّ لمسار الملفات — معرّفات وأعداد فقط، بلا اسم ملفٍ ولا محتوى
+   * ولا رمزٍ ولا سرّ. يجيب سؤالًا واحدًا كان يتعذّر جوابه من السجلّات:
+   * «حين قال النموذج إنه لا يرى ملفًا، ماذا كان يرى الخادمُ فعلًا؟»
+   */
+  console.info(
+    `[files-pipeline] rid=${requestId} conversation_id=${conversationId} ` +
+      `ready_file_ids=${contextFileIds.length > 0 ? contextFileIds.join("|") : "none"} ` +
+      `pending_file_ids=${pending.length > 0 ? pending.join("|") : "none"} ` +
+      `space=${getActiveSpace().id} space_model=${getActiveSpace().modelTag ?? "e5"} ` +
+      `retrieval_scope=${contextFileIds.length} retrieval_results=${ragSnippets.length} ` +
+      `attached_but_not_ready=${filesAttachedButNotReady}`,
+  );
   /**
    * Evidence Mode — **قرار خادمي، وشرطه وجود مصادر دخلت الموجّه فعلًا**.
    *
@@ -749,6 +779,8 @@ export async function POST(req: NextRequest) {
     systemPrompt = `${systemPrompt}\n\n${EVIDENCE_MODE_INSTRUCTIONS}`;
   } else if (ragSearchedNoMatch) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
+  } else if (filesAttachedButNotReady) {
+    systemPrompt = `${systemPrompt}\n\n${FILES_PENDING_HINT}`;
   }
 
   // إسناد التفاصيل المتخصصة: مصادر المستخدم أولًا، ثم سياقه الصريح. معرفة

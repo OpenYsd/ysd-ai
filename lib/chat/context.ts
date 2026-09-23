@@ -1,10 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getContextFileIds } from "../rag/retrieval";
+import { getConversationFileScope } from "../rag/retrieval";
 import type { ChatMessage } from "../ai/types";
 
 export interface ChatContextResult {
   history: ChatMessage[];
   contextFileIds: string[];
+  /**
+   * ملفاتٌ مرفقةٌ بالمحادثة لم تصر قابلةً للاسترجاع بعد.
+   *
+   * ★ وجودُها هو الفرق بين «لا ملف» و«ملفٌّ لم يجهز». بلا هذا الحقل يخرج
+   *   الحالان من `gatherChatContext` متطابقين، فيتخطّى المسارُ الاسترجاعَ
+   *   وينفي النموذجُ وجودَ ملفٍ يراه المستخدم مرفوعًا أمامه.
+   */
+  pendingFileIds: string[];
   /** زمن دفعة الاستعلامات المتوازية — للـServer-Timing (database) */
   dbMs: number;
 }
@@ -55,7 +63,7 @@ export async function gatherChatContext(
       .is("deleted_at", null)
       .order("created_at", { ascending: true })
       .limit(30),
-    getContextFileIds(supabase, userId, conversationId, projectId),
+    getConversationFileScope(supabase, userId, conversationId, projectId),
     supabase.from("conversations").update(convUpdate).eq("id", conversationId),
     projectId
       ? supabase
@@ -105,9 +113,12 @@ export async function gatherChatContext(
     }));
 
   // (ب) معرّفات ملفات السياق — سلوك حالي: فشل ⇒ لا RAG
-  const contextFileIds = fileIdsRes.status === "fulfilled" ? fileIdsRes.value : [];
+  const scope =
+    fileIdsRes.status === "fulfilled"
+      ? (fileIdsRes.value as { readyIds: string[]; pendingIds: string[] })
+      : { readyIds: [], pendingIds: [] };
 
-  return { history, contextFileIds, dbMs };
+  return { history, contextFileIds: scope.readyIds, pendingFileIds: scope.pendingIds, dbMs };
 }
 
 /**
