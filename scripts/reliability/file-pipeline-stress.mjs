@@ -50,6 +50,13 @@ const READY_TIMEOUT_MS = Number(arg("--ready-timeout-ms", "240000"));
 const MAKE_E5_ONLY = Number(arg("--make-e5-only", "0"));
 /** ملفّاتٌ تُترك كما هي لأنها حالٌ حيٌّ يُختبر بذاته (مثل: عالقٌ على embedding) */
 const KEEP = new Set((arg("--keep", "") ?? "").split(",").filter(Boolean));
+/**
+ * ★ وضعُ القبول (الإنتاج): واجهاتُ التطبيق وحدها.
+ *   لا إرجاعَ صفوفٍ مباشر، ولا ترقيةَ باقة، ولا كتابةَ بمفتاح الخدمة إلا إنشاءُ
+ *   الحساب الاصطناعيّ (دعوة + مطالبة). الباقةُ المجانيّة تكفيه (≈14 ملفًّا، ≈15 سؤالًا).
+ */
+const ACCEPTANCE = argv.includes("--acceptance");
+const ALLOW_PRODUCTION_ACCEPTANCE = argv.includes("--allow-production-acceptance");
 const F2LLM_TAG = "f2llm-v2-80m@ad88d7a1.onnx-fcd9084eb3f4";
 const PRODUCTION_REF = "mnewsldyrrlpmouetyve";
 
@@ -57,9 +64,17 @@ if (!BASE || !SUPABASE_URL || !SERVICE_KEY || !ANON_KEY || !["e5", "f2llm"].incl
   console.error("required: --base --supabase-url --service-key --anon-key --space e5|f2llm");
   process.exit(2);
 }
-/** ★ هذه الأداةُ تكتب في القاعدة (ملفّاتُ مستخدمها وحده). لا تُوجَّه إلى الإنتاج أبدًا. */
-if (SUPABASE_URL.includes(PRODUCTION_REF) || !/staging/i.test(BASE)) {
-  console.error("REFUSING: this harness runs against staging only");
+/**
+ * ★ الإنتاجُ ممنوعٌ إلّا بوضع القبول وبإذنٍ صريحٍ في سطر الأوامر معًا.
+ *   ووضعُ الضغط الكامل (يُرجع صفوفًا ويرقّي الباقة) لـstaging وحده.
+ */
+const TARGETS_PRODUCTION = SUPABASE_URL.includes(PRODUCTION_REF);
+if (TARGETS_PRODUCTION && !(ACCEPTANCE && ALLOW_PRODUCTION_ACCEPTANCE)) {
+  console.error("REFUSING: production requires --acceptance --allow-production-acceptance");
+  process.exit(2);
+}
+if (!TARGETS_PRODUCTION && !ACCEPTANCE && !/staging/i.test(BASE)) {
+  console.error("REFUSING: the full stress mode runs against staging only");
   process.exit(2);
 }
 mkdirSync(OUT, { recursive: true });
@@ -105,7 +120,11 @@ const counters = {
 };
 
 // ------------------------------------------------------------------ supabase (service, staging only)
+const ACCEPTANCE_WRITES = [/^beta_invites$/, /^rpc\/beta_claim_invite$/];
 async function rest(path, { method = "GET", body, prefer } = {}) {
+  if (ACCEPTANCE && method !== "GET" && !ACCEPTANCE_WRITES.some((re) => re.test(path.split("?")[0]))) {
+    throw new Error(`acceptance mode forbids service-role ${method} on ${path.split("?")[0]}`);
+  }
   const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
   if (body) headers["Content-Type"] = "application/json";
   if (prefer) headers.Prefer = prefer;
@@ -156,7 +175,7 @@ async function provisionUser() {
    *   وخمسين رسالةً في اليوم، والتشغيلُ يحتاج قرابةَ ضعفَيهما. رفضُ الحصّة ليس
    *   عطلًا في مسار الملفات، فلا يُترك يتنكّر في صورته.
    */
-  await rest(`subscriptions?user_id=eq.${user.id}`, { method: "PATCH", body: { tier: "pro" } });
+  if (!ACCEPTANCE) await rest(`subscriptions?user_id=eq.${user.id}`, { method: "PATCH", body: { tier: "pro" } });
   return { userId: user.id, email, password };
 }
 
@@ -408,11 +427,11 @@ function track(fileId, conversationId, fx, extra = {}) {
 const KINDS = ["pdf", "txt", "md", "pdf-ar", "txt-ar", "md-ar"];
 
 /** دورةٌ أساسيّة: رفعٌ ⇒ (سؤالٌ فوريّ؟) ⇒ جاهز ⇒ سؤالٌ بعد الجاهزيّة يسترجع الملف */
-async function basicCycle(n, { files = 1, immediate = false, reload = false, abandon = false }) {
+async function basicCycle(n, { files = 1, immediate = false, reload = false, abandon = false, kinds = null }) {
   const conversationId = await createConversation(`stress p${PHASE} c${n}`);
   const ups = [];
   for (let i = 0; i < files; i++) {
-    const kind = KINDS[(n + i) % KINDS.length];
+    const kind = kinds ? kinds[i % kinds.length] : KINDS[(n + i) % KINDS.length];
     const fx = fixture(kind, `RC${PHASE}${n}X${i}${randomUUID().slice(0, 4).toUpperCase()}`);
     const up = await upload({ conversationId, fx, clientUploadId: randomUUID() });
     const id = up.json?.file?.id;
@@ -739,11 +758,25 @@ const PLAN = [
   (n) => basicCycle(n, { files: 1, immediate: true, abandon: true }),
 ];
 
+/** قبولُ الإنتاج: كلُّ ما طُلب، مرّةً واحدة — عبر المسار الحقيقيّ وحده */
+const ACCEPTANCE_PLAN = [
+  (n) => basicCycle(n, { files: 1, kinds: ["pdf"] }), // PDF جديد + سؤالٌ بعد الجاهزيّة
+  (n) => basicCycle(n, { files: 2, immediate: true, kinds: ["txt", "md"] }), // TXT/MD + سؤالٌ فوريّ
+  (n) => duplicateCycle(n), // إعادةُ طلب + إعادةُ اختيار + اسمٌ آخر للبايتات نفسها
+  (n) => basicCycle(n, { files: 1, immediate: true, reload: true, kinds: ["pdf-ar"] }), // إعادةُ تحميلٍ أثناء الفهرسة
+  (n) => switchCycle(n), // انتقالٌ بين محادثتين أثناء الرفع
+  (n) => sameNameCycle(n), // الاسمُ نفسه ببايتاتٍ مختلفة
+  (n) => leakageProbe(n), // محادثةٌ فارغة لا ترى شيئًا
+  (n) => basicCycle(n, { files: 1, kinds: ["txt-ar"] }),
+  (n) => basicCycle(n, { files: 1, abandon: true, kinds: ["md-ar"] }), // صفحةٌ أُغلقت فور الرفع
+];
+
 async function runCycles(count, offset) {
+  const plan = ACCEPTANCE ? ACCEPTANCE_PLAN : PLAN;
   for (let i = 0; i < count; i++) {
     const n = offset + i;
-    const step = PLAN[n % PLAN.length];
-    log(`phase ${PHASE} cycle ${i + 1}/${count} (plan#${n % PLAN.length}, space=${SPACE})`);
+    const step = plan[n % plan.length];
+    log(`phase ${PHASE} cycle ${i + 1}/${count} (plan#${n % plan.length}, space=${SPACE}${ACCEPTANCE ? ", acceptance" : ""})`);
     counters.cycles++;
     try {
       await step(n);
@@ -799,9 +832,9 @@ async function main() {
 
   const offset = Object.values(state.phases).reduce((a, p) => a + (p.cycles ?? 0), 0);
 
-  if (MAKE_E5_ONLY > 0) await makeE5Only(MAKE_E5_ONLY);
+  if (MAKE_E5_ONLY > 0 && !ACCEPTANCE) await makeE5Only(MAKE_E5_ONLY);
 
-  if (PHASE >= 2) {
+  if (PHASE >= 2 && !ACCEPTANCE) {
     /**
      * الانتقال: **كلُّ** محادثات المراحل السابقة — لا عيّنة. فالفحصُ الختاميّ
      * يحكم بـ«معلَّقٍ دائم» على كلّ ملفٍّ لم يكتمل، والملفُّ الذي لم تُفتح
@@ -820,7 +853,7 @@ async function main() {
 
   await runCycles(CYCLES, offset);
 
-  const audit = PHASE >= 3 ? await finalAudit() : null;
+  const audit = PHASE >= 3 || ACCEPTANCE ? await finalAudit() : null;
   state.phases[PHASE] = { space: SPACE, cycles: counters.cycles, counters, violations: violations.length, at: new Date().toISOString() };
   saveState();
 
