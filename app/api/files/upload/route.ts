@@ -19,6 +19,10 @@ import {
   processFile,
   PUBLIC_FILE_FIELDS,
 } from "@/lib/files/service";
+import { contentHash } from "@/lib/rag/chunking";
+import { enqueueRagJob } from "@/lib/rag/jobs";
+import { drainOwnJobs } from "@/lib/rag/worker";
+import { getActiveSpace } from "@/lib/rag/embedding-space";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -184,6 +188,66 @@ export async function POST(req: NextRequest) {
     .select(PUBLIC_FILE_FIELDS)
     .eq("id", fileId)
     .single();
+
+  /**
+   * ★ التجهيز يُدرَج هنا — لا يُنتظر أن يطلبه المتصفّح.
+   *
+   *   كان `ready` (نصٌّ مستخرَج) آخرَ ما يفعله الخادم، ثمّ ينتظر العميلَ أن
+   *   يطلب `POST /api/files/:id/rag`. فإن أُغلق اللسان، أو انتقل المستخدم،
+   *   أو انقطعت الشبكة، أو سقط سكربتٌ — بقي الملفُّ على `ready` إلى الأبد:
+   *   نصُّه مستخرَجٌ، ولا مقاطعَ له، ولا يراه الاسترجاع. وهو أكثرُ ما يُنتج
+   *   «رفعٌ ينجح أحيانًا ولا ينجح أحيانًا».
+   *
+   *   قيس حيًّا: عشرةُ ملفات في الإنتاج عالقةٌ على `ready` لم تُفهرس قط،
+   *   وأعاد سكربتُ الضغط إنتاجَ الحالة نفسها من أول دورة.
+   *
+   * ★ إدراجٌ فقط، بلا تصريف.
+   *
+   *   التصريف قد يطول دقيقة، وحبسُ ردّ الرفع عليه يجعل الرفعَ يبدو معلّقًا.
+   *   والإدراجُ وحده يكفي للحتميّة: الوظيفةُ تصير كائنًا ظاهرًا (`queued`)
+   *   تلتقطه آلاتُ التصريف والاستئناف القائمة، بدل حالةٍ صامتةٍ لا أثر لها.
+   *
+   * ★ وفشلُ الإدراج لا يُسقط الرفع: الملفُّ محفوظٌ ونصُّه مستخرَج، ويبقى
+   *   طلبُ التجهيز الصريح متاحًا. يُسجَّل ولا يُرمى.
+   */
+  const isDocument = !fresh?.mime_type?.startsWith("image/");
+  if (isDocument && fresh?.status === "ready") {
+    try {
+      const { data: row } = await supabase
+        .from("files")
+        .select("extracted_text")
+        .eq("id", fileId)
+        .single();
+      const text = (row?.extracted_text ?? "").trim();
+      if (text) {
+        const space = getActiveSpace();
+        const enqueued = await enqueueRagJob(supabase, {
+          userId: user.id,
+          fileId,
+          contentHash: contentHash(text),
+          jobType: space.jobType,
+          keySuffix: space.modelTag ?? undefined,
+        });
+        console.info(
+          `[files-pipeline] upload_enqueued_rag file_id=${fileId} conversation_id=${conversationId ?? "none"} ` +
+            `space=${space.id} enqueued=${"error" in enqueued ? `failed:${enqueued.error}` : enqueued.created}`,
+        );
+        /**
+         * ★ تصريفٌ لا يُنتظر — الردُّ يخرج الآن، والعملُ يكمل بعده.
+         *
+         *   الخدمةُ عمليّةُ Node دائمة (لا دالّةٌ عابرة)، فما لا يُنتظر يكمل
+         *   فعلًا. والبوّابةُ تحدّه بواحدٍ في آنٍ واحد، فلا ترفع رفعةٌ متعدّدة
+         *   الذاكرةَ فوق الحدّ. والمشغولةُ تعود فورًا والوظيفةُ باقيةٌ في
+         *   الطابور يلتقطها أوّلُ طلبٍ تالٍ.
+         */
+        void drainOwnJobs(supabase, { workerId: `upload:${fileId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
+          console.error(`[files-pipeline] upload_drain_failed file_id=${fileId} err=${(err as Error).message?.slice(0, 120)}`),
+        );
+      }
+    } catch (err) {
+      console.error(`[files-pipeline] upload_enqueue_failed file_id=${fileId} err=${(err as Error).message?.slice(0, 120)}`);
+    }
+  }
 
   return json({ file: fresh }, 201);
 }

@@ -20,9 +20,17 @@
 #   الافتراضي: Node يحسب heap_size_limit من الذاكرة المتاحة للحاوية (قِيس هنا: ٢٧٤MB من ٥٢٤MB —
 #   أكثر من نصف الحدّ لكومة JS وحدها). وذاكرةُ ONNX Runtime الأصلية (أوزان النموذج ~٩٧MB وذاكرةُ
 #   الاستدلال) تقع **خارج** هذه الكومة تمامًا؛ فسقفٌ سخيّ لكومةٍ لا يحتاجها هذا التطبيقُ (مسارات
-#   Next.js API لا معالجةَ بياناتٍ ثقيلة) يضيّق ما يبقى للجزء الذي يحتاجه فعلًا. ١٢٨MB قِيسَت كافيةً
-#   محليًّا (peak used_heap_size أقلّ من ١٠MB عند الخمول)، وتُحرَّر بجَمعٍ أبكر بدل الانتظار حتى يقترب
-#   من السقف الافتراضي.
+#   Next.js API لا معالجةَ بياناتٍ ثقيلة) يضيّق ما يبقى للجزء الذي يحتاجه فعلًا.
+#
+#   ★ ولماذا ١٩٢ لا ١٢٨.
+#
+#     قيست ١٢٨MB كافيةً حين كان التجهيز يُطلب بـ`POST /api/files/:id/rag` وحده.
+#     ثمّ صار الرفعُ نفسُه يصرّف الوظيفة في العمليّة (حتى لا يبقى ملفٌّ عالقًا
+#     على `ready` إن لم يطلب العميلُ شيئًا) — فزاد العملُ المتزامن داخل الكومة،
+#     وسقطت العمليّة على staging بـ
+#       FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+#     أثناء ٣٠ دورة ضغط. ١٩٢MB تُبقي الخفضَ عن الافتراضيّ (٢٧٤MB) وتترك متّسعًا
+#     للتصريف. والرقمُ يُعاد قياسُه بسكربت الضغط لا يُخمَّن.
 #
 # ★ حارسٌ أول من ثلاثة — لا يعمل وحده:
 #   الثاني lib/rag/embedding-space.ts (f2llmEnabled: العَلَمان معًا في الإنتاج)، والثالث
@@ -42,8 +50,8 @@ if [ "${YSD_RAG_EMBEDDING_MODEL:-}" = "f2llm-v2-80m" ]; then
       if [ "${YSD_F2LLM_PRODUCTION_OPT_IN:-}" = "1" ]; then
         export MALLOC_MMAP_THRESHOLD_=65536
         export MALLOC_TRIM_THRESHOLD_=65536
-        export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=128"
-        echo "[entrypoint] f2llm space (production, explicit opt-in): glibc malloc thresholds set (mmap=65536 trim=65536), V8 heap capped at 128MB" >&2
+        export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=192"
+        echo "[entrypoint] f2llm space (production, explicit opt-in): glibc malloc thresholds set (mmap=65536 trim=65536), V8 heap capped at 192MB" >&2
       else
         echo "[entrypoint] YSD_RAG_EMBEDDING_MODEL ignored: production environment without YSD_F2LLM_PRODUCTION_OPT_IN=1" >&2
       fi
@@ -51,8 +59,8 @@ if [ "${YSD_RAG_EMBEDDING_MODEL:-}" = "f2llm-v2-80m" ]; then
     *)
       export MALLOC_MMAP_THRESHOLD_=65536
       export MALLOC_TRIM_THRESHOLD_=65536
-      export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=128"
-      echo "[entrypoint] f2llm space: glibc malloc thresholds set (mmap=65536 trim=65536), V8 heap capped at 128MB" >&2
+      export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=192"
+      echo "[entrypoint] f2llm space: glibc malloc thresholds set (mmap=65536 trim=65536), V8 heap capped at 192MB" >&2
       ;;
   esac
 fi
