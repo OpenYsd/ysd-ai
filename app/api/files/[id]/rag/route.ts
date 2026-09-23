@@ -6,7 +6,7 @@ import { contentHash } from "@/lib/rag/chunking";
 import { enqueueRagJob, getLatestJobForFile } from "@/lib/rag/jobs";
 import { drainOwnJobs, LEASE_SECONDS } from "@/lib/rag/worker";
 import { getActiveSpace } from "@/lib/rag/embedding-space";
-import { isFileEmbeddedInSpace } from "@/lib/rag/space-readiness";
+import { isFileEmbeddedInSpace, settleIfCompleteInSpace } from "@/lib/rag/space-readiness";
 import { PUBLIC_FILE_FIELDS, projectFileForClient } from "@/lib/files/service";
 
 export const runtime = "nodejs";
@@ -65,6 +65,14 @@ export async function POST(
       Date.now() - new Date(active.heartbeat_at).getTime() < LEASE_SECONDS * 1000;
     if (fresh)
       return json({ error: "الملف قيد التجهيز حاليًا | Already processing", job: active }, 409);
+    /**
+     * ★ عالقٌ في منتصف الطريق لكنه كاملٌ في الفضاء الفعّال (وظيفةُ فضاءٍ آخر قلبت
+     *   حالتَه ثمّ ماتت): تُعاد حالتُه بدل إدراج وظيفةٍ يردّها مفتاحُها المكتمل.
+     */
+    if (await settleIfCompleteInSpace(supabase, id, user.id, space)) {
+      const { data: settled } = await supabase.from("files").select(PUBLIC_FILE_FIELDS).eq("id", id).single();
+      return json({ file: await projectFileForClient(supabase, settled), skipped: true, settled: true }, 200);
+    }
   }
 
   const docHash = contentHash(row.extracted_text);

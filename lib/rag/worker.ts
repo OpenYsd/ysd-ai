@@ -9,13 +9,15 @@ import { FILES_BUCKET } from "@/lib/files/service";
 import { extractText } from "@/lib/files/extract";
 import { chunkText, contentHash, type Chunk } from "./chunking";
 import { getEmbeddingProvider } from "./embeddings";
-import { getActiveSpace, RAG_JOB_TYPE_F2LLM } from "./embedding-space";
+import { getActiveSpace, type EmbeddingSpace } from "./embedding-space";
 import { getRagLimits } from "./pipeline";
 import { getRagRuntimeConfig } from "./runtime-config";
 import { tryAcquireDrainSlot } from "./drain-gate";
+import { settleIfCompleteInSpace } from "./space-readiness";
 import {
   claimRagJob,
   completeRagJob,
+  enqueueRagJob,
   failRagJob,
   heartbeatRagJob,
   stillOwnsJob,
@@ -48,6 +50,41 @@ class PermanentError extends Error {
   }
 }
 class CancelledError extends Error {}
+
+/**
+ * ملفٌّ تركته وظيفةٌ ماتت في منتصفه (`chunking`/`embedding`) يُعطى وظيفةَ الفضاء
+ * الفعّال — وإلّا فلا شيء: الجاهزُ لا يُمسّ، والناقصُ يكشفه النطاق ويُجهَّز من هناك.
+ * لا ترمي: الإلغاءُ تمّ، وفشلُ الإدراج يُسجَّل ويبقى استئنافُ الواجهة متاحًا.
+ */
+async function requeueIfMidIndexing(supabase: SupabaseClient, job: RagJob, space: EmbeddingSpace): Promise<void> {
+  try {
+    const { data: f } = await supabase
+      .from("files")
+      .select("status, extracted_text")
+      .eq("id", job.file_id)
+      .eq("user_id", job.user_id)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (!f || (f.status !== "chunking" && f.status !== "embedding")) return;
+    // كاملٌ في الفضاء الفعّال أصلًا: تُعاد حالتُه ولا تُدرج وظيفةٌ (مفتاحُها مكتملٌ فلن تُنشأ)
+    if (await settleIfCompleteInSpace(supabase, job.file_id, job.user_id, space)) {
+      console.info(`[rag-worker] job=${job.id.slice(0, 8)} file=${job.file_id.slice(0, 8)} settled_in_space=${space.id}`);
+      return;
+    }
+    const text = String(f.extracted_text ?? "").trim();
+    if (!text) return;
+    await enqueueRagJob(supabase, {
+      userId: job.user_id,
+      fileId: job.file_id,
+      contentHash: contentHash(text),
+      jobType: space.jobType,
+      keySuffix: space.modelTag ?? undefined,
+    });
+    console.info(`[rag-worker] job=${job.id.slice(0, 8)} file=${job.file_id.slice(0, 8)} requeued_in_space=${space.id}`);
+  } catch (err) {
+    console.error(`[rag-worker] requeue_failed file=${job.file_id.slice(0, 8)} err=${(err as Error).message?.slice(0, 120)}`);
+  }
+}
 
 /** سجل أداء منظّم — لا نصوص ملفات ولا مقاطع ولا مسارات كاملة */
 function perfLog(
@@ -151,10 +188,32 @@ export async function runRagJob(
    */
   const space = getActiveSpace();
   const isV2 = space.id === "f2llm";
-  if (!isV2 && job.job_type === RAG_JOB_TYPE_F2LLM) {
-    // وظيفة فضاءٍ غير مفعّل هنا: لا نمسّ الملف (قد يكون جاهزًا في e5) ولا نكتب متجهًا من نموذجٍ آخر
-    await failRagJob(supabase, job, workerId, "cancelled", "f2llm_disabled", "فضاء F2LLM غير مفعّل في هذه العملية.");
-    perfLog(job, job.file_id, "cancelled", { code: "f2llm_disabled" });
+  /**
+   * ★ الوظيفةُ تُنفَّذ في فضائها وحده — في الاتّجاهين.
+   *
+   *   كان الحارسُ في اتّجاهٍ واحد (وظيفة F2LLM في عمليّة e5). والعكسُ — وظيفةُ e5
+   *   بقيت في الطابور لحظةَ قلب الفضاء إلى F2LLM — كانت تُنفَّذ بمتجهات F2LLM
+   *   وتُعلَّم `completed`. فيُسجَّل مفتاحُ idempotency لِـe5 مكتملًا بلا متجهٍ
+   *   واحدٍ من e5، وحين يعود e5 يرفض `enqueueRagJob` إنشاءَ وظيفةٍ جديدة («مكتملة
+   *   لنفس المحتوى») — فيبقى الملفُّ معلَّقًا في e5 إلى الأبد.
+   *
+   * ★ والملغاةُ لا تترك ملفًّا في منتصف الطريق: إن كان على `chunking`/`embedding`
+   *   (عمليّةٌ ماتت أثناءه) فلا شيءَ آخرُ يحرّكه — النطاقُ يراه «قيد الفهرسة»،
+   *   والطابورُ خالٍ. فتُدرج له وظيفةُ الفضاء الفعّال مكانها. وما عدا ذلك لا يُمسّ:
+   *   الجاهزُ جاهز، والناقصُ يكشفه `needs_active_embedding` ويُجهَّز من هناك.
+   */
+  if (job.job_type !== space.jobType) {
+    const code = isV2 ? "space_mismatch" : "f2llm_disabled";
+    await failRagJob(
+      supabase,
+      job,
+      workerId,
+      "cancelled",
+      code,
+      isV2 ? "وظيفةُ فضاءٍ آخر — تُستبدل بوظيفة الفضاء الفعّال." : "فضاء F2LLM غير مفعّل في هذه العملية.",
+    );
+    perfLog(job, job.file_id, "cancelled", { code });
+    await requeueIfMidIndexing(supabase, job, space);
     return { ok: false, status: "cancelled" };
   }
   /** إضافة v2 لملفٍّ جاهزٍ أصلًا في e5: لا تُقلب حالتُه ولا يُكسر جاهزيتُه القديمة إن فشلت */

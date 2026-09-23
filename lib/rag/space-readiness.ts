@@ -24,6 +24,38 @@ export async function isFileEmbeddedInSpace(
 }
 
 /**
+ * ملفٌّ على `chunking`/`embedding` ومقاطعُه كاملةٌ في الفضاء الفعّال ⇒ يُعاد إلى
+ * `ready_for_rag`. يعيد true إن كان كاملًا (أُعيدت حالتُه أو كانت كذلك).
+ *
+ * ★ لماذا يلزم: وظيفةُ فضاءٍ آخر تقلب حالةَ ملفٍّ جاهزٍ إلى `embedding` ثمّ تموت
+ *   (إعادةُ تشغيلٍ في منتصفها). متجهاتُ الفضاء الفعّال سليمة، لكن الحالة عالقة،
+ *   ووظيفةُ الفضاء الفعّال لا تُنشأ من جديد (مفتاحُها مكتمل) — فلا شيء يحرّكه.
+ *   رُصد حيًّا على staging عبر قلبَي الفضاء. التحديثُ مشروطٌ بالحالة نفسها
+ *   (`in chunking/embedding`) فلا يسابق عاملًا أنهى للتوّ.
+ */
+export async function settleIfCompleteInSpace(
+  supabase: SupabaseClient,
+  fileId: string,
+  userId: string,
+  space: EmbeddingSpace,
+): Promise<boolean> {
+  const { count } = await supabase
+    .from("file_chunks")
+    .select("id", { count: "exact", head: true })
+    .eq("file_id", fileId);
+  if (!count || !(await isFileEmbeddedInSpace(supabase, fileId, space, count))) return false;
+  const patch: Record<string, unknown> = { status: "ready_for_rag", rag_done_chunks: count, rag_total_chunks: count };
+  if (space.id === "f2llm") patch.rag_v2_model = space.modelTag;
+  await supabase
+    .from("files")
+    .update(patch)
+    .eq("id", fileId)
+    .eq("user_id", userId)
+    .in("status", ["chunking", "embedding"]);
+  return true;
+}
+
+/**
  * أيُّ هذه الملفات ينقصه متجهُ الفضاء الفعّال؟ — استعلامٌ واحدٌ للمجموعة كلِّها.
  *
  * ★ لماذا لا يكفي وسمُ الملف (`rag_v2_model`) في الاتّجاهين.

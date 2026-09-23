@@ -512,5 +512,15 @@ export function isIndexingStalled(
   };
   if (job.status === "running") return age(job.heartbeat_at) > opts.leaseMs;
   if (job.status === "queued" || job.status === "retrying") return age(job.available_at) > opts.queuedGraceMs;
+  /**
+   * ★ آخرُ وظيفةٍ أُلغيت أو فشلت والملفُّ ما يزال في منتصف الطريق: لا عاملَ حيّ
+   *   يكمله. يقع هذا حين تُلغى وظيفةٌ عند قلب الفضاء وقد تركت الملفَّ على
+   *   `embedding`. والاستئنافُ هنا يُنشئ وظيفةً جديدة فعلًا.
+   *   أمّا `completed` فسباقٌ عابر (الحالةُ تُكتب بعد الوظيفة)، والاستئنافُ لا
+   *   يجدي فيه: مفتاحُ idempotency المكتمل يردّ الطلب — فلا يُستعجل.
+   */
+  if (job.status === "cancelled" || job.status === "failed") {
+    return spaceGap || file.status === "ready" || file.status === "chunking" || file.status === "embedding";
+  }
   return false;
 }

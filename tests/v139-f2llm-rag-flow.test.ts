@@ -411,3 +411,95 @@ describe("★ (٦) مسار /rag — «جاهز» يعني جاهزًا في ا�
     expect(jobsOf(db, file.id)).toHaveLength(1);
   });
 });
+
+/**
+ * ══════════════════════════════════════════════════════════════════
+ *  ★ (٧) قلبُ الفضاء ووظيفةٌ في الطابور — لا تُنفَّذ في فضاءٍ غير فضائها
+ *
+ *  وُجد بقراءة الكود أثناء تشغيل staging عبر قلبَين: وظيفةُ e5 بقيت في الطابور
+ *  لحظةَ القلب إلى F2LLM كانت تُنفَّذ بمتجهات F2LLM وتُعلَّم `completed`. فيصير
+ *  مفتاحُ idempotency لِـe5 «مكتملًا» بلا متجه e5، ويرفض `enqueueRagJob` وظيفةً
+ *  جديدة حين يعود e5 — ملفٌّ معلَّقٌ إلى الأبد.
+ * ══════════════════════════════════════════════════════════════════
+ */
+describe("★ (٧) وظيفةٌ من فضاءٍ آخر في الطابور عند القلب", () => {
+  it("★ ★ ★ وظيفةُ e5 تلتقطها عمليّةُ F2LLM: تُلغى ولا يُكتب متجهٌ ولا يُحجز مفتاحُ e5", async () => {
+    flagOff();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2), status: "ready_for_rag", rag_content_hash: contentHash(doc(2)) });
+    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)) });
+    flagOn();
+    fake.batches.length = 0;
+    await drainOwnJobs(db.client, { workerId: "w:on" });
+    const [job] = jobsOf(db, file.id);
+    expect(job!.status).toBe("cancelled");
+    expect(job!.error_code).toBe("space_mismatch");
+    expect(fake.batches).toEqual([]);
+    expect(file.status).toBe("ready_for_rag");
+
+    // ★ حين يعود e5 تُنشأ وظيفةٌ جديدة فعلًا — المفتاحُ لم يُحجز بوظيفةٍ «مكتملة» كاذبة
+    flagOff();
+    const again = await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)) });
+    expect("error" in again ? again.error : again.created).toBe(true);
+  });
+
+  it("★ ★ ★ وتركت الملفَّ في منتصف الفهرسة ⇒ تُستبدل بوظيفة الفضاء الفعّال وتكتمل", async () => {
+    flagOff();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2), status: "embedding" });
+    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)) });
+    flagOn();
+    // تصريفٌ أوّل يلغي وظيفةَ e5 ويُدرج بديلتَها، والتالي (أو التالية في الدفعة نفسها) يكملها
+    await drainOwnJobs(db.client, { workerId: "w:on" });
+    await drainOwnJobs(db.client, { workerId: "w:on2" });
+    const jobs = jobsOf(db, file.id);
+    expect(jobs.map((j) => [j.job_type, j.status])).toEqual([
+      [RAG_JOB_TYPE_E5, "cancelled"],
+      [RAG_JOB_TYPE_F2LLM, "completed"],
+    ]);
+    expect(file.status).toBe("ready_for_rag");
+    expect(file.rag_v2_model).toBe(TAG);
+    for (const c of chunkTexts(db, file.id)) expect(c.embedding_v2_model).toBe(TAG);
+  });
+
+  it("★ ★ ★ الحالُ المرصود على staging: كاملٌ في F2LLM لكن وظيفةَ e5 قلبته إلى embedding ثمّ ماتت ⇒ تُعاد حالتُه بلا وظيفة", async () => {
+    flagOn();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2) });
+    await index(db, file, RAG_JOB_TYPE_F2LLM);
+    expect(file.status).toBe("ready_for_rag");
+    const v2Before = JSON.stringify(chunkTexts(db, file.id).map((c) => c.embedding_v2));
+    // e5 التقط الملفَّ (قلب حالتَه) ثمّ ماتت العمليّة؛ الوظيفةُ في الطابور
+    flagOff();
+    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)) });
+    file.status = "embedding";
+    flagOn();
+    fake.batches.length = 0;
+    await drainOwnJobs(db.client, { workerId: "w:on" });
+    await drainOwnJobs(db.client, { workerId: "w:on2" });
+    expect(file.status).toBe("ready_for_rag");
+    expect(fake.batches).toEqual([]); // لا إعادة تضمين: المتجهاتُ كاملة
+    expect(JSON.stringify(chunkTexts(db, file.id).map((c) => c.embedding_v2))).toBe(v2Before);
+    expect(jobsOf(db, file.id).map((j) => [j.job_type, j.status])).toEqual([
+      [RAG_JOB_TYPE_F2LLM, "completed"],
+      [RAG_JOB_TYPE_E5, "cancelled"],
+    ]);
+  });
+
+  it("★ ★ ★ والعكس: وظيفةُ F2LLM في عمليّة e5 تركت الملفَّ على embedding ⇒ وظيفةُ e5 مكانها", async () => {
+    flagOn();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2), status: "embedding" });
+    await enqueueRagJob(db.client, { userId: USER, fileId: file.id as string, contentHash: contentHash(doc(2)), jobType: RAG_JOB_TYPE_F2LLM, keySuffix: TAG });
+    flagOff();
+    await drainOwnJobs(db.client, { workerId: "w:off" });
+    await drainOwnJobs(db.client, { workerId: "w:off2" });
+    const jobs = jobsOf(db, file.id);
+    expect(jobs.map((j) => [j.job_type, j.status, j.error_code ?? null])).toEqual([
+      [RAG_JOB_TYPE_F2LLM, "cancelled", "f2llm_disabled"],
+      [RAG_JOB_TYPE_E5, "completed", null],
+    ]);
+    expect(file.status).toBe("ready_for_rag");
+    for (const c of chunkTexts(db, file.id)) expect((c.embedding as number[]).length).toBe(384);
+  });
+});
