@@ -74,6 +74,7 @@ const draft = (over: Partial<ComposerAttachment> & { key: string }): ComposerAtt
   serverStatus: null,
   ragRequested: false,
   aiContext: false,
+  spaceTransition: false,
   errorKind: null,
   errorMessage: null,
   retry: null,

@@ -5,6 +5,7 @@ import {
   getFileLimits,
   getFileUsage,
   PUBLIC_FILE_FIELDS,
+  projectFilesForClient,
 } from "@/lib/files/service";
 
 export const runtime = "nodejs";
@@ -45,7 +46,7 @@ export async function GET(req: NextRequest) {
   ]);
   if (error) return json({ error: "تعذّر جلب الملفات | Failed to list files" }, 500);
 
-  return json({ files: files ?? [], usage, limits }, 200);
+  return json({ files: await projectFilesForClient(supabase, files), usage, limits }, 200);
 }
 
 function json(body: unknown, status: number) {

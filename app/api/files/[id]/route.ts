@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { linkFileSchema } from "@/lib/validation/files";
-import { FILES_BUCKET, PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { FILES_BUCKET, PUBLIC_FILE_FIELDS, projectFileForClient } from "@/lib/files/service";
 import { getLatestJobForFile } from "@/lib/rag/jobs";
 
 export const runtime = "nodejs";
@@ -32,7 +32,7 @@ export async function GET(
 
   // حالة وظيفة التجهيز من قاعدة البيانات — لتعرضها الواجهة بعد التحديث
   const job = await getLatestJobForFile(supabase, id, user.id);
-  return json({ file: data, job }, 200);
+  return json({ file: await projectFileForClient(supabase, data), job }, 200);
 }
 
 /** ربط/فك ربط الملف بمشروع أو محادثة — مع تحقق الملكية */

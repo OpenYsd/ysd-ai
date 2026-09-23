@@ -519,7 +519,9 @@ describe("★ (٥) الحدود القائمة", () => {
   it("★ ★ ★ ولا ترحيلَ جديدًا في هذه المرحلة", () => {
     /**
      * المراقبةُ والتعافي لا يحتاجان مخطّطًا — و0047 مُطبَّقٌ رسميًّا.
-     * (فرع تجربة F2LLM: يُضيف الترحيلَ الوحيد 0048 — إضافيًّا محضًا، وله حارسُه في v139-f2llm-migration.)
+     * (فرع تجربة F2LLM: 0048 أعمدةُ الفضاء الثاني، و0049 فهرسُ بصمةِ المحتوى —
+     *  كلاهما إضافيٌّ محضٌ لا يحذف ولا يغيّر شيئًا قائمًا، ولهما حارسُهما في
+     *  v139-f2llm-migration و v141-file-pipeline-determinism.)
      */
     const { readdirSync } = require("node:fs") as typeof import("node:fs");
     const versions = readdirSync("supabase/migrations")
@@ -527,7 +529,7 @@ describe("★ (٥) الحدود القائمة", () => {
       .map((f) => f.slice(0, f.indexOf("_")));
     const legacyNums = versions.filter((v) => v.length === 4).map(Number);
     expect(legacyNums).toContain(47);
-    expect(Math.max(...legacyNums)).toBe(48);
+    expect(Math.max(...legacyNums)).toBe(49);
     expect(new Set(versions).size).toBe(versions.length);
   });
 });

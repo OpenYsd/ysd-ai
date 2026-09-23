@@ -187,6 +187,8 @@ export interface Attachment {
   ragTotal?: number | null;
   ragDone?: number | null;
   ragError?: string | null;
+  /** ينقصُه تضمينُ فضاء البحث النّاشِط — «قيد التجهيز» لا «جاهز» */
+  needsActiveEmbedding?: boolean | null;
 }
 
 interface ChatViewProps {

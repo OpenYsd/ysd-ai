@@ -53,6 +53,7 @@ import {
   classifyUploadFailure,
   fromServerFile,
   isImageMime,
+  isExtractionStalled,
   isIndexingStalled,
   localizeServerMessage,
   validateSelection,
@@ -91,6 +92,11 @@ export const COMPOSER_TIMINGS = {
   stallMinAgeMs: 30_000,
   nudgeGapMs: 60_000,
   maxNudges: 3,
+  /**
+   * استخراجٌ لم يتغيّر صفُّه منذ هذه المدّة ميّت: أطولُ استخراجٍ مشروع يقع
+   * داخل مهلة طلب الرفع (maxDuration = 120 ث)، والهامشُ ضعفُها ونصف.
+   */
+  extractStallMs: 300_000,
 };
 
 export interface InitialConversationFile {
@@ -102,6 +108,8 @@ export interface InitialConversationFile {
   ragTotal?: number | null;
   ragDone?: number | null;
   ragError?: string | null;
+  /** ينقصُه تضمينُ الفضاء النّاشِط — يُعرض «قيد التجهيز» لا «جاهز» */
+  needsActiveEmbedding?: boolean | null;
 }
 
 /** مَصبّ تقدّم الرفع — يُحوَّل إلى المكوّن الذي تبنّى الرفع */
@@ -193,6 +201,7 @@ export function useComposerAttachments({
         rag_total_chunks: f.ragTotal ?? null,
         rag_done_chunks: f.ragDone ?? null,
         rag_error: f.ragError ?? null,
+        needs_active_embedding: f.needsActiveEmbedding ?? false,
       }),
     ),
   );
@@ -260,6 +269,39 @@ export function useComposerAttachments({
   );
 
   /**
+   * ★ استخراجٌ مات في منتصفه: يُعاد تلقائيًّا — مرّاتٍ محدودة متباعدة.
+   *
+   *   بلا هذا تبقى البطاقةُ «قيد المعالجة» إلى الأبد والإرسالُ محجوبٌ عليها.
+   *   والحدُّ نفسُ حدّ استئناف التجهيز: بعده خطأٌ بزرّ «أعد الاستخراج» —
+   *   والخطأُ لا يحجب الإرسال، فلا تُسجن المحادثة.
+   */
+  const reextract = useCallback(
+    (fileId: string) => {
+      const key = `extract:${fileId}`;
+      const now = Date.now();
+      const n = nudges.current.get(key) ?? { count: 0, at: 0 };
+      if (now - n.at < COMPOSER_TIMINGS.nudgeGapMs) return;
+      if (n.count >= COMPOSER_TIMINGS.maxNudges) {
+        update({ type: "extractFailed", fileId, message: null });
+        return;
+      }
+      nudges.current.set(key, { count: n.count + 1, at: now });
+      void (async () => {
+        const res = await fetch(`/api/files/${fileId}/process`, { method: "POST" }).catch(() => null);
+        if (!mounted.current || !res) return;
+        if (res.status === 429) return;
+        if (!res.ok) {
+          update({ type: "extractFailed", fileId, message: await readError(res, localeRef.current) });
+          return;
+        }
+        const j = (await res.json().catch(() => null)) as { file?: ServerFileState } | null;
+        if (j?.file) update({ type: "serverState", fileId, file: j.file });
+      })();
+    },
+    [update],
+  );
+
+  /**
    * متابعة حالة ملفٍّ على الخادم حتى حالةٍ نهائيّة — استطلاعٌ واحدٌ لكل ملف.
    * يتباطأ حين لا يتغيّر شيء، ولا ينقطع بعد مدّةٍ ثابتة، ويستأنف ما توقّف.
    */
@@ -297,9 +339,19 @@ export function useComposerAttachments({
             continue;
           }
           const after = stateRef.current.find((a) => a.fileId === fileId);
-          if (!after || after.phase === "error" || TERMINAL.has(file.status)) return;
+          /**
+           * ★ `ready_for_rag` نهائيّةٌ — إلّا إن نقصه تضمينُ الفضاء النّاشِط.
+           *   لو خرج الاستطلاعُ هنا لما بلغ الاستئنافَ أدناه قطّ: استطلاعٌ واحد،
+           *   ثمّ بطاقةٌ «قيد التجهيز» وإرسالٌ محجوبٌ إلى الأبد.
+           */
+          const settled =
+            TERMINAL.has(file.status) && !(file.status === "ready_for_rag" && file.needs_active_embedding === true);
+          if (!after || after.phase === "error" || settled) return;
           const waitingForRag = after.phase === "indexing" || autoRag.current.has(fileId);
           if (!waitingForRag && after.phase !== "processing") return;
+          if (after.phase === "processing" && isExtractionStalled(file, Date.now(), COMPOSER_TIMINGS.extractStallMs)) {
+            reextract(fileId);
+          }
 
           const signature = `${file.status}|${file.rag_done_chunks ?? ""}|${j.job?.status ?? ""}|${j.job?.heartbeat_at ?? ""}`;
           delay = signature !== lastSignature
@@ -323,7 +375,7 @@ export function useComposerAttachments({
         polling.current.delete(fileId);
       }
     },
-    [nudge, update],
+    [nudge, reextract, update],
   );
 
   /**
@@ -701,10 +753,33 @@ export function useComposerAttachments({
       clearTimeout(carry.timer);
       adopt(conversationId, carry);
     }
-    // تجهيزٌ بدأ قبل إعادة التحميل: يُتابَع — ويُستأنف إن كان قد توقّف
+    /**
+     * تجهيزٌ بدأ قبل إعادة التحميل: يُتابَع — ويُستأنف إن كان قد توقّف.
+     *
+     * ★ الشرطُ مرحلةٌ لا حالةُ خادم: `indexing` تشمل chunking/embedding كما
+     *   كانت، وتشملُ معها ملفًّا حالتُه `ready_for_rag` ينقصُه تضمينُ الفضاء
+     *   النّاشِط. ولولا شمولُه لبقي ذلك الملفُ بلا استطلاعٍ ولا استئناف،
+     *   والإرسالُ محجوبٌ عليه إلى الأبد.
+     */
     for (const a of stateRef.current) {
-      if (a.scope === "context" && a.fileId && (a.serverStatus === "chunking" || a.serverStatus === "embedding")) {
+      if (a.scope !== "context" || !a.fileId) continue;
+      if (a.phase === "indexing") {
         void poll(a.fileId);
+      } else if (a.phase === "processing") {
+        /**
+         * ★ استخراجٌ بدأ قبل التحميل: يُتابَع، ويُعاد إن كان قد مات.
+         *   كان لا يُستطلع أصلًا، فبقي ملفُّ الإنتاج العالقُ على `processing`
+         *   يحجب الإرسالَ في محادثته إلى الأبد.
+         */
+        if (!isImageMime(a.mime)) autoRag.current.add(a.fileId);
+        void poll(a.fileId);
+      } else if (a.serverStatus === "ready" && !isImageMime(a.mime)) {
+        /**
+         * ★ مستندٌ استُخرج نصُّه ولم يُجهَّز قط (الملفّاتُ العشرة العالقة في
+         *   الإنتاج): التجهيزُ يُطلب تلقائيًّا. الانتظارُ على زرٍّ يضغطه
+         *   المستخدم هو بعينه ما تركها عالقة، والإرسالُ محجوبٌ حتى تجهز.
+         */
+        requestRagRef.current(a.fileId);
       }
     }
 

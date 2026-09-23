@@ -12,7 +12,7 @@ vi.mock("../lib/rag/retrieval", () => ({
 import { getConversationFileScope } from "../lib/rag/retrieval";
 
 /** اختصار: جاهزٌ فقط (الحالة الغالبة في هذه الاختبارات) */
-const ready = (ids: string[]) => ({ readyIds: ids, pendingIds: [] as string[] });
+const ready = (ids: string[]) => ({ readyIds: ids, pendingIds: [] as string[], pending: [] });
 
 const delay = (ms: number, value: unknown) =>
   new Promise((res) => setTimeout(() => res(value), ms));

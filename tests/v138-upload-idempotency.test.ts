@@ -16,6 +16,8 @@ interface Q { table: string; op: string; payload?: unknown; filters: Array<[stri
 
 const state = vi.hoisted(() => ({
   existing: null as Record<string, unknown> | null,
+  /** توأمُ المحتوى (بصمةُ البايتات) — `null` يعني: لا ملفَّ بالبايتات نفسِها */
+  twin: null as Record<string, unknown> | null,
   calls: [] as Array<{ table: string; op: string; payload?: unknown; filters: Array<[string, unknown]> }>,
   storageUploads: 0,
 }));
@@ -27,6 +29,9 @@ function makeClient() {
       state.calls.push(q);
       if (table === "files" && q.op === "select" && q.filters.some(([c]) => c === "metadata->>client_upload_id")) {
         return { data: state.existing, error: null };
+      }
+      if (table === "files" && q.op === "select" && q.filters.some(([c]) => c === "metadata->>content_sha256")) {
+        return { data: state.twin, error: null };
       }
       if (table === "conversations") return { data: { id: CONV }, error: null };
       if (table === "files" && q.op === "insert") return { data: null, error: null };
@@ -83,6 +88,7 @@ function uploadRequest(clientUploadId?: string) {
 
 beforeEach(() => {
   state.existing = null;
+  state.twin = null;
   state.calls.length = 0;
   state.storageUploads = 0;
   service.processFile.mockClear();
@@ -111,16 +117,26 @@ describe("★ (١) إعادة رفعِ ملفٍّ حُفظ — لا نسخةَ �
     const res = await POST(uploadRequest(CLIENT_ID));
     expect(res.status).toBe(201);
     const insert = state.calls.find((c) => c.op === "insert")!;
-    expect(insert.payload).toMatchObject({ metadata: { client_upload_id: CLIENT_ID }, conversation_id: CONV, status: "uploaded" });
+    expect(insert.payload).toMatchObject({
+      metadata: { client_upload_id: CLIENT_ID, content_sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      conversation_id: CONV,
+      status: "uploaded",
+    });
     expect(state.storageUploads).toBe(1);
-    expect(service.processFile).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ metadata: { client_upload_id: CLIENT_ID } }));
+    expect(service.processFile).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ metadata: expect.objectContaining({ client_upload_id: CLIENT_ID }) }),
+    );
   });
 
   it("★ ★ ★ ومن غير معرّف: السلوك القديم كما هو (metadata فارغ)", async () => {
     const res = await POST(uploadRequest());
     expect(res.status).toBe(201);
     expect(state.calls.some((c) => c.filters.some(([col]) => col === "metadata->>client_upload_id"))).toBe(false);
-    expect(state.calls.find((c) => c.op === "insert")!.payload).toMatchObject({ metadata: {} });
+    // ★ البصمةُ تُكتب ولو بلا معرّف عميل: بها وحدها تُمنع إعادةُ الاختيار من التكرار
+    const payload = state.calls.find((c) => c.op === "insert")!.payload as { metadata: Record<string, unknown> };
+    expect(Object.keys(payload.metadata)).toEqual(["content_sha256"]);
+    expect(payload.metadata.content_sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("★ ★ ★ ومعرّفٌ غير صالح يُرفض 400 — لا يُحقن في استعلام", async () => {

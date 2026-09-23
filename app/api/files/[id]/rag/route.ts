@@ -7,7 +7,7 @@ import { enqueueRagJob, getLatestJobForFile } from "@/lib/rag/jobs";
 import { drainOwnJobs, LEASE_SECONDS } from "@/lib/rag/worker";
 import { getActiveSpace } from "@/lib/rag/embedding-space";
 import { isFileEmbeddedInSpace } from "@/lib/rag/space-readiness";
-import { PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { PUBLIC_FILE_FIELDS, projectFileForClient } from "@/lib/files/service";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -78,7 +78,7 @@ export async function POST(
     // «جاهز» = جاهز في الفضاء الفعّال: ملفٌّ جاهزٌ في e5 وحده لا يُتخطّى إن كان الفضاء F2LLM
     if ((count ?? 0) > 0 && (await isFileEmbeddedInSpace(supabase, id, space, count ?? 0))) {
       const { data: fresh } = await supabase.from("files").select(PUBLIC_FILE_FIELDS).eq("id", id).single();
-      return json({ file: fresh, skipped: true, totalChunks: count }, 200);
+      return json({ file: await projectFileForClient(supabase, fresh), skipped: true, totalChunks: count }, 200);
     }
   }
 
@@ -104,7 +104,7 @@ export async function POST(
     getLatestJobForFile(supabase, id, user.id),
   ]);
   const ok = fresh?.status === "ready_for_rag";
-  return json({ file: fresh, job, skipped: false, queued: drained.busy }, ok ? 200 : 202);
+  return json({ file: await projectFileForClient(supabase, fresh), job, skipped: false, queued: drained.busy }, ok ? 200 : 202);
 }
 
 function json(body: unknown, status: number) {

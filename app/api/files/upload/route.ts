@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -18,11 +19,9 @@ import {
   getFileUsage,
   processFile,
   PUBLIC_FILE_FIELDS,
+  projectFileForClient,
 } from "@/lib/files/service";
-import { contentHash } from "@/lib/rag/chunking";
-import { enqueueRagJob } from "@/lib/rag/jobs";
-import { drainOwnJobs } from "@/lib/rag/worker";
-import { getActiveSpace } from "@/lib/rag/embedding-space";
+import { scheduleIndexingAfterExtraction } from "@/lib/rag/server-indexing";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -89,6 +88,21 @@ export async function POST(req: NextRequest) {
    * المختار، ومن يعيد الرفعَ بالمعرّف نفسه يُعاد إليه الملفُّ القائم — قبل
    * فحص الحصّة، فلا يُرفض لأنّ ملفَّه نفسَه عُدَّ عليه.
    */
+  /**
+   * ★ إعادةُ الاستعمال مشروطةٌ بتطابق المحادثة — لا بالمعرّف وحده.
+   *
+   *   كان يكفي `client_upload_id` ليُعاد الصفُّ القائم أيًّا كانت محادثتُه.
+   *   فمن بدأ رفعًا في محادثة (أ) ثم انتقل إلى (ب) قبل وصول الردّ، تُعيد له
+   *   المصالحةُ ملفًّا مربوطًا بـ(أ) بينما واجهتُه تعرضه في (ب): ربطٌ خاطئ
+   *   صامت، ومنه تسريبُ استرجاعٍ بين محادثتين.
+   *
+   *   القاعدة الحتميّة هنا:
+   *     • المحادثةُ نفسُها        ⇒ يُعاد الصفُّ القائم (مصالحةٌ صحيحة).
+   *     • الصفُّ بلا محادثة        ⇒ يُتبنّى ويُربط بهذه المحادثة صراحةً.
+   *     • محادثةٌ أخرى            ⇒ **لا يُعاد**: يمضي الطلبُ إلى صفٍّ جديد
+   *       مربوطٍ بمحادثته. فلا يُنقل ملفٌّ من محادثةٍ إلى أخرى تحت ستار
+   *       «إعادة استعمال»، ولا تفقد (أ) مرفقَها.
+   */
   if (clientUploadId) {
     const { data: existing } = await supabase
       .from("files")
@@ -98,7 +112,36 @@ export async function POST(req: NextRequest) {
       .eq("metadata->>client_upload_id", clientUploadId)
       .limit(1)
       .maybeSingle();
-    if (existing) return json({ file: existing, reused: true }, 200);
+    if (existing) {
+      const target = conversationId ?? null;
+      const current = (existing as { conversation_id: string | null }).conversation_id ?? null;
+      if (current === target)
+        return json({ file: await projectFileForClient(supabase, existing), reused: true }, 200);
+      if (current === null && target !== null) {
+        const { data: owned } = await supabase
+          .from("conversations").select("id").eq("id", target)
+          .eq("user_id", user.id).is("deleted_at", null).maybeSingle();
+        if (owned) {
+          const { data: relinked } = await supabase
+            .from("files")
+            .update({ conversation_id: target })
+            .eq("id", (existing as { id: string }).id)
+            .eq("user_id", user.id)
+            .select(PUBLIC_FILE_FIELDS)
+            .single();
+          console.info(
+            `[files-pipeline] upload_relinked file_id=${(existing as { id: string }).id} conversation_id=${target}`,
+          );
+          return json(
+            { file: await projectFileForClient(supabase, relinked ?? existing), reused: true, relinked: true },
+            200,
+          );
+        }
+      }
+      console.info(
+        `[files-pipeline] upload_reuse_declined_conversation_mismatch existing_conversation=${current ?? "none"} requested_conversation=${target ?? "none"}`,
+      );
+    }
   }
 
   // الحدود من الإعداد المركزي
@@ -107,6 +150,7 @@ export async function POST(req: NextRequest) {
     getFileUsage(supabase, user.id),
   ]);
   const maxBytes = limits.maxFileMb * 1024 * 1024;
+  // ★ حدُّ الحجم **قبل** قراءة البايتات: لا يُحمَّل في الذاكرة ما سيُرفض.
   if (fileEntry.size > maxBytes) {
     // الحد الفعلي = min(حد الباقة, سقف مزود التخزين)
     const reason = limits.providerLimited
@@ -114,6 +158,32 @@ export async function POST(req: NextRequest) {
       : `حجم الملف يتجاوز حد باقتك (${limits.maxFileMb}MB) | File exceeds plan limit`;
     return json({ error: reason }, 413);
   }
+
+  /**
+   * ★ بصمةُ المحتوى: إعادةُ اختيار الملفِّ نفسِه لا تُنشئ صفًّا ثانيًا.
+   *
+   *   `client_upload_id` يمنع تكرارَ **الطلب** المعاد، لا تكرارَ **الاختيار**:
+   *   من ظنّ الرفعَ فاشلًا فاختار الملفَّ نفسَه من جديد يحمل معرّفًا جديدًا،
+   *   فيُنشأ صفٌّ ثانٍ. رُصد حيًّا: ثلاثةُ صفوفٍ لملفٍّ واحد في الإنتاج.
+   *
+   *   والمفتاحُ بصمةُ البايتات لا الاسم: اسمٌ واحدٌ بمحتوًى مختلف ملفّان
+   *   مختلفان (فلا يُبتلع أحدهما)، ومحتوًى واحدٌ باسمٍ مختلف هو الملفُّ نفسه.
+   *   والنطاقُ محادثةٌ واحدة: الملفُّ نفسُه في محادثةٍ أخرى مرفقٌ آخرُ لها
+   *   ربطُها الخاصّ — فلا تتسرّب مرفقاتٌ بين المحادثات.
+   */
+  const buffer = Buffer.from(await fileEntry.arrayBuffer());
+  const contentSha = createHash("sha256").update(buffer).digest("hex");
+  const twin = await findContentTwin(supabase, user.id, contentSha, fileEntry.size, conversationId ?? null);
+  if (twin) {
+    console.info(
+      `[files-pipeline] upload_deduped_by_content file_id=${(twin as { id: string }).id} conversation_id=${conversationId ?? "none"}`,
+    );
+    return json(
+      { file: await projectFileForClient(supabase, twin), reused: true, dedupedBy: "content" },
+      200,
+    );
+  }
+
   if (usage.count + 1 > limits.maxFiles)
     return json({ error: `بلغت الحد الأقصى لعدد الملفات (${limits.maxFiles}) | File count limit reached` }, 403);
   if (usage.bytes + fileEntry.size > limits.maxStorageMb * 1024 * 1024)
@@ -144,6 +214,8 @@ export async function POST(req: NextRequest) {
   );
 
   // صف قاعدة البيانات أولًا (status: uploaded)
+  const fileMetadata: Record<string, string> = { content_sha256: contentSha };
+  if (clientUploadId) fileMetadata.client_upload_id = clientUploadId;
   const { error: insertError } = await supabase.from("files").insert({
     id: fileId,
     user_id: user.id,
@@ -155,15 +227,36 @@ export async function POST(req: NextRequest) {
     mime_type: fileEntry.type.split(";")[0]?.trim().toLowerCase(),
     size_bytes: fileEntry.size,
     status: "uploaded",
-    metadata: clientUploadId ? { client_upload_id: clientUploadId } : {},
+    metadata: fileMetadata,
   });
   if (insertError) {
+    /**
+     * ★ 23505 هنا ليست خطأً: هي الفهرسُ الفريد يحسم سباقًا.
+     *
+     *   الفحصُ أعلاه يقرأ ثمّ يكتب، وبين القراءة والكتابة نافذةٌ يسع فيها
+     *   طلبٌ متزامنٌ بالبايتات نفسِها أن يسبق. الفحصُ وحده يترك التكرار
+     *   ممكنًا؛ والفهرسُ الجزئيُّ الفريد يجعله مستحيلًا. فمن خسر السباقَ
+     *   يقرأ صفَّ الرابح ويعيده — والنتيجةُ صفٌّ واحدٌ لا صفّان.
+     */
+    if (insertError.code === "23505") {
+      const winner = await findContentTwin(
+        supabase, user.id, contentSha, fileEntry.size, conversationId ?? null,
+      );
+      if (winner) {
+        console.info(
+          `[files-pipeline] upload_deduped_by_index file_id=${(winner as { id: string }).id} conversation_id=${conversationId ?? "none"}`,
+        );
+        return json(
+          { file: await projectFileForClient(supabase, winner), reused: true, dedupedBy: "content" },
+          200,
+        );
+      }
+    }
     console.error(`[files] insert failed: code=${insertError.code}`);
     return json({ error: "تعذّر تسجيل الملف | Failed to register file" }, 500);
   }
 
   // الرفع إلى التخزين الخاص — سياسات Storage تفرض أن المسار يبدأ بمعرّف المستخدم
-  const buffer = Buffer.from(await fileEntry.arrayBuffer());
   const { error: storageError } = await supabase.storage
     .from(FILES_BUCKET)
     .upload(storagePath, buffer, { contentType: allowed.mimes[0], upsert: false });
@@ -180,7 +273,7 @@ export async function POST(req: NextRequest) {
     storage_path: storagePath,
     original_name: safeName,
     mime_type: fileEntry.type,
-    metadata: clientUploadId ? { client_upload_id: clientUploadId } : {},
+    metadata: fileMetadata,
   });
 
   const { data: fresh } = await supabase
@@ -210,46 +303,43 @@ export async function POST(req: NextRequest) {
    * ★ وفشلُ الإدراج لا يُسقط الرفع: الملفُّ محفوظٌ ونصُّه مستخرَج، ويبقى
    *   طلبُ التجهيز الصريح متاحًا. يُسجَّل ولا يُرمى.
    */
-  const isDocument = !fresh?.mime_type?.startsWith("image/");
-  if (isDocument && fresh?.status === "ready") {
-    try {
-      const { data: row } = await supabase
-        .from("files")
-        .select("extracted_text")
-        .eq("id", fileId)
-        .single();
-      const text = (row?.extracted_text ?? "").trim();
-      if (text) {
-        const space = getActiveSpace();
-        const enqueued = await enqueueRagJob(supabase, {
-          userId: user.id,
-          fileId,
-          contentHash: contentHash(text),
-          jobType: space.jobType,
-          keySuffix: space.modelTag ?? undefined,
-        });
-        console.info(
-          `[files-pipeline] upload_enqueued_rag file_id=${fileId} conversation_id=${conversationId ?? "none"} ` +
-            `space=${space.id} enqueued=${"error" in enqueued ? `failed:${enqueued.error}` : enqueued.created}`,
-        );
-        /**
-         * ★ تصريفٌ لا يُنتظر — الردُّ يخرج الآن، والعملُ يكمل بعده.
-         *
-         *   الخدمةُ عمليّةُ Node دائمة (لا دالّةٌ عابرة)، فما لا يُنتظر يكمل
-         *   فعلًا. والبوّابةُ تحدّه بواحدٍ في آنٍ واحد، فلا ترفع رفعةٌ متعدّدة
-         *   الذاكرةَ فوق الحدّ. والمشغولةُ تعود فورًا والوظيفةُ باقيةٌ في
-         *   الطابور يلتقطها أوّلُ طلبٍ تالٍ.
-         */
-        void drainOwnJobs(supabase, { workerId: `upload:${fileId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
-          console.error(`[files-pipeline] upload_drain_failed file_id=${fileId} err=${(err as Error).message?.slice(0, 120)}`),
-        );
-      }
-    } catch (err) {
-      console.error(`[files-pipeline] upload_enqueue_failed file_id=${fileId} err=${(err as Error).message?.slice(0, 120)}`);
-    }
-  }
+  // ★ التجهيزُ يُدرَج هنا — لا يُنتظر أن يطلبه المتصفّح (انظر server-indexing)
+  await scheduleIndexingAfterExtraction(supabase, {
+    userId: user.id,
+    fileId,
+    origin: "upload",
+    conversationId: conversationId ?? null,
+  });
 
-  return json({ file: fresh }, 201);
+  return json({ file: await projectFileForClient(supabase, fresh), reused: false }, 201);
+}
+
+/**
+ * توأمُ المحتوى داخل النطاق نفسِه — أو لا شيء.
+ *
+ * ★ المطابقةُ بالبايتات (sha256) **والحجم** معًا، لا بالاسم: فملفّان باسمٍ
+ *   واحدٍ ومحتوًى مختلف يبقيان ملفّين، ولا يبتلع أحدُهما الآخر.
+ * ★ والنطاقُ المحادثةُ نفسُها: الملفُّ نفسُه في محادثةٍ أخرى مرفقٌ مستقلٌّ لها
+ *   ربطُه الخاصّ، فلا يعبر مرفقٌ من محادثةٍ إلى أخرى.
+ */
+async function findContentTwin(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  contentSha: string,
+  sizeBytes: number,
+  conversationId: string | null,
+) {
+  let q = supabase
+    .from("files")
+    .select(PUBLIC_FILE_FIELDS)
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .eq("metadata->>content_sha256", contentSha)
+    .eq("size_bytes", sizeBytes);
+  q = conversationId ? q.eq("conversation_id", conversationId) : q.is("conversation_id", null);
+  // واحدٌ على الأكثر: الفهرسُ الجزئيُّ الفريد يمنع وجودَ ثانٍ بالبصمة نفسها
+  const { data } = await q.limit(1).maybeSingle();
+  return data;
 }
 
 function json(body: unknown, status: number, extra: Record<string, string> = {}) {

@@ -49,6 +49,7 @@ import {
   NO_MATCH_HINT,
   FILES_PENDING_HINT,
   getActiveSpaceForDiagnostics as getActiveSpace,
+  ensureActiveSpaceJobs,
   retrieveSnippets,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
@@ -70,6 +71,7 @@ import {
   type RecoveryStatus,
   type RecoveryTelemetry,
 } from "@/lib/evidence/evidence-recovery";
+import { drainOwnJobs } from "@/lib/rag/worker";
 import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
 import {
   emptyRetrievalTimings,
@@ -681,7 +683,7 @@ export async function POST(req: NextRequest) {
   if (newTitle) convUpdate.title = newTitle;
 
   const tCtx = Date.now();
-  const { history, contextFileIds, pendingFileIds, dbMs } = await gatherChatContext(supabase, {
+  const { history, contextFileIds, pendingFileIds, pendingFiles, dbMs } = await gatherChatContext(supabase, {
     conversationId,
     userId,
     projectId: conv.project_id,
@@ -728,6 +730,30 @@ export async function POST(req: NextRequest) {
   /** دفاعيّة مقصودة: حقلٌ ناقص هنا كان سيُسقط طلبَ المحادثة كلَّه، لا الملفات وحدها */
   const pending = pendingFileIds ?? [];
   const filesAttachedButNotReady = contextFileIds.length === 0 && pending.length > 0;
+
+  /**
+   * ★ تبديلُ الفضاء يُصلَّح تلقائيًّا — لا ينتظر أحدًا.
+   *
+   *   ملفٌّ مفهرسٌ في e5 بينما F2LLM فعّال (أو العكس بعد تراجع) لا وظيفةَ
+   *   تعمل عليه ولا عميلَ يطلبها، فيبقى معلَّقًا إلى الأبد وتبقى المحادثة
+   *   محجوبة. الإدراجُ هنا يحرّكه، والتصريفُ غيرُ المنتظَر يُكمله، والبوّابةُ
+   *   تحدّ التزامن. ومتجهاتُ الفضاء الآخر لا تُمسّ: الأعمدةُ منفصلة.
+   */
+  if ((pendingFiles ?? []).some((p) => p.reason === "needs_active_embedding")) {
+    try {
+      const fixed = await ensureActiveSpaceJobs(supabase, userId, pendingFiles ?? []);
+      if (fixed.enqueued.length > 0) {
+        console.info(
+          `[files-pipeline] rid=${requestId} space_transition_enqueued=${fixed.enqueued.join("|")} skipped=${fixed.skipped}`,
+        );
+        void drainOwnJobs(supabase, { workerId: `chat:${requestId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
+          console.error(`[files-pipeline] rid=${requestId} space_transition_drain_failed err=${(err as Error).message?.slice(0, 120)}`),
+        );
+      }
+    } catch (err) {
+      console.error(`[files-pipeline] rid=${requestId} space_transition_failed err=${(err as Error).message?.slice(0, 120)}`);
+    }
+  }
 
   /**
    * تشخيصٌ بنيويّ لمسار الملفات — معرّفات وأعداد فقط، بلا اسم ملفٍ ولا محتوى
@@ -1513,6 +1539,20 @@ export async function POST(req: NextRequest) {
           savedMeta = meta;
           meta.requested_model = modelId;
           meta.actual_model = actualModelId ?? effectiveModelId;
+          /**
+           * ★ ما رآه الخادمُ من ملفّات المحادثة لحظةَ هذا الردّ — أعدادٌ فقط.
+           *
+           *   «قال النموذجُ إنه لا يرى ملفًّا»: كان الجوابُ يتطلّب قراءةَ
+           *   السجلّات. وقد تعطّل نطاقُ الملفّات مرّةً بصمتٍ تامّ (قيمةُ حالةٍ
+           *   خارج النوع ⇒ نطاقٌ فارغٌ في كلّ نداء) ولم يلحظه قياسٌ لأنه لا يُقرأ
+           *   إلّا من السجلّات. الآن يُقرأ من الرسالة نفسِها: لا أسماء، ولا
+           *   معرّفات، ولا محتوى.
+           */
+          meta.files_scope = {
+            ready: contextFileIds.length,
+            pending: pending.length,
+            retrieved: ragSnippets.length,
+          };
           if (ragSnippets.length > 0) {
             // نفس التجميع المعروض — كي لا تفترق البطاقات بعد إعادة التحميل
             meta.sources = dedupeSourceCards(

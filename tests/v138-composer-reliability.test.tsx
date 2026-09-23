@@ -57,6 +57,7 @@ let savedByClientId: Map<string, Row>;
 /** ما يعيده GET /api/files/:id — دالّةٌ كي تتطوّر الحالة عبر الاستطلاعات */
 let fileState: Record<string, () => { file: Row; job: Job }>;
 let ragPosts: string[];
+let processPosts: string[];
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -72,9 +73,13 @@ function route(url: string, init?: RequestInit) {
     return json({ files: row ? [row] : [], usage: {}, limits: { maxFileMb: 5 } });
   }
   if (url.startsWith("/api/files?")) return json({ files: [], usage: {}, limits: { maxFileMb: 5 } });
-  const m = /^\/api\/files\/([^/]+)(\/rag)?$/.exec(url);
+  const m = /^\/api\/files\/([^/]+)(\/rag|\/process)?$/.exec(url);
   if (m) {
     const id = m[1] as string;
+    if (m[2] === "/process" && method === "POST") {
+      processPosts.push(id);
+      return json({ file: fileState[id]?.().file ?? { id, status: "processing" }, job: null });
+    }
     if (m[2] === "/rag" && method === "POST") {
       ragPosts.push(id);
       return json({ file: fileState[id]?.().file ?? { id, status: "ready" }, queued: true }, 202);
@@ -121,6 +126,7 @@ beforeEach(() => {
   savedByClientId = new Map();
   fileState = {};
   ragPosts = [];
+  processPosts = [];
   Object.assign(COMPOSER_TIMINGS, DEFAULT_TIMINGS, {
     pollMinMs: 10,
     pollMaxMs: 40,
@@ -221,17 +227,15 @@ describe("★ (٢) تجهيزٌ متوقّف — كشفٌ من بيانات ال
   }
 
   it("★ ★ ★ الإخفاق الحيّ: وظيفةٌ «تعمل» بنبضٍ ميّت ⇒ يُستأنف بطلب تجهيزٍ فيكتمل", async () => {
-    let resumed = false;
+    // الاستئنافُ (طلبُ التجهيز الثاني) هو ما يُحيي الوظيفة — لا مؤقّتُ الاختبار
     fileState.fd = () =>
-      resumed
+      ragPosts.length >= 2
         ? { file: row("fd", "ready_for_rag", { rag_total_chunks: 4, rag_done_chunks: 4 }), job: { status: "completed" } }
         : { file: row("fd", "embedding", { rag_total_chunks: 4 }), job: { status: "running", heartbeat_at: minutesAgo(10) } };
     const { container } = mount();
     await uploadDoc(container, "fd");
-    await waitFor(() => expect(ragPosts.length).toBeGreaterThanOrEqual(2));
-    expect(ragPosts).toEqual(["fd", "fd"]);
-    resumed = true;
     await waitFor(() => expect(phases(container)).toEqual(["ready"]));
+    expect(ragPosts).toEqual(["fd", "fd"]);
   });
 
   it("★ ★ ★ الاستئناف محدود: بعد maxNudges خطأٌ «توقّف» بزرّ إعادة، ويتوقّف الاستطلاع", async () => {
@@ -313,5 +317,145 @@ describe("★ (٣) الاستطلاع لا ينقطع بعد مدّةٍ ثابت
     const n = pollCalls("fb").length;
     expect(n).toBeGreaterThan(4);
     expect(n).toBeLessThan(25);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════
+ *  ★ (٤) انتقالُ فضاء التضمين — «قيد التجهيز لفضاء البحث الحالي»
+ *
+ *  ملفٌّ حالتُه `ready_for_rag` لكنه مفهرسٌ في الفضاء الآخر: الخادمُ يقول
+ *  `needs_active_embedding: true`. فالواجهةُ لا تقول «جاهز»، والإرسالُ
+ *  محجوب، والتجهيزُ يُطلب تلقائيًّا (لا زرَّ على المستخدم)، ثمّ يُفتح
+ *  الإرسالُ وحدَه حين يحكم الخادمُ بالجاهزيّة.
+ *
+ *  وبلا الاستئناف من الواجهة كانت حلقةَ جمود: الإرسالُ محجوب ⇒ لا يصل
+ *  مسارَ المحادثة طلبٌ يُدرج الوظيفة ⇒ يبقى محجوبًا إلى الأبد.
+ * ══════════════════════════════════════════════════════════════════
+ */
+describe("★ (٤) انتقال فضاء التضمين — لا إخفاء، ولا حجبٌ دائم", () => {
+  /** ملفّاتُ المحادثة تحت مفتاح «ملفات هذه المحادثة» — تُفتح لتُرى بطاقاتُها */
+  const openContext = (c: HTMLElement) => fireEvent.click(c.querySelector("[data-context-toggle]") as HTMLButtonElement);
+
+  const spaceGapFile = (id: string): Attachment => ({
+    id,
+    name: `${id}.txt`,
+    status: "ready_for_rag",
+    mime: "text/plain",
+    size: 512,
+    needsActiveEmbedding: true,
+  });
+
+  it("★ ★ ★ بعد التحميل: «يُجهَّز لفضاء البحث الحالي»، والإرسالُ محجوب، والتجهيزُ يُطلب تلقائيًّا ثمّ يُفتح", async () => {
+    fileState.sg = () =>
+      ragPosts.includes("sg")
+        ? { file: row("sg", "ready_for_rag", { needs_active_embedding: false, rag_total_chunks: 3, rag_done_chunks: 3 }), job: { status: "completed" } }
+        : { file: row("sg", "ready_for_rag", { needs_active_embedding: true }), job: null };
+    COMPOSER_TIMINGS.pollMinMs = 60; // يُتاح رسمُ الحالة الأولى قبل أوّل استطلاع
+    const { container } = mount([spaceGapFile("sg")]);
+    openContext(container);
+
+    // ★ لا «جاهز» كاذب: المرحلةُ تجهيز، والعبارةُ عبارةُ انتقال الفضاء لا عبارةُ عطل
+    expect(phases(container)).toEqual(["indexing"]);
+    expect(statusText(container)[0]).toContain("ragPreparingSpace");
+    expect(container.textContent).toContain("filePreparing");
+
+    // ★ استئنافٌ من الواجهة بلا تدخّل: طلبُ تجهيزٍ واحد للفضاء الفعّال
+    await waitFor(() => expect(ragPosts).toEqual(["sg"]));
+    // ★ ثمّ يُفتح الإرسالُ وحدَه حين يحكم الخادم
+    await waitFor(() => expect(phases(container)).toEqual(["ready"]));
+    expect(statusText(container)[0]).toContain("ragReady");
+    expect(container.textContent).not.toContain("filePreparing");
+  });
+
+  it("★ ★ ★ ووظيفةُ الفضاء الجديد تعمل بنبضٍ حيّ: يُنتظر بلا إلحاح، والحجبُ باقٍ حتى الاكتمال", async () => {
+    let done = false;
+    fileState.sw = () =>
+      done
+        ? { file: row("sw", "ready_for_rag", { needs_active_embedding: false }), job: { status: "completed" } }
+        : { file: row("sw", "ready_for_rag", { needs_active_embedding: true }), job: { status: "running", heartbeat_at: new Date().toISOString() } };
+    const { container } = mount([spaceGapFile("sw")]);
+    openContext(container);
+    await waitFor(() => expect(pollCalls("sw").length).toBeGreaterThanOrEqual(3));
+    // نبضٌ حيّ ⇒ لا استئناف: الوظيفةُ قائمة، والإلحاحُ عليها يضاعف الحِمل
+    expect(ragPosts).toEqual([]);
+    expect(phases(container)).toEqual(["indexing"]);
+    expect(container.textContent).toContain("filePreparing");
+    done = true;
+    await waitFor(() => expect(phases(container)).toEqual(["ready"]));
+    expect(container.textContent).not.toContain("filePreparing");
+  });
+
+  it("★ ★ ★ ملفٌّ جاهزٌ في الفضاء الفعّال لا يُستطلع ولا يُعاد تجهيزه", async () => {
+    const { container } = mount([{ ...spaceGapFile("ok"), needsActiveEmbedding: false }]);
+    openContext(container);
+    await wait(80);
+    expect(phases(container)).toEqual(["ready"]);
+    expect(pollCalls("ok")).toHaveLength(0);
+    expect(ragPosts).toEqual([]);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════
+ *  ★ (٥) بياناتٌ عالقة من قبل — تُستعاد بلا زرّ
+ *
+ *  الإنتاجُ يحمل عشرةَ ملفّاتٍ على `ready` (نصٌّ مستخرَج، لا تجهيز) وملفًّا
+ *  على `processing` (استخراجٌ مات في منتصفه). كلاهما يحجب الإرسالَ في
+ *  محادثته، ولم يكن شيءٌ يحرّكهما: الأوّل ينتظر زرًّا، والثاني لا يُستطلع.
+ * ══════════════════════════════════════════════════════════════════
+ */
+describe("★ (٥) الملفّات العالقة قبل النشر — استعادةٌ تلقائيّة", () => {
+  const openContext = (c: HTMLElement) => fireEvent.click(c.querySelector("[data-context-toggle]") as HTMLButtonElement);
+  const legacy = (id: string, status: string): Attachment => ({ id, name: `${id}.txt`, status, mime: "text/plain", size: 512 });
+
+  it("★ ★ ★ مستندٌ على `ready` منذ ما قبل النشر ⇒ يُطلب تجهيزُه عند الفتح، ويُفتح الإرسال حين يجهز", async () => {
+    fileState.lr = () =>
+      ragPosts.includes("lr")
+        ? { file: row("lr", "ready_for_rag", { rag_total_chunks: 2, rag_done_chunks: 2 }), job: { status: "completed" } }
+        : { file: row("lr", "ready"), job: null };
+    const { container } = mount([legacy("lr", "ready")]);
+    openContext(container);
+    await waitFor(() => expect(ragPosts).toEqual(["lr"]));
+    await waitFor(() => expect(statusText(container)[0]).toContain("ragReady"));
+    expect(container.textContent).not.toContain("filePreparing");
+  });
+
+  it("★ ★ ★ استخراجٌ مات في منتصفه (`processing` قديم) ⇒ يُعاد تلقائيًّا ثمّ يُجهَّز", async () => {
+    COMPOSER_TIMINGS.extractStallMs = 60_000;
+    fileState.lp = () =>
+      ragPosts.includes("lp")
+        ? { file: row("lp", "ready_for_rag", { rag_total_chunks: 2, rag_done_chunks: 2 }), job: { status: "completed" } }
+        : processPosts.includes("lp")
+          ? { file: row("lp", "ready", { updated_at: new Date().toISOString() }), job: null }
+          : { file: row("lp", "processing", { updated_at: minutesAgo(30) }), job: null };
+    const { container } = mount([legacy("lp", "processing")]);
+    openContext(container);
+    expect(container.textContent).toContain("filePreparing");
+    await waitFor(() => expect(processPosts).toEqual(["lp"]));
+    // «جاهزٌ للمحادثة» بحكم الخادم — لا المرحلةُ الوسيطة «استُخرج النصّ»
+    await waitFor(() => expect(statusText(container)[0]).toContain("ragReady"), { timeout: 3000 });
+    expect(ragPosts).toEqual(["lp"]);
+    expect(container.textContent).not.toContain("filePreparing");
+  });
+
+  it("★ ★ ★ ولا يُعاد استخراجٌ حيّ: `processing` حديثٌ يُنتظر بلا تدخّل", async () => {
+    COMPOSER_TIMINGS.extractStallMs = 60_000;
+    fileState.lf = () => ({ file: row("lf", "processing", { updated_at: new Date().toISOString() }), job: null });
+    const { container } = mount([legacy("lf", "processing")]);
+    openContext(container);
+    await waitFor(() => expect(pollCalls("lf").length).toBeGreaterThanOrEqual(3));
+    expect(processPosts).toEqual([]);
+  });
+
+  it("★ ★ ★ ميّتٌ لا يحيا: بعد maxNudges خطأٌ بزرّ «أعد الاستخراج» — والإرسالُ لا يُحجب به", async () => {
+    COMPOSER_TIMINGS.extractStallMs = 60_000;
+    fileState.ld = () => ({ file: row("ld", "processing", { updated_at: minutesAgo(30) }), job: null });
+    const { container } = mount([legacy("ld", "processing")]);
+    openContext(container);
+    await waitFor(() => expect(phases(container)).toEqual(["error"]), { timeout: 3000 });
+    expect(processPosts).toEqual(["ld", "ld"]);
+    expect(container.textContent).not.toContain("filePreparing");
+    expect(screen.getByRole("button", { name: "retryExtract" })).toBeTruthy();
   });
 });

@@ -22,3 +22,48 @@ export async function isFileEmbeddedInSpace(
   const { count } = await (space.id === "f2llm" ? base.eq("embedding_v2_model", space.modelTag as string) : base.not("embedding", "is", null));
   return (count ?? 0) === totalChunks;
 }
+
+/**
+ * أيُّ هذه الملفات ينقصه متجهُ الفضاء الفعّال؟ — استعلامٌ واحدٌ للمجموعة كلِّها.
+ *
+ * ★ لماذا لا يكفي وسمُ الملف (`rag_v2_model`) في الاتّجاهين.
+ *
+ *   الوسمُ يكشف اتّجاهًا واحدًا: e5 ← F2LLM. أمّا العكس — ملفٌّ فُهرس في نافذة
+ *   F2LLM ثمّ رجع الفضاءُ إلى e5 — فحالتُه `ready_for_rag` ولا وسمَ ينفيه،
+ *   ومقاطعُه بلا متجهِ e5 أصلًا. فيُعَدّ «جاهزًا» ويخرج الاسترجاعُ فارغًا:
+ *   وهو بعينُه ما وقع في الإنتاج (أربعةُ ملفّات بصفر مقاطع e5).
+ *
+ * ★ والسؤالُ يُقلب ليُجاب باستعلامٍ واحد: لا «كم مقطعًا مضمَّنًا لكلّ ملف»
+ *   (استعلامٌ لكلّ ملف)، بل «أيُّ المقاطع ينقصه المتجه» — فظهورُ مقطعٍ واحد
+ *   يكفي للحكم على ملفِّه. والحدُّ يمنع جلبَ مكتبةٍ كاملة.
+ *
+ * ★ وعند تعذّر الاستعلام تُرجَع مجموعةٌ فارغة: لا يُحجب ملفٌّ بسبب عطلِ شبكة.
+ *   المقايضةُ مقصودة — الفشلُ هنا يميل إلى السلوك القائم لا إلى حجبٍ أوسع.
+ */
+export async function findFilesMissingActiveSpace(
+  supabase: SupabaseClient,
+  fileIds: string[],
+  space: EmbeddingSpace,
+): Promise<Set<string>> {
+  const missing = new Set<string>();
+  if (fileIds.length === 0) return missing;
+  const base = () => supabase.from("file_chunks").select("file_id").in("file_id", fileIds);
+  /**
+   * ★ في F2LLM استعلامان لا `or(...)`: `neq` في SQL لا يطابق NULL (NULL <> x
+   *   مجهول)، فالناقصُ وسمًا والموسومُ بنموذجٍ آخر حالتان منفصلتان. ووسمُ
+   *   النموذج فيه نقاطٌ و`@` — وحشرُه داخل نصّ `or=()` يعرّضه لسوء التحليل.
+   */
+  const queries =
+    space.id === "f2llm"
+      ? [
+          base().is("embedding_v2_model", null).limit(2000),
+          base().neq("embedding_v2_model", space.modelTag as string).limit(2000),
+        ]
+      : [base().is("embedding", null).limit(2000)];
+  const results = await Promise.all(queries);
+  for (const { data, error } of results) {
+    if (error) continue;
+    for (const r of data ?? []) missing.add((r as { file_id: string }).file_id);
+  }
+  return missing;
+}

@@ -7,6 +7,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getEmbeddingProvider, type EmbeddingCallTimings } from "./embeddings";
 import { getActiveSpace } from "./embedding-space";
+import { enqueueRagJob } from "./jobs";
+import { contentHash } from "./chunking";
+import { findFilesMissingActiveSpace } from "./space-readiness";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -111,15 +114,45 @@ export function getActiveSpaceForDiagnostics(): { id: string; modelTag: string |
   return { id: s.id, modelTag: s.modelTag };
 }
 
+/**
+ * سببُ التعليق — يُغيّر ما يُقال للمستخدم وما يفعله الخادم.
+ *
+ * `needs_active_embedding` هو الحالُ الذي كشفه تبديلُ الفضاء في الإنتاج:
+ * نصُّ الملف مستخرَجٌ وله مقاطعُ كاملة، لكن في الفضاء **الآخر**. فلا هو
+ * «قيد الفهرسة» (لا وظيفةَ تعمل) ولا هو غائب — بل يحتاج تجهيزًا في الفضاء
+ * الفعّال. وبلا هذا التمييز يبقى معلَّقًا إلى الأبد ولا يحرّكه شيء.
+ */
+export type PendingReason = "extracting" | "indexing" | "needs_active_embedding";
+
+export interface PendingFile {
+  id: string;
+  status: string;
+  reason: PendingReason;
+}
+
 export interface ConversationFileScope {
   /** قابلة للاسترجاع الآن في الفضاء الفعّال */
   readyIds: string[];
   /** مرفقة بالمحادثة ولم تصر قابلةً للاسترجاع بعد (تجهيزٌ جارٍ أو متعثّر) */
   pendingIds: string[];
+  /** تفصيلُ المعلَّق — ليقرّر المسارُ ما يُدرجه وما يقوله */
+  pending: PendingFile[];
 }
 
-/** الحالات التي تعني «وصل الملف ونصُّه، والتجهيز لم يكتمل بعد» */
-const PENDING_STATUSES = ["uploaded", "processing", "extracting", "ready", "chunking", "embedding"] as const;
+/**
+ * الحالات التي تعني «وصل الملف، والتجهيز لم يكتمل بعد».
+ *
+ * ★ كلُّ قيمةٍ هنا يجب أن تكون قيمةً في النوع `file_status` بالقاعدة — حرفيًّا.
+ *
+ *   كانت القائمةُ تحوي "extracting"، وليست في النوع. وPostgREST يحوّل كلَّ
+ *   قيمٍ `in.(...)` إلى النوع، فرفض الاستعلامَ كلَّه (22P02) في كلّ نداء:
+ *   فخرج النطاقُ فارغًا دائمًا، وصار كلُّ مرفقٍ «لا ملف» — العطلُ نفسُه الذي
+ *   كُتبت هذه الدالّة لتمنعه، مقيسٌ حيًّا على staging. واختبارُ v142 يقرأ
+ *   النوعَ من الترحيلات ويرفض أيَّ قيمةٍ غريبة هنا.
+ *
+ *   "uploading" قيمةُ النوع الأصليّة (0001) — صفوفٌ قديمة قد تحملها.
+ */
+export const PENDING_STATUSES = ["uploading", "uploaded", "processing", "ready", "chunking", "embedding"] as const;
 
 export async function getConversationFileScope(
   supabase: SupabaseClient,
@@ -135,20 +168,54 @@ export async function getConversationFileScope(
    * استعلامان متوازيان كانا سيفتحان نافذةَ تعارض: ملفٌّ يكتمل تجهيزُه بين
    * الاستعلامين فيظهر في القائمتين أو في لا واحدة. ولقطةٌ واحدة تُغلقها.
    */
+  /**
+   * ★ `rag_v2_model` يُقرأ حين يكون F2LLM فعّالًا وحده.
+   *   مسارُ e5 يعمل على قاعدةٍ بلا الترحيل 0048 (والتراجعُ عنه يحذف أعمدته):
+   *   طلبُ عمودٍ غائب يُسقط الاستعلامَ كلَّه (42703) — أي «لا ملفات» في كلّ نداء.
+   */
   let q = supabase
     .from("files")
-    .select("id, status, rag_v2_model")
+    .select(space.id === "f2llm" ? "id, status, rag_v2_model" : "id, status")
     .eq("user_id", userId)
     .is("deleted_at", null)
     .in("status", [...PENDING_STATUSES, "ready_for_rag"]);
   q = projectId
     ? q.or(`conversation_id.eq.${conversationId},project_id.eq.${projectId}`)
     : q.eq("conversation_id", conversationId);
-  const { data } = await q.limit(50);
+  const { data, error } = await q.limit(50);
+  /**
+   * ★ فشلُ الاستعلام لا يُقرأ «لا ملفات».
+   *
+   *   `{ data: null, error }` لا يرمي، فكان يمرّ صامتًا نطاقًا فارغًا — ويجيب
+   *   النموذجُ بأنه لا يرى ملفًّا مرفوعًا أمام صاحبه. يُرمى هنا فيسجّله
+   *   `gatherChatContext` (`file_context_failed`) ويظهر في السجلّات، لا يختفي.
+   */
+  if (error) {
+    console.error(`[files-pipeline] scope_query_failed code=${error.code ?? "unknown"}`);
+    throw new Error(`conversation file scope query failed: ${error.code ?? "unknown"}`);
+  }
+
+  /**
+   * ★ الفجوةُ تُقاس في الاتّجاهين — لا في اتّجاه F2LLM وحده.
+   *
+   *   وسمُ الملف يكشف «فُهرس في e5 والفضاءُ اليومَ F2LLM». أمّا «فُهرس في
+   *   نافذة F2LLM والفضاءُ اليومَ e5» فلا وسمَ يكشفه: حالتُه `ready_for_rag`
+   *   ومقاطعُه بلا متجهِ e5. وقد وقع هذا في الإنتاج فعلًا.
+   *
+   *   فاستعلامٌ واحدٌ إضافيّ على مرشّحي `ready_for_rag` وحدهم — لا على كلّ
+   *   ملفّات المحادثة — يحسم الاتّجاهين معًا.
+   */
+  // الأعمدةُ تتبع الفضاء، فيُصرَّح بشكل الصفّ هنا (المحلّلُ لا يستنتجه من نصٍّ شرطيّ)
+  const rows = (data ?? []) as unknown as Array<{ id: string; status: string; rag_v2_model?: string | null }>;
+  const readyCandidates = rows
+    .filter((f) => (f.status as string) === "ready_for_rag")
+    .map((f) => f.id as string);
+  const missingSpace = await findFilesMissingActiveSpace(supabase, readyCandidates, space);
 
   const readyIds: string[] = [];
   const pendingIds: string[] = [];
-  for (const f of data ?? []) {
+  const pending: PendingFile[] = [];
+  for (const f of rows) {
     const id = f.id as string;
     const status = f.status as string;
     /**
@@ -159,13 +226,80 @@ export async function getConversationFileScope(
      * معلَّقًا يُري المستخدم «قيد التجهيز» بدل أن يُنفى وجودُه — وهو الفرق
      * الذي كشفه تفعيلُ F2LLM في الإنتاج (٢٠ ملفًّا صارت غير مرئية فجأة).
      */
-    const retrievable =
-      status === "ready_for_rag" &&
+    const inActiveSpace =
+      !missingSpace.has(id) &&
       (space.id !== "f2llm" || (f.rag_v2_model as string | null) === space.modelTag);
-    if (retrievable) readyIds.push(id);
-    else pendingIds.push(id);
+    const retrievable = status === "ready_for_rag" && inActiveSpace;
+    if (retrievable) {
+      readyIds.push(id);
+      continue;
+    }
+    pendingIds.push(id);
+    /**
+     * ★ «مفهرسٌ في الفضاء الآخر» سببٌ قائمٌ بذاته.
+     *
+     *   حالتُه `ready_for_rag` ولا وظيفةَ تعمل عليه، فلو عُدّ «قيد الفهرسة»
+     *   لانتظر شيئًا لا يأتي. تمييزُه هنا هو ما يسمح للمسار أن يُدرج له وظيفةً
+     *   في الفضاء الفعّال بدل تركه معلّقًا إلى الأبد.
+     */
+    const reason: PendingReason =
+      status === "ready_for_rag" && !inActiveSpace
+        ? "needs_active_embedding"
+        : status === "chunking" || status === "embedding"
+          ? "indexing"
+          : status === "ready"
+            ? "needs_active_embedding"
+            : "extracting";
+    pending.push({ id, status, reason });
   }
-  return { readyIds, pendingIds };
+  return { readyIds, pendingIds, pending };
+}
+
+/**
+ * يضمن وجودَ وظيفةِ تجهيزٍ في الفضاء الفعّال لكلّ ملفٍّ ينقصه — بلا إتلافِ
+ * ما سبق.
+ *
+ * ★ لا يُحذف متجهُ الفضاء القديم: الأعمدةُ منفصلة (`embedding` 384 مقابل
+ *   `embedding_v2` 320)، فالتجهيزُ في الفضاء الجديد إضافةٌ محضة. والرجوعُ
+ *   إلى الفضاء الأول يجد متجهاتِه كما تركها.
+ *
+ * ★ ولا يُخلط بُعدان في استعلامٍ واحد: كلُّ فضاءٍ له عمودُه ودالّتُه
+ *   (`match_file_chunks` مقابل `match_file_chunks_v2`)، والاختيارُ يقع مرّةً
+ *   واحدة لكلّ نداء في `getActiveSpace`.
+ */
+export async function ensureActiveSpaceJobs(
+  supabase: SupabaseClient,
+  userId: string,
+  pending: PendingFile[],
+): Promise<{ enqueued: string[]; skipped: number }> {
+  const needs = pending.filter((p) => p.reason === "needs_active_embedding");
+  if (needs.length === 0) return { enqueued: [], skipped: 0 };
+  const space = getActiveSpace();
+  const enqueued: string[] = [];
+  let skipped = 0;
+  for (const p of needs.slice(0, 5)) {
+    const { data: row } = await supabase
+      .from("files")
+      .select("extracted_text")
+      .eq("id", p.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    const text = (row?.extracted_text ?? "").trim();
+    if (!text) {
+      skipped++;
+      continue;
+    }
+    const res = await enqueueRagJob(supabase, {
+      userId,
+      fileId: p.id,
+      contentHash: contentHash(text),
+      jobType: space.jobType,
+      keySuffix: space.modelTag ?? undefined,
+    });
+    if ("error" in res) skipped++;
+    else enqueued.push(p.id);
+  }
+  return { enqueued, skipped };
 }
 
 /** ملفات سياق المحادثة: المرتبطة بها مباشرة + ملفات مشروعها — الجاهزة فقط */

@@ -64,6 +64,11 @@ export interface ComposerAttachment {
   /** رسالة الخادم بلغة الواجهة — نصٌّ يُعرض نصًّا، لا HTML */
   errorMessage: string | null;
   retry: RetryKind | null;
+  /**
+   * هل سببُ الانتظار انتقالُ فضاءِ التضمين؟ — للعبارة وحدها.
+   * المرحلةُ تبقى `indexing`: العملُ واحد، والمختلفُ ما يُقال للمستخدم.
+   */
+  spaceTransition: boolean;
   /** "draft": أُضيف منذ آخر إرسال · "context": ملفٌّ في سياق المحادثة أصلًا */
   scope: "draft" | "context";
 }
@@ -78,6 +83,15 @@ export interface ServerFileState {
   rag_total_chunks?: number | null;
   rag_done_chunks?: number | null;
   rag_error?: string | null;
+  /**
+   * ★ علمٌ يشتقّه الخادمُ وحدَه (`projectFileForClient`): الملفُ مفهرسٌ في
+   *   فضاءِ تضمينٍ غيرِ النّاشِط اليوم. حالتُه `ready_for_rag`، والاسترجاعُ
+   *   الفعليُّ لا يراه. الواجهةُ لا تحسبُه ولا تعرفُ أسماءَ الفضاءات —
+   *   تقرأُ حكمَ الخادم وحدَه.
+   */
+  needs_active_embedding?: boolean | null;
+  /** آخرُ تعديلٍ للصفّ على الخادم — به وحده يُعرف أنّ استخراجًا مات في منتصفه */
+  updated_at?: string | null;
 }
 
 const IMAGE_MIMES = new Set(ALLOWED_TYPES.filter((t) => t.kind === "image").flatMap((t) => t.mimes));
@@ -175,30 +189,45 @@ export function phaseForServerStatus(
   status: string,
   mime: string | null,
   ragRequested: boolean,
-): Pick<ComposerAttachment, "phase" | "aiContext" | "errorKind" | "retry"> {
+  needsActiveEmbedding = false,
+): Pick<ComposerAttachment, "phase" | "aiContext" | "errorKind" | "retry" | "spaceTransition"> {
   const image = isImageMime(mime);
+  const base = { spaceTransition: false as boolean };
   switch (status) {
     case "uploaded":
     case "processing":
     case "extracting":
-      return { phase: "processing", aiContext: false, errorKind: null, retry: null };
+      return { ...base, phase: "processing", aiContext: false, errorKind: null, retry: null };
     case "ready":
-      if (image) return { phase: "ready", aiContext: false, errorKind: null, retry: null };
+      if (image) return { ...base, phase: "ready", aiContext: false, errorKind: null, retry: null };
       // مستندٌ استُخرج نصُّه: قيد التجهيز إن طُلب، وإلا جاهزُ النص بلا سياق AI بعد
       return ragRequested
-        ? { phase: "indexing", aiContext: false, errorKind: null, retry: null }
-        : { phase: "ready", aiContext: false, errorKind: null, retry: "rag" };
+        ? { ...base, phase: "indexing", aiContext: false, errorKind: null, retry: null }
+        : { ...base, phase: "ready", aiContext: false, errorKind: null, retry: "rag" };
     case "chunking":
     case "embedding":
-      return { phase: "indexing", aiContext: false, errorKind: null, retry: null };
+      return { ...base, phase: "indexing", aiContext: false, errorKind: null, retry: null };
     case "ready_for_rag":
-      return { phase: "ready", aiContext: true, errorKind: null, retry: null };
+      /**
+       * ★ `ready_for_rag` وحدها لا تكفي: الفضاءُ قد يكون قد تبدّل.
+       *
+       *   ملفٌّ فُهرس في e5 ثمّ صار F2LLM هو النّاشِط (أو العكس) تبقى حالتُه
+       *   `ready_for_rag` ولا يراه الاسترجاع. فلو قالت الواجهةُ «جاهز»
+       *   لفُتحت البوّابةُ ثمّ خرج الاسترجاعُ فارغًا ونفى النّموذجُ ملفًّا
+       *   يراه صاحبُه أمامَه: وهو «الجاهزُ الكاذب» بعينه.
+       *
+       *   والتضمينُ القديمُ باقٍ لا يُمسّ (عمودان منفصلان)، فإن عاد الفضاءُ
+       *   الأوّل عاد الملفُ جاهزًا بلا عملٍ ولا فقدان.
+       */
+      return needsActiveEmbedding
+        ? { phase: "indexing", aiContext: false, errorKind: null, retry: null, spaceTransition: true }
+        : { ...base, phase: "ready", aiContext: true, errorKind: null, retry: null };
     case "failed":
-      return { phase: "error", aiContext: false, errorKind: "extractFailed", retry: "extract" };
+      return { ...base, phase: "error", aiContext: false, errorKind: "extractFailed", retry: "extract" };
     case "rag_failed":
-      return { phase: "error", aiContext: false, errorKind: "indexFailed", retry: "rag" };
+      return { ...base, phase: "error", aiContext: false, errorKind: "indexFailed", retry: "rag" };
     default:
-      return { phase: "processing", aiContext: false, errorKind: null, retry: null };
+      return { ...base, phase: "processing", aiContext: false, errorKind: null, retry: null };
   }
 }
 
@@ -209,7 +238,7 @@ function indexingProgress(total: number | null | undefined, done: number | null 
 
 /** مرفقٌ محمَّلٌ من الخادم (سياق المحادثة) */
 export function fromServerFile(f: ServerFileState & { original_name: string }): ComposerAttachment {
-  const mapped = phaseForServerStatus(f.status, f.mime_type ?? null, false);
+  const mapped = phaseForServerStatus(f.status, f.mime_type ?? null, false, f.needs_active_embedding ?? false);
   return {
     key: `file:${f.id}`,
     fileId: f.id,
@@ -234,6 +263,8 @@ export type AttachmentAction =
   | { type: "serverState"; fileId: string; file: ServerFileState }
   | { type: "ragRequested"; fileId: string }
   | { type: "indexFailed"; fileId: string; message?: string | null; kind?: "indexFailed" | "indexStalled" }
+  /** استخراجٌ مات في منتصفه ولم تُحيِه إعادةٌ تلقائيّة — خطأٌ بزرّ «أعد الاستخراج»، لا حجبٌ دائم */
+  | { type: "extractFailed"; fileId: string; message?: string | null }
   /** رفعٌ انقطع ردُّه (5xx/شبكة): نسأل الخادم هل حُفظ قبل أن نعرض إعادة الرفع */
   | { type: "verifying"; key: string }
   | { type: "retryQueued"; key: string }
@@ -255,7 +286,7 @@ function patch(state: ComposerAttachment[], match: (a: ComposerAttachment) => bo
 
 function withServer(a: ComposerAttachment, file: ServerFileState, ragRequested: boolean): ComposerAttachment {
   const mime = file.mime_type ?? a.mime;
-  const mapped = phaseForServerStatus(file.status, mime, ragRequested);
+  const mapped = phaseForServerStatus(file.status, mime, ragRequested, file.needs_active_embedding ?? false);
   return {
     ...a,
     fileId: file.id,
@@ -285,6 +316,7 @@ export function attachmentsReducer(state: ComposerAttachment[], action: Attachme
           serverStatus: null,
           ragRequested: false,
           aiContext: false,
+          spaceTransition: false,
           errorKind: i.error?.kind ?? null,
           errorMessage: i.error?.message ?? null,
           retry: null,
@@ -321,6 +353,10 @@ export function attachmentsReducer(state: ComposerAttachment[], action: Attachme
     case "indexFailed":
       return patch(state, (a) => a.fileId === action.fileId, (a) => ({
         ...a, phase: "error", progress: null, errorKind: action.kind ?? "indexFailed", errorMessage: action.message ?? null, retry: "rag",
+      }));
+    case "extractFailed":
+      return patch(state, (a) => a.fileId === action.fileId, (a) => ({
+        ...a, phase: "error", progress: null, errorKind: "extractFailed", errorMessage: action.message ?? null, retry: "extract",
       }));
     case "verifying":
       return patch(state, (a) => a.key === action.key, (a) => ({
@@ -408,6 +444,27 @@ export function attachmentNotice(attachments: ComposerAttachment[]): AttachmentN
   return anyReady && !anyPending ? "ragAttachmentReady" : "attachmentNotice";
 }
 
+/**
+ * ★ هل مات الاستخراجُ في منتصفه؟
+ *
+ *   الاستخراجُ يجري داخل طلب الرفع نفسِه ويكتمل في ثوانٍ. فإن سقط الطلبُ
+ *   (إعادةُ تشغيل، OOM، قطعُ وسيط) بقي الصفُّ على `processing` بلا عاملٍ
+ *   يكمله — قيس في الإنتاج: ملفٌّ واحدٌ على هذا الحال. ولا وظيفةَ في طابورٍ
+ *   تُستأنف كما في التجهيز، فالحكمُ من عمر الصفّ وحده: لم يتغيّر منذ
+ *   مهلةٍ تتجاوز أطولَ استخراجٍ مشروع ⇒ مات.
+ *
+ *   وغيابُ `updated_at` لا يُعدّ موتًا: لا يُعاد استخراجٌ على تخمين.
+ */
+export function isExtractionStalled(
+  file: Pick<ServerFileState, "status" | "updated_at">,
+  now: number,
+  staleMs: number,
+): boolean {
+  if (file.status !== "processing" && file.status !== "uploaded" && file.status !== "uploading") return false;
+  const t = file.updated_at ? Date.parse(file.updated_at) : NaN;
+  return Number.isFinite(t) && now - t > staleMs;
+}
+
 /** ما يعيده `GET /api/files/:id` عن آخر وظيفة تجهيز — الحقول التي تلزم كشفَ التوقّف */
 export interface RagJobView {
   status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | string;
@@ -432,13 +489,23 @@ export interface RagJobView {
  *   وما عدا ذلك بطءٌ مشروع (تحميل النموذج، دفعاتٌ كبيرة) — لا يُستعجل.
  */
 export function isIndexingStalled(
-  file: Pick<ServerFileState, "status">,
+  file: Pick<ServerFileState, "status" | "needs_active_embedding">,
   job: RagJobView | null,
   now: number,
   opts: { leaseMs: number; queuedGraceMs: number },
 ): boolean {
-  if (file.status === "ready_for_rag" || file.status === "rag_failed" || file.status === "failed") return false;
-  if (!job) return file.status === "ready" || file.status === "chunking" || file.status === "embedding";
+  /**
+   * ★ `ready_for_rag` نهائيّةٌ — إلّا حين ينقصُ الملفَ تضمينُ الفضاء النّاشِط.
+   *
+   *   لو عُدّت نهائيّةً هنا لما طُلبت إعادةُ التجهيز أبدًا: الإرسالُ محجوب،
+   *   فلا يصلُ مسارَ المحادثة طلبٌ يُدرجُ الوظيفةَ — حلقةُ جمودٍ تامّة.
+   *   فيُستأنفُ من هنا: `POST /api/files/:id/rag` يدرجُ وظيفةَ الفضاء الصّحيح.
+   */
+  const spaceGap = file.needs_active_embedding === true && file.status === "ready_for_rag";
+  if (!spaceGap && (file.status === "ready_for_rag" || file.status === "rag_failed" || file.status === "failed"))
+    return false;
+  if (!job)
+    return spaceGap || file.status === "ready" || file.status === "chunking" || file.status === "embedding";
   const age = (iso: string | null | undefined) => {
     const t = iso ? Date.parse(iso) : NaN;
     return Number.isFinite(t) ? now - t : Number.POSITIVE_INFINITY;

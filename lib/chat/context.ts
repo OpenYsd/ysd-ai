@@ -13,6 +13,8 @@ export interface ChatContextResult {
    *   وينفي النموذجُ وجودَ ملفٍ يراه المستخدم مرفوعًا أمامه.
    */
   pendingFileIds: string[];
+  /** تفصيلُ المعلَّق بسببه — يقرّر ما يُدرَج تلقائيًّا وما يُقال للمستخدم */
+  pendingFiles: import("../rag/retrieval").PendingFile[];
   /** زمن دفعة الاستعلامات المتوازية — للـServer-Timing (database) */
   dbMs: number;
 }
@@ -115,10 +117,16 @@ export async function gatherChatContext(
   // (ب) معرّفات ملفات السياق — سلوك حالي: فشل ⇒ لا RAG
   const scope =
     fileIdsRes.status === "fulfilled"
-      ? (fileIdsRes.value as { readyIds: string[]; pendingIds: string[] })
-      : { readyIds: [], pendingIds: [] };
+      ? (fileIdsRes.value as import("../rag/retrieval").ConversationFileScope)
+      : { readyIds: [], pendingIds: [], pending: [] };
 
-  return { history, contextFileIds: scope.readyIds, pendingFileIds: scope.pendingIds, dbMs };
+  return {
+    history,
+    contextFileIds: scope.readyIds,
+    pendingFileIds: scope.pendingIds,
+    pendingFiles: scope.pending ?? [],
+    dbMs,
+  };
 }
 
 /**

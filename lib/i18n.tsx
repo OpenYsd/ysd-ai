@@ -659,6 +659,14 @@ const dict = {
     ar: "جارٍ تجهيز الملف للذكاء الاصطناعي",
     en: "Preparing file for AI",
   },
+  /**
+   * ★ ملفٌّ جُهّز من قبل، وتبدّل فضاءُ البحث فصار يُجهَّز له.
+   *   العبارةُ تقول ما يجري بلا نبرةِ عطل: لا شيء ضاع، ولا شيء يُطلب من صاحبه.
+   */
+  ragPreparingSpace: {
+    ar: "جارٍ تجهيز الملف لفضاء البحث الحالي",
+    en: "Preparing file for the current AI search space",
+  },
   ragReady: { ar: "جاهز للمحادثة", en: "Ready for chat" },
   ragFailed: { ar: "فشل التجهيز", en: "Preparation failed" },
   ragPrepare: { ar: "تجهيز للذكاء الاصطناعي", en: "Prepare for AI" },
