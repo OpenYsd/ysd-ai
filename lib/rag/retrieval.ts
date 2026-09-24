@@ -10,6 +10,7 @@ import { getActiveSpace } from "./embedding-space";
 import { enqueueRagJob } from "./jobs";
 import { contentHash } from "./chunking";
 import { findFilesMissingActiveSpace } from "./space-readiness";
+import { rerankBySentences, type RerankStats } from "./sentence-rerank";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -331,6 +332,8 @@ export interface RetrievalOutcome {
    * gated: بُحث ورُفض كلُّ شيءٍ بحدّ الثقة (لا مقاطع)
    */
   mode?: "full" | "search" | "gated";
+  /** البحثُ الثانويّ بالجمل (F2LLM، وضعُ search وحده) — أعدادٌ للتشخيص */
+  rerank?: RerankStats;
 }
 
 /**
@@ -526,7 +529,7 @@ export async function retrieveSnippets(
    *   ومسارُ e5 على حدّه المعايَر كما كان (درجاتُه منفصلةٌ بوضوح في معايرته).
    *   (`getF2llmThresholds` لم يعد بوّابةً لـF2LLM؛ يبقى للتوافق والتشخيص.)
    */
-  const rows = ranked;
+  let rows = ranked;
   // شرط الثقة (e5 وحده): لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
   if (!f2 && topSimilarity < RETRIEVAL_CONFIDENCE) {
     if (timings) {
@@ -534,6 +537,19 @@ export async function retrieveSnippets(
       timings.totalMs = Date.now() - tTotal;
     }
     return { snippets: [], searched: true, topSimilarity, mode: "gated" };
+  }
+
+  /**
+   * ★ F2LLM: يُعاد ترتيبُ المرشّحين أنفسِهم بأفضل جملةٍ فيها (بحثٌ ثانويّ محدود —
+   *   lib/rag/sentence-rerank.ts). مقطعٌ متعدّد الموضوعات يذيب متجهَ حقيقةٍ واحدة
+   *   فيه، فيسقط مقطعُ الجواب من الستّة الأولى في مستندٍ طويل — عربيًّا كان السؤال
+   *   أو إنجليزيًّا. الميزانيةُ بعده كما هي: لا مقطعَ ولا حرفَ زيادة.
+   */
+  let rerank: RerankStats | undefined;
+  if (f2 && rows.length > 1) {
+    const r = await rerankBySentences(provider, queryEmbedding, rows, space.modelTag ?? space.id);
+    rows = r.order;
+    rerank = r.stats;
   }
 
   // تنويع: حد لكل ملف + سقف إجمالي للأحرف — وملفٌّ وحيدٌ في النطاق ينال الميزانيةَ كلَّها
@@ -563,7 +579,7 @@ export async function retrieveSnippets(
     timings.postprocessMs = Date.now() - tPost;
     timings.totalMs = Date.now() - tTotal;
   }
-  return { snippets: picked, searched: true, topSimilarity, mode: "search" };
+  return { snippets: picked, searched: true, topSimilarity, mode: "search", ...(rerank ? { rerank } : {}) };
 }
 
 /** تُحقن عند وجود ملفات جاهزة لكن بلا تطابق — لتصريح "لم أجد" دون اختراع */

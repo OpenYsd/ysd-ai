@@ -17,7 +17,7 @@ import { createFakeRagDb } from "./helpers/fake-rag-db";
 const USER = "11111111-1111-4111-8111-111111111111";
 const FLAG = "YSD_RAG_EMBEDDING_MODEL";
 
-import { fake } from "./helpers/fake-embedder";
+import { bowVector, fake } from "./helpers/fake-embedder";
 
 vi.mock("@/lib/rag/embeddings", async () => (await import("./helpers/fake-embedder")).embeddingsMock());
 
@@ -364,6 +364,61 @@ describe("★ (٥) الاستعلام والمقاطع من الفضاء نفس�
     expect(low.snippets.length).toBeGreaterThan(0);
     const chars = low.snippets.reduce((n, s) => n + s.content.length, 0);
     expect(chars).toBeLessThanOrEqual(6000);
+  });
+
+  it("★ ★ ★ مستندٌ طويل: مقطعُ الجواب المذوَّب خارجَ الستّة الأولى متّجهيًّا يدخل بالبحث الثانويّ بالجمل — بالميزانية نفسِها", async () => {
+    flagOn();
+    const db = newDb();
+    const q = "employee badge number zeta seven";
+    const decoy = (n: number) =>
+      Array.from({ length: 11 }, (_, i) => `The employee handbook section ${n}${i} describes employee duties for employee group ${n}${i}.`).join(" ");
+    const noise = (n: number) => Array.from({ length: 7 }, (_, i) => `Unrelated remark ${n}${i} about weather patterns and harbour traffic volumes.`).join(" ");
+    const gold = `${noise(1)} The employee badge number is zeta seven, issued once. ${noise(2)}`;
+    const text = [...Array.from({ length: 5 }, (_, n) => decoy(n)), gold, ...Array.from({ length: 5 }, (_, n) => decoy(n + 5))].join("\n\n");
+    const file = db.addFile({ extracted_text: text });
+    await index(db, file, RAG_JOB_TYPE_F2LLM);
+    const chunks = chunkTexts(db, file.id);
+    const goldChunk = chunks.find((c) => (c.content as string).includes("zeta seven"))!;
+    // المشهدُ ذو معنى: بالمتّجه وحده يقع مقطعُ الجواب خارج الستّة الأولى
+    const qv = bowVector(q, 320);
+    const sim = (t: string) => bowVector(t, 320).reduce((s, x, i) => s + x * qv[i]!, 0);
+    const vectorOrder = [...chunks].sort((a, b) => sim(b.content as string) - sim(a.content as string));
+    expect(vectorOrder.findIndex((c) => c.id === goldChunk.id)).toBeGreaterThanOrEqual(6);
+    expect(text.length).toBeGreaterThan(6000);
+
+    const out = await retrieveSnippets(db.client, q, [file.id as string]);
+    expect(out.mode).toBe("search");
+    expect(out.snippets.some((s) => s.chunkId === goldChunk.id)).toBe(true);
+    expect(out.snippets[0]!.chunkId).toBe(goldChunk.id);
+    expect(out.snippets.length).toBeLessThanOrEqual(6);
+    expect(out.snippets.reduce((n, s) => n + s.content.length, 0)).toBeLessThanOrEqual(6000);
+    expect(out.rerank).toMatchObject({ complete: true, scored: chunks.length });
+    expect(out.rerank!.embedded).toBeGreaterThan(0);
+    // السؤالُ التالي عن الملفّ نفسِه: من الذاكرة المخبّأة، بلا تضمينٍ جديد للجمل
+    const again = await retrieveSnippets(db.client, "what is the employee badge number", [file.id as string]);
+    expect(again.rerank).toMatchObject({ embedded: 0, complete: true });
+    expect(again.snippets[0]!.chunkId).toBe(goldChunk.id);
+  });
+
+  it("★ ★ ★ ملفٌّ صغير (full) لا يمرّ بالبحث الثانويّ، ولا e5", async () => {
+    flagOn();
+    const db = newDb();
+    const small = db.addFile({ extracted_text: doc(2) });
+    await index(db, small, RAG_JOB_TYPE_F2LLM);
+    const before = fake.batches.length;
+    const full = await retrieveSnippets(db.client, "zzqq", [small.id as string]);
+    expect(full.mode).toBe("full");
+    expect(full.rerank).toBeUndefined();
+    expect(fake.batches.length).toBe(before);
+
+    flagOff();
+    const db1 = newDb();
+    const big = db1.addFile({ extracted_text: doc(9) });
+    await index(db1, big);
+    const before1 = fake.batches.length;
+    const e5 = await retrieveSnippets(db1.client, chunkTexts(db1, big.id)[3]!.content as string, [big.id as string]);
+    expect(e5.rerank).toBeUndefined();
+    expect(fake.batches.length).toBe(before1);
   });
 
   it("★ ★ ★ ملفٌّ جاهز في e5 فقط لا يظهر أبدًا في بحث v2 — ولا العكس", async () => {

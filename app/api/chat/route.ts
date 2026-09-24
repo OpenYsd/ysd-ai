@@ -52,6 +52,7 @@ import {
   getActiveSpaceForDiagnostics as getActiveSpace,
   ensureActiveSpaceJobs,
   retrieveSnippets,
+  type RetrievalOutcome,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
 import { EVIDENCE_MODE_INSTRUCTIONS } from "@/lib/evidence/evidence-prompt";
@@ -700,6 +701,8 @@ export async function POST(req: NextRequest) {
   let ragRetrievalFailed = false;
   let ragMode: "full" | "search" | "gated" | "failed" | "none" = "none";
   let ragTopSimilarity: number | null = null;
+  /** البحثُ الثانويّ بالجمل (F2LLM، search) — أعدادٌ فقط */
+  let ragRerank: RetrievalOutcome["rerank"] | null = null;
   let ragMs = 0;
   const tRag = Date.now();
   const queryText =
@@ -716,6 +719,7 @@ export async function POST(req: NextRequest) {
       ragTopSimilarity = outcome.topSimilarity;
       ragRetrievalFailed = Boolean(outcome.failed);
       ragMode = outcome.failed ? "failed" : (outcome.mode ?? "none");
+      ragRerank = outcome.rerank ?? null;
       // بُحث فعلًا في ملفات جاهزة ولم يُعثر على شيء → نلمّح للنموذج بالتصريح بالغياب
       ragSearchedNoMatch = outcome.searched && !outcome.failed && outcome.snippets.length === 0;
     } catch (err) {
@@ -780,7 +784,11 @@ export async function POST(req: NextRequest) {
       `space=${getActiveSpace().id} space_model=${getActiveSpace().modelTag ?? "e5"} ` +
       `retrieval_scope=${contextFileIds.length} retrieval_results=${ragSnippets.length} ` +
       `retrieval_mode=${ragMode} top_similarity=${ragTopSimilarity === null ? "none" : ragTopSimilarity.toFixed(3)} ` +
-      `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady}`,
+      `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady}` +
+      (ragRerank
+        ? ` rerank_scored=${ragRerank.scored} rerank_embedded=${ragRerank.embedded} rerank_cached=${ragRerank.cached} ` +
+          `rerank_ms=${ragRerank.ms} rerank_complete=${ragRerank.complete}`
+        : ""),
   );
   /**
    * Evidence Mode — **قرار خادمي، وشرطه وجود مصادر دخلت الموجّه فعلًا**.
@@ -1572,6 +1580,9 @@ export async function POST(req: NextRequest) {
             mode: ragMode,
             top_similarity: ragTopSimilarity === null ? null : Math.round(ragTopSimilarity * 1000) / 1000,
             failed: ragRetrievalFailed,
+            ...(ragRerank
+              ? { rerank: { scored: ragRerank.scored, embedded: ragRerank.embedded, cached: ragRerank.cached, ms: ragRerank.ms, complete: ragRerank.complete } }
+              : {}),
           };
           if (ragSnippets.length > 0) {
             // نفس التجميع المعروض — كي لا تفترق البطاقات بعد إعادة التحميل
