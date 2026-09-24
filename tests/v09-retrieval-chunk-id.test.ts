@@ -159,13 +159,23 @@ describe("★ الفقد لا يعود عبر مسارات الترشيح", () =
     );
     state.rows = rows;
 
-    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1"]);
+    // حدُّ التنويع يخصّ نطاقًا فيه أكثرُ من ملف
+    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1", "f2"]);
     expect(snippets.length).toBe(MAX_PER_FILE);
 
     // المختارة هي الأوائل بالترتيب، وكلٌّ بمعرّفه هو
     expect(snippets.map((s) => s.chunkId)).toEqual(
       rows.slice(0, MAX_PER_FILE).map((r) => r.chunk_id),
     );
+  });
+
+  it("★ ملفٌّ وحيدٌ في النطاق ينال ميزانيةَ المقاطع كلَّها — الأوائل بالترتيب بمعرّفاتها", async () => {
+    const f = uuid();
+    const rows = Array.from({ length: MAX_PER_FILE + 3 }, () => row({ file_id: f, original_name: "واحد.pdf" }));
+    state.rows = rows;
+    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1"]);
+    expect(snippets.length).toBe(Math.min(rows.length, MAX_SNIPPETS));
+    expect(snippets.map((s) => s.chunkId)).toEqual(rows.slice(0, snippets.length).map((r) => r.chunk_id));
   });
 
   it("★ السقف الإجمالي للمقاطع لا يخلط المعرّفات", async () => {

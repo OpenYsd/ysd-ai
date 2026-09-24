@@ -347,21 +347,23 @@ describe("★ (٥) الاستعلام والمقاطع من الفضاء نفس�
     expect(out.snippets.map((s) => s.content)).toEqual(chunkTexts(db, file.id).map((c) => c.content));
   });
 
-  it("★ ★ ★ ملفٌّ كبير يبقى على البحث: الأرضيّةُ في الكود، وحدُّ الثقة يرفض (mode=gated)", async () => {
+  it("★ ★ ★ ملفٌّ كبير يبقى على البحث — وF2LLM يختار بالترتيب لا بعتبةٍ مطلقة", async () => {
     flagOn();
     const db = newDb();
     const text = doc(9);
     const file = db.addFile({ extracted_text: text });
     await index(db, file, RAG_JOB_TYPE_F2LLM);
     expect(text.length).toBeGreaterThan(6000);
-    const hit = await retrieveSnippets(db.client, chunkTexts(db, file.id)[3]!.content as string, [file.id as string]);
+    const target = chunkTexts(db, file.id)[3]!;
+    const hit = await retrieveSnippets(db.client, target.content as string, [file.id as string]);
     expect(hit.mode).toBe("search");
-    for (const s of hit.snippets) expect(s.similarity).toBeGreaterThanOrEqual(F2LLM_MIN_SIMILARITY);
-    const miss = await retrieveSnippets(db.client, "zzqq xxyy wwvv", [file.id as string]);
-    if (miss.topSimilarity < F2LLM_RETRIEVAL_CONFIDENCE) {
-      expect(miss.mode).toBe("gated");
-      expect(miss.snippets).toEqual([]);
-    }
+    expect(hit.snippets[0]!.chunkIndex).toBe(target.chunk_index); // الأعلى ترتيبًا أوّلًا
+    // ★ سؤالٌ بدرجاتٍ منخفضة لا يُرفض كلُّه: الأعلى ترتيبًا يدخل ضمن الميزانية، والنموذجُ يحكم الصلة
+    const low = await retrieveSnippets(db.client, "zzqq xxyy wwvv", [file.id as string]);
+    expect(low.mode).toBe("search");
+    expect(low.snippets.length).toBeGreaterThan(0);
+    const chars = low.snippets.reduce((n, s) => n + s.content.length, 0);
+    expect(chars).toBeLessThanOrEqual(6000);
   });
 
   it("★ ★ ★ ملفٌّ جاهز في e5 فقط لا يظهر أبدًا في بحث v2 — ولا العكس", async () => {

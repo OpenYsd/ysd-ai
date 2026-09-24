@@ -513,9 +513,22 @@ export async function retrieveSnippets(
     return { snippets: whole, searched: true, topSimilarity, mode: "full" };
   }
 
-  const rows = f2 ? ranked.filter((r) => r.similarity >= f2.min) : ranked;
-  // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
-  if (topSimilarity < (f2 ? f2.confidence : RETRIEVAL_CONFIDENCE)) {
+  /**
+   * ★ F2LLM يُختار بالترتيب لا بعتبةٍ مطلقة.
+   *
+   *   قيس على staging (أسئلةٌ لها جوابٌ في الملف فعلًا): أعلى درجة 0.016–0.33
+   *   لأسئلةٍ طبيعيّة، و0.058–0.066 لسؤالٍ عربيٍّ عن ملفٍّ إنجليزيّ — كلُّها تحت
+   *   الأرضيّة 0.36 وحدِّ الثقة 0.38، فرُفضت كلُّها وأجاب النموذج «لم أجد».
+   *   درجاتُ F2LLM المطلقة لا تُقارَن بين مقطعٍ ومقطع، أمّا ترتيبُه فقويّ
+   *   (92–98% من MRR@10 لـe5 في المعايرة). وأيُّ عتبةٍ تقبل 0.058 ليست عتبة.
+   *   فيُؤخذ الأعلى ترتيبًا ضمن ميزانية المصادر، وتعليماتُ كتلة المصادر تحكم
+   *   الصلة والغياب: يُجاب منها حين يتعلّق السؤال بها، ويُصرَّح بالغياب، ولا يُختلق.
+   *   ومسارُ e5 على حدّه المعايَر كما كان (درجاتُه منفصلةٌ بوضوح في معايرته).
+   *   (`getF2llmThresholds` لم يعد بوّابةً لـF2LLM؛ يبقى للتوافق والتشخيص.)
+   */
+  const rows = ranked;
+  // شرط الثقة (e5 وحده): لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
+  if (!f2 && topSimilarity < RETRIEVAL_CONFIDENCE) {
     if (timings) {
       timings.postprocessMs = Date.now() - tPost;
       timings.totalMs = Date.now() - tTotal;
@@ -523,14 +536,15 @@ export async function retrieveSnippets(
     return { snippets: [], searched: true, topSimilarity, mode: "gated" };
   }
 
-  // تنويع: حد لكل ملف + سقف إجمالي للأحرف
+  // تنويع: حد لكل ملف + سقف إجمالي للأحرف — وملفٌّ وحيدٌ في النطاق ينال الميزانيةَ كلَّها
+  const perFileCap = fileIds.length === 1 ? MAX_SNIPPETS : MAX_PER_FILE;
   const perFile = new Map<string, number>();
   const picked: RetrievedSnippet[] = [];
   let totalChars = 0;
   for (const row of rows) {
     if (picked.length >= MAX_SNIPPETS) break;
     const used = perFile.get(row.file_id) ?? 0;
-    if (used >= MAX_PER_FILE) continue;
+    if (used >= perFileCap) continue;
     if (totalChars + row.content.length > MAX_CONTEXT_CHARS) continue;
     perFile.set(row.file_id, used + 1);
     totalChars += row.content.length;
