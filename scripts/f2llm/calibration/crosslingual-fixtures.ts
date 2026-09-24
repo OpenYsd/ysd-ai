@@ -1,6 +1,6 @@
 /** Bilingual long documents + questions for crosslingual-eval.ts (synthetic; no real person or organization). */
 
-const CV = [
+export const CV = [
   "RASHED AL-QAMARI - CURRICULUM VITAE",
   "Riyadh, Saudi Arabia | rashed.alqamari@example.test | +966 50 000 0000",
   "",
@@ -51,7 +51,7 @@ const CV = [
   "Available on request.",
 ];
 const CITIES = ["Jeddah", "Abha", "Tabuk", "Hail", "Jazan", "Najran", "Qassim", "Madinah", "Taif", "Khobar", "Yanbu", "Sakaka"];
-const APPENDIX: string[] = [];
+export const APPENDIX: string[] = [];
 CITIES.forEach((city, i) => {
   APPENDIX.push(
     "",
