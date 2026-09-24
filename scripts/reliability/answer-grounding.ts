@@ -3,7 +3,7 @@
  *
  *   npx vite-node scripts/reliability/answer-grounding.ts \
  *     --base https://<host> --supabase-url <url> --service-key <key> --anon-key <key> \
- *     --model ysd/model-alpha --state <state.json> --out <report.json> [--retries 1] [--limit N] \
+ *     --model ysd/model-alpha --state <state.json> --out <report.json> [--retries 1] [--limit N] [--only small,empty] \
  *     [--acceptance --allow-production-acceptance]
  *
  * ★ What it proves, per question (lib: answer-grounding-lib.ts):
@@ -46,6 +46,8 @@ const STATE_FILE = arg("--state", ".reliability-out/answer-grounding-state.json"
 const OUT = arg("--out", ".reliability-out/answer-grounding.json")!;
 const RETRIES = Number(arg("--retries", "1"));
 const LIMIT = Number(arg("--limit", String(CASES.length)));
+/** comma-separated conversation keys (ar_en,en_ar,multi,small,empty) — e.g. `--only small` after a rollback */
+const ONLY = (arg("--only") ?? "").split(",").filter(Boolean);
 const ACCEPTANCE = argv.includes("--acceptance");
 
 const refusal = refuseReason({ base: BASE, supabaseUrl: SUPABASE_URL, acceptance: ACCEPTANCE, allowProductionAcceptance: argv.includes("--allow-production-acceptance") });
@@ -209,7 +211,7 @@ if (!state.user) {
   log(`synthetic account ${state.user.userId.slice(0, 8)} created`);
 }
 const results = [];
-for (const c of CASES.slice(0, LIMIT)) {
+for (const c of CASES.filter((x) => ONLY.length === 0 || ONLY.includes(x.conversation)).slice(0, LIMIT)) {
   const conv = await ensureConversation(c.conversation);
   let r = await ask(conv.id, c.q);
   const attempts = [r.meta?.completion?.status ?? `http_${r.status}`];
