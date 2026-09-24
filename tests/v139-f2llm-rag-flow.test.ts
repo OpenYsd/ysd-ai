@@ -170,7 +170,9 @@ describe("★ (٣) إضافة v2 لملفٍّ جاهزٍ أصلًا في e5", ()
     flagOff();
     const after = await retrieveSnippets(db.client, q, [file.id as string]);
     expect(after).toEqual(before);
-    expect(before.snippets[0]!.similarity).toBe(1);
+    // ملفٌّ صغير يُقرأ كاملًا بترتيبه: المقطعُ المطابق حاضرٌ في موضعه بدرجة 1
+    const exact = before.snippets.find((s) => s.similarity === 1);
+    expect(exact?.chunkIndex).toBe(1);
   });
 });
 
@@ -328,9 +330,38 @@ describe("★ (٥) الاستعلام والمقاطع من الفضاء نفس�
     expect(name).toBe("match_file_chunks_v2");
     expect(args.p_model).toBe(TAG);
     expect(JSON.parse(args.p_query_embedding as string)).toHaveLength(320);
-    expect(args.p_min_similarity).toBe(F2LLM_MIN_SIMILARITY);
-    expect(out.snippets[0]!.content).toBe(q);
+    // ★ الترتيبُ كاملًا من القاعدة (أرضيّة 0) — والأرضيّةُ تُطبَّق في الكود؛ فتُعرف الدرجةُ الفعليّة حتى حين تُرفض
+    expect(args.p_min_similarity).toBe(0);
+    expect(out.snippets.some((s) => s.content === q)).toBe(true);
     expect(out.topSimilarity).toBeGreaterThanOrEqual(F2LLM_RETRIEVAL_CONFIDENCE);
+  });
+
+  it("★ ★ ★ ملفٌّ صغير يُقرأ كاملًا (mode=full) — ولو لم يبلغ شيءٌ حدَّ الثقة", async () => {
+    flagOn();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(2) });
+    await index(db, file, RAG_JOB_TYPE_F2LLM);
+    const out = await retrieveSnippets(db.client, "سؤالٌ لا يشبه أيَّ مقطعٍ حرفيًّا zzqq", [file.id as string]);
+    expect(out.mode).toBe("full");
+    expect(out.snippets.map((s) => s.chunkIndex)).toEqual(chunkTexts(db, file.id).map((c) => c.chunk_index));
+    expect(out.snippets.map((s) => s.content)).toEqual(chunkTexts(db, file.id).map((c) => c.content));
+  });
+
+  it("★ ★ ★ ملفٌّ كبير يبقى على البحث: الأرضيّةُ في الكود، وحدُّ الثقة يرفض (mode=gated)", async () => {
+    flagOn();
+    const db = newDb();
+    const text = doc(9);
+    const file = db.addFile({ extracted_text: text });
+    await index(db, file, RAG_JOB_TYPE_F2LLM);
+    expect(text.length).toBeGreaterThan(6000);
+    const hit = await retrieveSnippets(db.client, chunkTexts(db, file.id)[3]!.content as string, [file.id as string]);
+    expect(hit.mode).toBe("search");
+    for (const s of hit.snippets) expect(s.similarity).toBeGreaterThanOrEqual(F2LLM_MIN_SIMILARITY);
+    const miss = await retrieveSnippets(db.client, "zzqq xxyy wwvv", [file.id as string]);
+    if (miss.topSimilarity < F2LLM_RETRIEVAL_CONFIDENCE) {
+      expect(miss.mode).toBe("gated");
+      expect(miss.snippets).toEqual([]);
+    }
   });
 
   it("★ ★ ★ ملفٌّ جاهز في e5 فقط لا يظهر أبدًا في بحث v2 — ولا العكس", async () => {

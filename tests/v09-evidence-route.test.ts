@@ -20,6 +20,10 @@ import type { StreamChunk } from "@/lib/ai/types";
 // ── ما نراقبه ──
 const replaceMessageEvidence = vi.fn();
 const retrieveSnippets = vi.fn();
+/** آخرُ ما مُرِّر إلى المزوّد — لقراءة الموجّه الفعليّ الذي رآه النموذج */
+let lastStreamArgs: { systemPrompt?: string } | null = null;
+/** قراءةٌ عبر دالّة: الإسنادُ يقع داخل المحاكاة فلا يراه تضييقُ الأنواع */
+const seenPrompt = (): string => (lastStreamArgs as { systemPrompt?: string } | null)?.systemPrompt ?? "";
 const releaseSlot = vi.fn();
 const releaseChatBudget = vi.fn();
 const finalizeChatBudget = vi.fn();
@@ -89,7 +93,8 @@ vi.mock("@/lib/ai/registry", () => ({
   resolveProviderForModel: () => ({
     id: "test-provider",
     // eslint-disable-next-line require-yield
-    async *streamChat() {
+    async *streamChat(args: { systemPrompt?: string }) {
+      lastStreamArgs = args;
       for (const chunk of providerChunks) yield chunk;
     },
   }),
@@ -729,5 +734,48 @@ describe("★ لا تسرّب إلى العميل في المسار الحقيق
     expect(saved!.row.content).toBe(visibleText(frames));
     expect(saved!.row.content).not.toContain("<<<");
     expect(saved!.row.content).not.toContain("[[1]]");
+  });
+});
+
+/**
+ * ★ فشلُ القراءة لا يُقرأ «لم أجد» ولا يمرّ صامتًا.
+ *
+ *   كان خطأُ البحث يعود `searched=true` بلا مقاطع، فيُلحَق الموجّهَ «لم يُعثر على
+ *   مقطع ذي صلة» فيقول النموذج إن المعلومة غير موجودة في الملف — والملفُّ لم
+ *   يُقرأ أصلًا. وكان الاستثناءُ يُكمل بلا أيّ تنبيه، فيجيب كأن لا ملفّ.
+ */
+describe("(٣٠) تعذّر قراءة الملفّات — تنبيهٌ صادقٌ لا «لم أجد»", () => {
+  it("خطأُ البحث ⇒ FILES_UNAVAILABLE_HINT، لا NO_MATCH_HINT", async () => {
+    const { FILES_UNAVAILABLE_HINT, NO_MATCH_HINT } = await vi.importActual<typeof import("@/lib/rag/retrieval")>("@/lib/rag/retrieval");
+    snippets = [];
+    retrieveSnippets.mockReset().mockImplementation(async () => ({ snippets: [], searched: false, failed: true, topSimilarity: 0 }));
+    providerChunks = [text("تعذّرت قراءة الملف مؤقتًا.")];
+    lastStreamArgs = null;
+    await callRoute();
+    expect(seenPrompt()).toContain(FILES_UNAVAILABLE_HINT);
+    expect(seenPrompt()).not.toContain(NO_MATCH_HINT);
+  });
+
+  it("استثناءٌ في الاسترجاع ⇒ التنبيهُ نفسُه، لا صمت", async () => {
+    const { FILES_UNAVAILABLE_HINT } = await vi.importActual<typeof import("@/lib/rag/retrieval")>("@/lib/rag/retrieval");
+    snippets = [];
+    retrieveSnippets.mockReset().mockImplementation(async () => {
+      throw new Error("embedding model crashed");
+    });
+    providerChunks = [text("تعذّرت قراءة الملف مؤقتًا.")];
+    lastStreamArgs = null;
+    await callRoute();
+    expect(seenPrompt()).toContain(FILES_UNAVAILABLE_HINT);
+  });
+
+  it("بُحث فعلًا ولم يُعثر ⇒ NO_MATCH_HINT كما كان", async () => {
+    const { FILES_UNAVAILABLE_HINT, NO_MATCH_HINT } = await vi.importActual<typeof import("@/lib/rag/retrieval")>("@/lib/rag/retrieval");
+    snippets = [];
+    retrieveSnippets.mockReset().mockImplementation(async () => ({ snippets: [], searched: true, topSimilarity: 0.2, mode: "gated" }));
+    providerChunks = [text("لم أجد هذه المعلومة في الملفات المرفقة.")];
+    lastStreamArgs = null;
+    await callRoute();
+    expect(seenPrompt()).toContain(NO_MATCH_HINT);
+    expect(seenPrompt()).not.toContain(FILES_UNAVAILABLE_HINT);
   });
 });

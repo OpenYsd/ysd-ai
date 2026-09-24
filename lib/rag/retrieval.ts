@@ -318,8 +318,78 @@ export interface RetrievalOutcome {
   snippets: RetrievedSnippet[];
   /** هل بحثنا فعلًا في ملفات جاهزة؟ (للتمييز بين "لا ملفات" و"لا تطابق") */
   searched: boolean;
-  /** أعلى تشابه شوهد — للتشخيص في وضع التطوير */
+  /** أعلى تشابه شوهد — للتشخيص */
   topSimilarity: number;
+  /**
+   * ★ البحثُ نفسُه تعذّر (خطأ قاعدة) — وهذا غيرُ «بُحث فلم يوجد».
+   *   الخلطُ بينهما كان يجعل النموذجَ يقول «المعلومة غير موجودة في الملف»
+   *   والملفُّ لم يُقرأ أصلًا.
+   */
+  failed?: boolean;
+  /**
+   * full: ملفّاتٌ صغيرة أُدرجت كاملة · search: اختيارٌ بالتشابه ·
+   * gated: بُحث ورُفض كلُّ شيءٍ بحدّ الثقة (لا مقاطع)
+   */
+  mode?: "full" | "search" | "gated";
+}
+
+/**
+ * ★ ملفّاتُ المحادثة الصغيرة تُقرأ كاملةً — لا يُحكم عليها بعتبة تشابه.
+ *
+ *   العطلُ المقيس في الإنتاج: سيرةٌ ذاتيّة (5151 حرفًا، 6 مقاطع، مفهرسةٌ
+ *   كاملةً في F2LLM) سُئل عنها ثلاث مرّات، فخرج الاسترجاعُ صفرًا كلَّ مرّة
+ *   وأجاب النموذج «لم أجد هذه المعلومة». فدرجاتُ F2LLM المطلقة منخفضة لمقطعٍ
+ *   متعدّد الموضوعات حتى حين يكون هو الجواب، فيردّه حدُّ الثقة (0.38) مع
+ *   أنه الأعلى ترتيبًا. وسؤالٌ مثل «لخّص الملف» لا يشبه مقطعًا بعينه أصلًا.
+ *
+ *   فإن اتّسعت ميزانيةُ المصادر (`MAX_CONTEXT_CHARS`) للملفّات كلِّها، أُدرجت
+ *   كاملةً بترتيبها — وهو أصدقُ من أيّ اختيار: النموذج يرى ما يراه المستخدم.
+ *   وتعليماتُ كتلة المصادر تحكم الباقي: يُجاب منها حين يتعلّق السؤال بها،
+ *   ويُصرَّح بالغياب حين لا تتضمّنه، ولا يُختلق شيء.
+ */
+export const FULL_CONTEXT_MAX_CHUNKS = 24;
+
+async function loadWholeFilesIfSmall(
+  supabase: SupabaseClient,
+  fileIds: string[],
+  ranked: MatchRow[],
+  space: ReturnType<typeof getActiveSpace>,
+): Promise<RetrievedSnippet[] | null> {
+  /**
+   * ★ مقاطعُ الفضاء الفعّال وحدها — كالبحث تمامًا.
+   *   ملفٌّ لم يُضمَّن في الفضاء الفعّال ليس «جاهزًا» فيه، فلا يُقرأ عبره ولو
+   *   كان نصُّه موجودًا: الجاهزيّةُ تعريفٌ واحد في كلّ طبقة.
+   */
+  const base = supabase
+    .from("file_chunks")
+    .select("id, file_id, chunk_index, content, page_number")
+    .in("file_id", fileIds);
+  const scoped = space.id === "f2llm" ? base.eq("embedding_v2_model", space.modelTag as string) : base.not("embedding", "is", null);
+  const { data, error } = await scoped.order("chunk_index", { ascending: true }).limit(FULL_CONTEXT_MAX_CHUNKS + 1);
+  if (error || !data || data.length === 0 || data.length > FULL_CONTEXT_MAX_CHUNKS) return null;
+  const chunks = data as Array<{ id: string; file_id: string; chunk_index: number; content: string; page_number: number | null }>;
+  const total = chunks.reduce((n, c) => n + (c.content?.length ?? 0), 0);
+  if (total > MAX_CONTEXT_CHARS) return null;
+
+  const names = new Map(ranked.map((r) => [r.file_id, r.original_name]));
+  const unnamed = fileIds.filter((id) => !names.has(id));
+  if (unnamed.length > 0) {
+    const { data: rows } = await supabase.from("files").select("id, original_name").in("id", unnamed);
+    for (const f of (rows ?? []) as Array<{ id: string; original_name: string }>) names.set(f.id, f.original_name);
+  }
+  const similarity = new Map(ranked.map((r) => [r.chunk_id, r.similarity]));
+  const fileOrder = new Map(fileIds.map((id, i) => [id, i]));
+  return [...chunks]
+    .sort((a, b) => (fileOrder.get(a.file_id) ?? 0) - (fileOrder.get(b.file_id) ?? 0) || a.chunk_index - b.chunk_index)
+    .map((c) => ({
+      content: c.content,
+      fileId: c.file_id,
+      fileName: names.get(c.file_id) ?? "file",
+      pageNumber: c.page_number,
+      similarity: Math.round((similarity.get(c.id) ?? 0) * 1000) / 1000,
+      chunkId: c.id,
+      chunkIndex: c.chunk_index,
+    }));
 }
 
 /** الاسترجاع الرئيسي — الدالة RPC تتحقق من auth.uid() فلا تسرب بين المستخدمين */
@@ -393,13 +463,18 @@ export async function retrieveSnippets(
   }
 
   const tSearch = Date.now();
+  /**
+   * ★ في F2LLM يُطلب الترتيبُ كاملًا (أرضيّة 0) وتُطبَّق الأرضيّةُ هنا — فتُعرف
+   *   أعلى درجةٍ فعليّة حتى حين تُرفض، ولا يتغيّر الاختيارُ نفسُه.
+   */
+  const f2 = isV2 ? getF2llmThresholds() : null;
   const { data, error } = isV2
     ? await supabase.rpc(space.rpc, {
         p_query_embedding: JSON.stringify(queryEmbedding),
         p_file_ids: fileIds,
         p_model: space.modelTag,
         p_match_count: 16,
-        p_min_similarity: getF2llmThresholds().min,
+        p_min_similarity: 0,
       })
     : await supabase.rpc("match_file_chunks", {
         p_query_embedding: JSON.stringify(queryEmbedding),
@@ -413,20 +488,39 @@ export async function retrieveSnippets(
   }
   if (error) {
     console.error(`[rag] match rpc failed: code=${error.code}`);
-    return { snippets: [], searched: true, topSimilarity: 0 };
+    return { snippets: [], searched: false, failed: true, topSimilarity: 0 };
   }
 
   const tPost = Date.now();
-  const rows = (data ?? []) as MatchRow[];
-  const topSimilarity = rows[0]?.similarity ?? 0;
+  const ranked = (data ?? []) as MatchRow[];
+  const topSimilarity = ranked[0]?.similarity ?? 0;
 
-  // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
-  if (topSimilarity < (isV2 ? getF2llmThresholds().confidence : RETRIEVAL_CONFIDENCE)) {
+  /**
+   * القراءةُ الكاملة تحسينٌ فوق البحث لا بديلٌ عنه: إن تعذّرت لأيّ سبب يُسجَّل
+   * ذلك ويمضي البحثُ بالترتيب كما كان — لا يسقط الردّ ولا يصمت.
+   */
+  let whole: RetrievedSnippet[] | null = null;
+  try {
+    whole = await loadWholeFilesIfSmall(supabase, fileIds, ranked, space);
+  } catch (err) {
+    console.error(`[rag] full-context load failed, using ranked search: ${(err as Error).message?.slice(0, 80)}`);
+  }
+  if (whole) {
     if (timings) {
       timings.postprocessMs = Date.now() - tPost;
       timings.totalMs = Date.now() - tTotal;
     }
-    return { snippets: [], searched: true, topSimilarity };
+    return { snippets: whole, searched: true, topSimilarity, mode: "full" };
+  }
+
+  const rows = f2 ? ranked.filter((r) => r.similarity >= f2.min) : ranked;
+  // شرط الثقة: لا مقطع يبلغ حد الثقة → نعامل السؤال كأنه بلا إجابة في الملفات
+  if (topSimilarity < (f2 ? f2.confidence : RETRIEVAL_CONFIDENCE)) {
+    if (timings) {
+      timings.postprocessMs = Date.now() - tPost;
+      timings.totalMs = Date.now() - tTotal;
+    }
+    return { snippets: [], searched: true, topSimilarity, mode: "gated" };
   }
 
   // تنويع: حد لكل ملف + سقف إجمالي للأحرف
@@ -455,12 +549,22 @@ export async function retrieveSnippets(
     timings.postprocessMs = Date.now() - tPost;
     timings.totalMs = Date.now() - tTotal;
   }
-  return { snippets: picked, searched: true, topSimilarity };
+  return { snippets: picked, searched: true, topSimilarity, mode: "search" };
 }
 
 /** تُحقن عند وجود ملفات جاهزة لكن بلا تطابق — لتصريح "لم أجد" دون اختراع */
 export const NO_MATCH_HINT = `أرفق المستخدم ملفات جاهزة لكن لم يُعثر على أي مقطع ذي صلة بسؤاله الحالي.
 إن كان السؤال عن محتوى الملفات المرفقة، صرّح بوضوح: «لم أجد هذه المعلومة في الملفات المرفقة.» ولا تختلق إجابة من عندك عن محتواها.`;
+
+/**
+ * ★ قراءةُ الملفّات تعذّرت تقنيًّا — لا «لم أجد».
+ *
+ *   كان تعذّرُ البحث (خطأ قاعدة أو استثناء) يمرّ صامتًا: إمّا كـ«لم يُعثر»
+ *   فيقول النموذج إن المعلومة غير موجودة، وإمّا بلا أيّ تنبيه فيجيب كأن لا
+ *   ملفّ. وكلاهما كذبٌ على مستخدمٍ يرى ملفَّه مرفوعًا.
+ */
+export const FILES_UNAVAILABLE_HINT = `أرفق المستخدم ملفات جاهزة، لكن قراءة محتواها تعذّرت تقنيًا في هذه الرسالة.
+لا تقل إن المعلومة غير موجودة في الملفات، ولا تنفِ وجود الملفات، ولا تختلق شيئًا عن محتواها. إن كان السؤال عن محتواها فاذكر بوضوح أن قراءة الملفات تعذّرت مؤقتًا واطلب إعادة المحاولة بعد قليل.`;
 
 /**
  * ★ ملفٌّ مرفقٌ يُجهَّز الآن — خبرٌ عن الحالة لا مصدرٌ للإجابة.

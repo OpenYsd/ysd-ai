@@ -222,11 +222,13 @@ describe("★ ما لم يتغيّر", () => {
     expect(out.searched).toBe(true);
   });
 
-  it("★ عطل القاعدة ⇒ صفر مقاطع بلا رمي", async () => {
+  it("★ عطل القاعدة ⇒ صفر مقاطع بلا رمي — ويُعلَن فشلًا لا «لم يوجد»", async () => {
     state.error = { code: "42883" };
     const out = await retrieveSnippets(supabase, "سؤال", ["f1"]);
     expect(out.snippets).toEqual([]);
-    expect(out.searched).toBe(true);
+    // ★ كان searched=true فيقرأه المسارُ «بُحث فلم يوجد» ويقول النموذج إن المعلومة غائبة
+    expect(out.failed).toBe(true);
+    expect(out.searched).toBe(false);
   });
 
   /** الإيداع الأول لا يمسّ شكل الرد: المسار يبني `sources` بحقول صريحة */
