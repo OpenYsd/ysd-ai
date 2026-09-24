@@ -24,7 +24,7 @@ vi.mock("@/lib/rag/embeddings", async () => (await import("./helpers/fake-embedd
 import { drainOwnJobs, runRagJob } from "@/lib/rag/worker";
 import { enqueueRagJob, type RagJob } from "@/lib/rag/jobs";
 import { chunkText, contentHash } from "@/lib/rag/chunking";
-import { getContextFileIds, retrieveSnippets, F2LLM_MIN_SIMILARITY, F2LLM_RETRIEVAL_CONFIDENCE, MIN_SIMILARITY } from "@/lib/rag/retrieval";
+import { getContextFileIds, retrieveSnippets, snippetRelevance, F2LLM_MIN_SIMILARITY, F2LLM_RETRIEVAL_CONFIDENCE, MIN_SIMILARITY } from "@/lib/rag/retrieval";
 import { F2LLM } from "@/lib/rag/f2llm-manifest";
 import { RAG_JOB_TYPE_E5, RAG_JOB_TYPE_F2LLM } from "@/lib/rag/embedding-space";
 
@@ -330,8 +330,8 @@ describe("★ (٥) الاستعلام والمقاطع من الفضاء نفس�
     expect(name).toBe("match_file_chunks_v2");
     expect(args.p_model).toBe(TAG);
     expect(JSON.parse(args.p_query_embedding as string)).toHaveLength(320);
-    // ★ الترتيبُ كاملًا من القاعدة (أرضيّة 0) — والأرضيّةُ تُطبَّق في الكود؛ فتُعرف الدرجةُ الفعليّة حتى حين تُرفض
-    expect(args.p_min_similarity).toBe(0);
+    // ★ الترتيبُ كاملًا من القاعدة: أرضيّةُ −1 (أدنى جيب تمام) — لا 0 التي كانت تُسقط كلَّ مقطعٍ سالب الدرجة
+    expect(args.p_min_similarity).toBe(-1);
     expect(out.snippets.some((s) => s.content === q)).toBe(true);
     expect(out.topSimilarity).toBeGreaterThanOrEqual(F2LLM_RETRIEVAL_CONFIDENCE);
   });
@@ -398,6 +398,38 @@ describe("★ (٥) الاستعلام والمقاطع من الفضاء نفس�
     const again = await retrieveSnippets(db.client, "what is the employee badge number", [file.id as string]);
     expect(again.rerank).toMatchObject({ embedded: 0, complete: true });
     expect(again.snippets[0]!.chunkId).toBe(goldChunk.id);
+  });
+
+  it("★ ★ ★ مقاطعُ سالبةُ الدرجة (F2LLM عبر اللغتين) مرشّحةٌ تُرتَّب وتُختار — وصلتُها المعروضة 0 لا سالبة", async () => {
+    flagOn();
+    const db = newDb();
+    const file = db.addFile({ extracted_text: doc(9) });
+    await index(db, file, RAG_JOB_TYPE_F2LLM);
+    const chunks = chunkTexts(db, file.id);
+    const client = db.client as unknown as { rpc: (n: string, a: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> };
+    const real = client.rpc.bind(client);
+    // درجاتٌ مزاحةٌ تحت الصفر كما يُرى من F2LLM لسؤالٍ عبر اللغتين (0.068 … −0.056 مقيسةً على staging)
+    vi.spyOn(client, "rpc").mockImplementation(async (name, args) => {
+      const r = (await real(name, { ...args, p_min_similarity: -1 })) as { data: Array<{ similarity: number }> | null; error: unknown };
+      const shifted = (r.data ?? []).map((row) => ({ ...row, similarity: row.similarity - 0.5 }));
+      return { data: shifted.filter((row) => row.similarity >= (args.p_min_similarity as number)), error: r.error };
+    });
+    const target = chunks[4]!;
+    const out = await retrieveSnippets(db.client, target.content as string, [file.id as string]);
+    expect(out.mode).toBe("search");
+    expect(out.topSimilarity).toBeLessThan(1);
+    expect(out.rerank!.scored).toBe(Math.min(16, chunks.length)); // لا مرشّحَ أُسقط بدرجته
+    expect(out.snippets[0]!.chunkIndex).toBe(target.chunk_index);
+    expect(out.snippets.length).toBeGreaterThan(1);
+    for (const s of out.snippets) expect(s.similarity).toBeGreaterThanOrEqual(0);
+  });
+
+  it("★ ★ ★ صلةُ المقطع: السالبُ المشروع ⇒ 0، والعطبُ خارج [−1، 1] يُمرَّر لتُسقطه طبقةُ الأدلّة", () => {
+    expect(snippetRelevance(-0.056)).toBe(0);
+    expect(snippetRelevance(-1)).toBe(0);
+    expect(snippetRelevance(0.4567)).toBe(0.457);
+    expect(snippetRelevance(-20)).toBe(-20);
+    expect(snippetRelevance(Number.NaN)).toBeNaN();
   });
 
   it("★ ★ ★ ملفٌّ صغير (full) لا يمرّ بالبحث الثانويّ، ولا e5", async () => {

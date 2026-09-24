@@ -38,6 +38,19 @@ export const RETRIEVAL_CONFIDENCE = 0.8;
  */
 export const F2LLM_MIN_SIMILARITY = 0.36;
 export const F2LLM_RETRIEVAL_CONFIDENCE = 0.38;
+/** أرضيّةُ نداء `match_file_chunks_v2`: أدنى جيب تمامٍ ممكن — الاختيارُ في F2LLM بالترتيب لا بالدرجة */
+export const F2LLM_RPC_FLOOR = -1;
+
+/**
+ * صلةُ المقطع للعرض والأدلّة: جيبُ تمامٍ سالب (مشروعٌ في F2LLM بعد أرضيّة −1) صلتُه 0.
+ *   طبقةُ الأدلّة وقيدُ `relevance` (0032) يرفضان السالب فيسقط الاستشهادُ الصحيح.
+ *   والتسويةُ ضيّقةٌ عمدًا: ما خرج عن [−1، 1] يُمرَّر كما هو فتُسقطه طبقةُ الأدلّة —
+ *   قيمةٌ كهذه عطبٌ في الاسترجاع لا درجةٌ منخفضة.
+ */
+export function snippetRelevance(sim: number): number {
+  const v = Number.isFinite(sim) && sim >= -1 - 1e-6 && sim < 0 ? 0 : sim;
+  return Math.round(v * 1000) / 1000;
+}
 
 function envThreshold(name: string): number | null {
   const raw = process.env[name];
@@ -389,7 +402,7 @@ async function loadWholeFilesIfSmall(
       fileId: c.file_id,
       fileName: names.get(c.file_id) ?? "file",
       pageNumber: c.page_number,
-      similarity: Math.round((similarity.get(c.id) ?? 0) * 1000) / 1000,
+      similarity: snippetRelevance(similarity.get(c.id) ?? 0),
       chunkId: c.id,
       chunkIndex: c.chunk_index,
     }));
@@ -467,8 +480,14 @@ export async function retrieveSnippets(
 
   const tSearch = Date.now();
   /**
-   * ★ في F2LLM يُطلب الترتيبُ كاملًا (أرضيّة 0) وتُطبَّق الأرضيّةُ هنا — فتُعرف
-   *   أعلى درجةٍ فعليّة حتى حين تُرفض، ولا يتغيّر الاختيارُ نفسُه.
+   * ★ في F2LLM يُطلب الترتيبُ كاملًا — أرضيّةُ القاعدة أدنى جيب تمامٍ ممكن (−1)، لا 0.
+   *
+   *   درجاتُ F2LLM المطلقة تقع حول الصفر لسؤالٍ قصيرٍ عبر اللغتين، وكثيرٌ منها
+   *   سالب. وأرضيّةُ 0 كانت تُسقط كلَّ مقطعٍ سالب الدرجة قبل أن يُرتَّب — قيس على
+   *   staging: ملفٌّ من 9 مقاطع و«ما رقم الشارة الوظيفية؟» ⇒ 3 صفوف بأرضيّة 0،
+   *   و9 بأرضيّة −1 (الدرجات من 0.068 إلى −0.056). فما سقط لم يبلغ الترتيبَ ولا
+   *   البحثَ الثانويّ بالجمل مهما كانت صلتُه. الاختيارُ بالترتيب (أدناه)، وعددُ
+   *   المرشّحين كما هو (16).
    */
   const f2 = isV2 ? getF2llmThresholds() : null;
   const { data, error } = isV2
@@ -477,7 +496,7 @@ export async function retrieveSnippets(
         p_file_ids: fileIds,
         p_model: space.modelTag,
         p_match_count: 16,
-        p_min_similarity: 0,
+        p_min_similarity: F2LLM_RPC_FLOOR,
       })
     : await supabase.rpc("match_file_chunks", {
         p_query_embedding: JSON.stringify(queryEmbedding),
@@ -569,7 +588,7 @@ export async function retrieveSnippets(
       fileId: row.file_id,
       fileName: row.original_name,
       pageNumber: row.page_number,
-      similarity: Math.round(row.similarity * 1000) / 1000,
+      similarity: snippetRelevance(row.similarity),
       // v0.9.0: المعرّف يُمرَّر كما ورد من القاعدة بلا اشتقاق ولا تقريب
       chunkId: row.chunk_id,
       chunkIndex: row.chunk_index,

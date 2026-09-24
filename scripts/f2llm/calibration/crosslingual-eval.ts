@@ -68,7 +68,7 @@ async function main() {
     }
     console.log(`window${target} embeddings: ${n} in ${Date.now() - t0} ms`);
   }
-  const strategies = ["S0_vector", "S1_hybrid_lexical", "S2_translated_upper", "S4_symmetric", "S5_maxsent", "S6_vec+lex+sent", "S7_win300", "S8_win450", "S9_shipped"] as const;
+  const strategies = ["S0_vector", "S1_hybrid_lexical", "S2_translated_upper", "S4_symmetric", "S5_maxsent", "S6_vec+lex+sent", "S7_win300", "S8_win450", "S9_shipped", "S10_floor0"] as const;
   // S9: the shipped path exactly — vector top-16 (what match_file_chunks_v2 returns), then rerankBySentences
   // with its real bounds; cold cache per document for the first question, warm afterwards (as in the app).
   resetSentenceCache();
@@ -115,8 +115,12 @@ async function main() {
       shippedMs.push(stats.ms);
       if (!stats.complete) shippedIncomplete++;
       orders.S9_shipped = order.map((c) => c.index);
+      // S10: what production ran before this fix — the RPC's `>= 0` floor drops negative-cosine chunks before any ranking
+      const floor0 = top16.filter((c) => c.similarity >= 0);
+      orders.S10_floor0 = (await rerankBySentences(provider, qv, floor0, "eval")).order.map((c) => c.index);
     }
-    const cell: string[] = [];
+    const negatives = vectorRank.filter((r) => r.similarity < 0).length;
+    const cell: string[] = [`neg=${negatives}`];
     for (const s of strategies) {
       const sel = select(orders[s]!, chunks);
       const ok = sel.includes(gold);
