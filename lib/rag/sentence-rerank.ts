@@ -113,6 +113,8 @@ export interface RerankStats {
   ms: number;
   /** هل سُجِّل كلُّ المرشّحين قبل بلوغ أيّ سقف؟ */
   complete: boolean;
+  /** index = فهرسُ الجمل المحفوظ (0050، بلا تضمين) · query = تضمينُ جمل المرشّحين وقتَ السؤال */
+  source?: "index" | "query";
 }
 
 /**

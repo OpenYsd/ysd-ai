@@ -4,7 +4,8 @@
  *
  *   • `schema: "v1"` = ما قبل 0048: لا أعمدة v2 — أي إشارة إليها (تحديث أو تصفية أو اختيار) تُرجع خطأ كما يفعل PostgREST.
  *     فتثبت الاختباراتُ أن المسار القديم لا يلمس v2 أبدًا، ولو نُشر الكود قبل تطبيق الترحيل.
- *   • `schema: "v2"` = بعد 0048.
+ *   • `schema: "v2"` = بعد 0048 (وقبل 0050: لا جدول file_chunk_sentences ولا عمود rag_v2_sentences_model).
+ *   • `schema: "v3"` = بعد 0050: فهرسُ الجمل (halfvec 320) + match_chunk_sentences_v2.
  *   • أبعاد المتجهات مفروضة عند الكتابة (embedding=384، embedding_v2=320) — الخلط بين الفضاءين يفشل.
  *   • قيد الزوج: embedding_v2 و embedding_v2_model معًا أو لا شيء.
  *   • claim_rag_job / match_file_chunks / match_file_chunks_v2 بدلالات الـSQL نفسها.
@@ -21,6 +22,7 @@ const V1_COLUMNS: Record<string, string[]> = {
   usage_limits: ["tier", "max_chunks_per_file", "max_total_chunks"],
 };
 const V2_EXTRA: Record<string, string[]> = { files: ["rag_v2_model"], file_chunks: ["embedding_v2", "embedding_v2_model"] };
+const V3_EXTRA: Record<string, string[]> = { files: ["rag_v2_sentences_model"], file_chunk_sentences: ["chunk_id", "file_id", "user_id", "sentence_index", "model", "embedding"] };
 
 let idSeq = 0;
 const newId = () => `00000000-0000-4000-8000-${String(++idSeq).padStart(12, "0")}`;
@@ -42,7 +44,7 @@ function cosine(a: number[], b: number[]): number {
 
 export interface FakeRagDbOptions {
   userId: string;
-  schema?: "v1" | "v2";
+  schema?: "v1" | "v2" | "v3";
   /** يُستدعى قبل كل استعلام — لحقن أعطال (انقطاع الخادم أثناء التضمين) */
   onQuery?: (info: { table: string; op: string; payload?: unknown }) => void;
   /** يجعل تحديثًا بعينه «ينجح» دون أن يمسّ صفًّا — كتصفية RLS الصامتة: لا خطأ ولا أثر */
@@ -58,34 +60,36 @@ export interface FakeCall {
 
 export function createFakeRagDb(opts: FakeRagDbOptions) {
   const schema = opts.schema ?? "v2";
-  const tables: Record<string, Row[]> = { files: [], file_chunks: [], rag_jobs: [], subscriptions: [], usage_limits: [] };
+  const tables: Record<string, Row[]> = { files: [], file_chunks: [], rag_jobs: [], subscriptions: [], usage_limits: [], ...(schema === "v3" ? { file_chunk_sentences: [] } : {}) };
   const storage = new Map<string, Uint8Array>();
   const calls: FakeCall[] = [];
   let now = Date.now();
 
-  const known = (table: string): Set<string> => new Set([...(V1_COLUMNS[table] ?? []), ...(schema === "v2" ? V2_EXTRA[table] ?? [] : [])]);
+  const v2plus = schema === "v2" || schema === "v3";
+  const known = (table: string): Set<string> =>
+    new Set([...(V1_COLUMNS[table] ?? []), ...(v2plus ? V2_EXTRA[table] ?? [] : []), ...(schema === "v3" ? V3_EXTRA[table] ?? [] : [])]);
   const unknownColumn = (table: string, col: string) => !known(table).has(col.split("->")[0]!);
 
   const defaults = (table: string): Row => {
     if (table === "rag_jobs") {
       return { status: "queued", attempts: 0, max_attempts: 4, available_at: new Date(now - 1000).toISOString(), locked_by: null, locked_at: null, heartbeat_at: null, progress_current: 0, progress_total: 0, progress_percent: 0, error_code: null, error_message: null, correlation_id: newId(), metadata: {}, created_at: new Date(now).toISOString() };
     }
-    if (table === "files") return { deleted_at: null, metadata: {}, rag_content_hash: null, rag_total_chunks: null, rag_done_chunks: null, rag_error: null, ...(schema === "v2" ? { rag_v2_model: null } : {}) };
-    if (table === "file_chunks") return { embedding: null, ...(schema === "v2" ? { embedding_v2: null, embedding_v2_model: null } : {}) };
+    if (table === "files") return { deleted_at: null, metadata: {}, rag_content_hash: null, rag_total_chunks: null, rag_done_chunks: null, rag_error: null, ...(v2plus ? { rag_v2_model: null } : {}), ...(schema === "v3" ? { rag_v2_sentences_model: null } : {}) };
+    if (table === "file_chunks") return { embedding: null, ...(v2plus ? { embedding_v2: null, embedding_v2_model: null } : {}) };
     return {};
   };
 
-  const dimOf = (col: string) => (col === "embedding_v2" ? 320 : 384);
+  const dimOf = (table: string, col: string) => (col === "embedding_v2" || table === "file_chunk_sentences" ? 320 : 384);
   /** ما يفعله Postgres عند كتابة عمود vector: يحلّل النص ويفرض البُعد */
   function coerceWrite(table: string, patch: Row, before?: Row): { row: Row; error?: { code: string; message: string } } {
     const out: Row = { ...patch };
     for (const col of ["embedding", "embedding_v2"]) {
       if (!(col in out) || out[col] === null) continue;
       const v = typeof out[col] === "string" ? (JSON.parse(out[col] as string) as number[]) : (out[col] as number[]);
-      if (v.length !== dimOf(col)) return { row: out, error: { code: "22000", message: `expected ${dimOf(col)} dimensions, not ${v.length}` } };
+      if (v.length !== dimOf(table, col)) return { row: out, error: { code: "22000", message: `expected ${dimOf(table, col)} dimensions, not ${v.length}` } };
       out[col] = v;
     }
-    if (table === "file_chunks" && schema === "v2") {
+    if (table === "file_chunks" && v2plus) {
       const merged = { ...(before ?? {}), ...out };
       if ((merged.embedding_v2 == null) !== (merged.embedding_v2_model == null)) {
         return { row: out, error: { code: "23514", message: 'violates check constraint "file_chunks_embedding_v2_model_pair"' } };
@@ -111,6 +115,7 @@ export function createFakeRagDb(opts: FakeRagDbOptions) {
     function run(): { data: unknown; error: { code: string; message: string } | null; count?: number | null } {
       calls.push({ table, op: q.op, payload: q.payload, filters: [...q.filters] });
       opts.onQuery?.({ table, op: q.op, payload: q.payload });
+      if (!tables[table]) return { data: null, error: { code: "42P01", message: `relation "${table}" does not exist` } };
       // أعمدة غير موجودة (ما قبل 0048)
       const refs = [...q.filters.map((f) => f[1]), ...(q.op === "insert" || q.op === "update" ? Object.keys((Array.isArray(q.payload) ? (q.payload[0] ?? {}) : q.payload) as Row) : []), ...(q.op === "select" && q.cols !== "*" ? q.cols.split(",").map((c) => c.trim()) : [])];
       for (const c of refs) if (unknownColumn(table, c)) return { data: null, error: { code: "42703", message: `column ${table}.${c} does not exist` } };
@@ -123,6 +128,12 @@ export function createFakeRagDb(opts: FakeRagDbOptions) {
           const c = coerceWrite(table, r);
           if (c.error) return { data: null, error: c.error };
           built.push({ ...r, ...c.row });
+        }
+        if (table === "file_chunk_sentences") {
+          // المفتاح الأساسيّ (chunk_id, model, sentence_index) — العبارةُ كلُّها تفشل كما في SQL
+          const key = (r: Row) => `${r.chunk_id}|${r.model}|${r.sentence_index}`;
+          const seen = new Set(rows.map(key));
+          for (const r of built) { if (seen.has(key(r))) return { data: null, error: { code: "23505", message: "duplicate key value violates unique constraint" } }; seen.add(key(r)); }
         }
         rows.push(...built);
         return { data: q.returning ? built : null, error: null };
@@ -143,6 +154,8 @@ export function createFakeRagDb(opts: FakeRagDbOptions) {
       if (q.op === "delete") {
         tables[table] = rows.filter((r) => !hit.includes(r));
         if (table === "files") tables.file_chunks = tables.file_chunks!.filter((c) => tables.files!.some((f) => f.id === c.file_id));
+        // on delete cascade: جملُ مقطعٍ زال تزول معه
+        if (tables.file_chunk_sentences) tables.file_chunk_sentences = tables.file_chunk_sentences.filter((sRow) => tables.file_chunks!.some((c) => c.id === sRow.chunk_id));
         return { data: null, error: null };
       }
       if (q.order) hit = [...hit].sort((a, b) => ((a[q.order!.col] as never) < (b[q.order!.col] as never) ? -1 : 1) * (q.order!.asc ? 1 : -1));
@@ -219,6 +232,29 @@ export function createFakeRagDb(opts: FakeRagDbOptions) {
       }
       out.sort((a, b) => (b.similarity as number) - (a.similarity as number));
       return { data: out.slice(0, Math.min(Math.max(Number(args.p_match_count ?? 8), 1), 20)), error: null };
+    }
+    if (name === "match_chunk_sentences_v2" && schema === "v3") {
+      const q = JSON.parse(args.p_query_embedding as string) as number[];
+      if (q.length !== 320) return { data: null, error: { code: "22023", message: "match_chunk_sentences_v2 expects a 320-dimensional query vector" } };
+      const model = args.p_model as string | undefined;
+      if (!model) return { data: [], error: null };
+      const files = args.p_file_ids as string[];
+      const best = new Map<string, number>();
+      for (const sRow of tables.file_chunk_sentences!) {
+        if (!files.includes(sRow.file_id as string) || sRow.user_id !== uid || sRow.model !== model) continue;
+        const sim = cosine(sRow.embedding as number[], q);
+        best.set(sRow.chunk_id as string, Math.max(best.get(sRow.chunk_id as string) ?? -Infinity, sim));
+      }
+      const out: Row[] = [];
+      for (const [chunkId, sim] of best) {
+        const c = tables.file_chunks!.find((x) => x.id === chunkId);
+        const f = c && tables.files!.find((x) => x.id === c.file_id);
+        if (!c || !f || c.user_id !== uid || f.user_id !== uid || f.deleted_at !== null) continue;
+        if (c.embedding_v2_model !== model || f.rag_v2_model !== model || f.rag_v2_sentences_model !== model) continue;
+        out.push({ chunk_id: c.id, file_id: c.file_id, chunk_index: c.chunk_index, content: c.content, page_number: c.page_number ?? null, similarity: sim, original_name: f.original_name });
+      }
+      out.sort((a, b) => (b.similarity as number) - (a.similarity as number));
+      return { data: out.slice(0, Math.min(Math.max(Number(args.p_match_count ?? 16), 1), 20)), error: null };
     }
     return { data: null, error: { code: "42883", message: `unknown function ${name}` } };
   }

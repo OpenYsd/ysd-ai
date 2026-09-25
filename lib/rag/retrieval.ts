@@ -11,6 +11,7 @@ import { enqueueRagJob } from "./jobs";
 import { contentHash } from "./chunking";
 import { findFilesMissingActiveSpace } from "./space-readiness";
 import { rerankBySentences, type RerankStats } from "./sentence-rerank";
+import { ensureSentenceIndexJobs, sentenceIndexCoverage } from "./sentence-index";
 
 /**
  * عتبات التشابه — مُعايَرة على قياس فعلي (scripts/rag-calibrate.mjs):
@@ -316,6 +317,13 @@ export async function ensureActiveSpaceJobs(
   return { enqueued, skipped };
 }
 
+/** ملفّاتٌ جاهزةٌ بلا فهرس جمل (0050) ⇒ وظيفةُ استكمالٍ في الفضاء الفعّال (F2LLM وحده). يعيد ما أُدرج. */
+export async function ensureSentenceIndex(supabase: SupabaseClient, userId: string, fileIds: string[]): Promise<string[]> {
+  const space = getActiveSpace();
+  if (space.id !== "f2llm" || !space.modelTag || fileIds.length === 0) return [];
+  return ensureSentenceIndexJobs(supabase, { userId, fileIds, jobType: space.jobType, modelTag: space.modelTag });
+}
+
 /** ملفات سياق المحادثة: المرتبطة بها مباشرة + ملفات مشروعها — الجاهزة فقط */
 export async function getContextFileIds(
   supabase: SupabaseClient,
@@ -347,6 +355,11 @@ export interface RetrievalOutcome {
   mode?: "full" | "search" | "gated";
   /** البحثُ الثانويّ بالجمل (F2LLM، وضعُ search وحده) — أعدادٌ للتشخيص */
   rerank?: RerankStats;
+  /**
+   * ملفّاتُ النطاق التي لم يكتمل فهرسُ جملها (0050) — سقط السؤالُ لأجلها إلى إعادة الترتيب وقتَ السؤال،
+   * ويُدرج لها المسارُ استكمالًا. فارغٌ/غائبٌ إن اكتمل الفهرس أو لم يُطبَّق الترحيل.
+   */
+  sentenceIndexMissing?: string[];
 }
 
 /**
@@ -521,6 +534,10 @@ export async function retrieveSnippets(
    * القراءةُ الكاملة تحسينٌ فوق البحث لا بديلٌ عنه: إن تعذّرت لأيّ سبب يُسجَّل
    * ذلك ويمضي البحثُ بالترتيب كما كان — لا يسقط الردّ ولا يصمت.
    */
+  // فهرسُ الجمل (F2LLM): تُعرف تغطيتُه بالتوازي مع محاولة القراءة الكاملة — فلا زمنَ إضافيًّا للملفّات الصغيرة
+  const coverageP = isV2
+    ? sentenceIndexCoverage(supabase, fileIds, space.modelTag as string).catch(() => ({ available: false, missing: [] as string[] }))
+    : null;
   let whole: RetrievedSnippet[] | null = null;
   try {
     whole = await loadWholeFilesIfSmall(supabase, fileIds, ranked, space);
@@ -565,10 +582,37 @@ export async function retrieveSnippets(
    *   أو إنجليزيًّا. الميزانيةُ بعده كما هي: لا مقطعَ ولا حرفَ زيادة.
    */
   let rerank: RerankStats | undefined;
+  let sentenceIndexMissing: string[] | undefined;
   if (f2 && rows.length > 1) {
-    const r = await rerankBySentences(provider, queryEmbedding, rows, space.modelTag ?? space.id);
-    rows = r.order;
-    rerank = r.stats;
+    /**
+     * ★ فهرسُ الجمل أوّلًا (0050): كلُّ مقاطع ملفّات المحادثة مرتّبةٌ بأفضل جملة باستعلامٍ واحد — لا أعلى 16
+     *   بمتجه المقطع وحدها. في المحادثات متعدّدة الملفّات كان مقطعُ الجواب في المرتبة 21–69 فلا يُرى
+     *   (longdoc-eval: 107/117 ⇒ 117/117)، وبلا تضمينٍ وقتيّ (~155 جملةً في السؤال البارد).
+     *   يُستعمل حين يكتمل فهرسُ كلّ ملفّات النطاق؛ وإلا فالمسارُ السابق كما هو، ويُستكمل الناقص في الخلفيّة.
+     */
+    const cov = await coverageP!;
+    if (cov.available && cov.missing.length === 0) {
+      const tIdx = Date.now();
+      const { data: sRows, error: sErr } = await supabase.rpc("match_chunk_sentences_v2", {
+        p_query_embedding: JSON.stringify(queryEmbedding),
+        p_file_ids: fileIds,
+        p_model: space.modelTag,
+        p_match_count: 16,
+      });
+      if (!sErr && Array.isArray(sRows) && sRows.length > 0) {
+        rows = sRows as MatchRow[];
+        rerank = { scored: sRows.length, embedded: 0, cached: 0, ms: Date.now() - tIdx, complete: true, source: "index" };
+      } else if (sErr) {
+        console.error(`[rag] sentence index search failed, using query-time rerank: code=${sErr.code}`);
+      }
+    } else if (cov.available) {
+      sentenceIndexMissing = cov.missing;
+    }
+    if (!rerank) {
+      const r = await rerankBySentences(provider, queryEmbedding, rows, space.modelTag ?? space.id);
+      rows = r.order;
+      rerank = { ...r.stats, source: "query" };
+    }
   }
 
   // تنويع: حد لكل ملف + سقف إجمالي للأحرف — وملفٌّ وحيدٌ في النطاق ينال الميزانيةَ كلَّها
@@ -598,7 +642,14 @@ export async function retrieveSnippets(
     timings.postprocessMs = Date.now() - tPost;
     timings.totalMs = Date.now() - tTotal;
   }
-  return { snippets: picked, searched: true, topSimilarity, mode: "search", ...(rerank ? { rerank } : {}) };
+  return {
+    snippets: picked,
+    searched: true,
+    topSimilarity,
+    mode: "search",
+    ...(rerank ? { rerank } : {}),
+    ...(sentenceIndexMissing?.length ? { sentenceIndexMissing } : {}),
+  };
 }
 
 /** تُحقن عند وجود ملفات جاهزة لكن بلا تطابق — لتصريح "لم أجد" دون اختراع */

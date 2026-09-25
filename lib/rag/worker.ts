@@ -14,6 +14,7 @@ import { getRagLimits } from "./pipeline";
 import { getRagRuntimeConfig } from "./runtime-config";
 import { tryAcquireDrainSlot } from "./drain-gate";
 import { settleIfCompleteInSpace } from "./space-readiness";
+import { indexFileSentences } from "./sentence-index";
 import {
   claimRagJob,
   completeRagJob,
@@ -297,6 +298,11 @@ export async function runRagJob(
           ...(isV2 ? { rag_v2_model: null } : {}),
         })
         .eq("id", file.id);
+      if (isV2) {
+        // مقاطعُ جديدة ⇒ جملُ القديمة زالت معها (cascade)، فلا تبقى علامةُ «فهرسُ الجمل مكتمل».
+        // منفصلٌ ومتسامح: قبل تطبيق 0050 لا عمودَ له، والخطأ يُتجاهل فلا يمسّ الفهرسة.
+        await supabase.from("files").update({ rag_v2_sentences_model: null }).eq("id", file.id);
+      }
       perfLog(job, file.id, "chunked", { chunks: chunks.length, ms: Date.now() - t0 });
     } else {
       perfLog(job, file.id, "chunk_resume", { existing: existingCount ?? 0 });
@@ -393,6 +399,34 @@ export async function runRagJob(
         ...(isV2 ? { rag_v2_model: space.modelTag } : {}),
       })
       .eq("id", file.id);
+
+    /**
+     * ===== 4) فهرسُ الجمل (F2LLM، الترحيل 0050) — بعد الجاهزيّة، ومعزول =====
+     *   الملفُّ مرئيٌّ الآن بمسار المقاطع. وفهرسُ الجمل تحسينٌ فوقه: فشلُه يُسجَّل ولا يمسّ حالةَ الملفّ
+     *   (المسارُ العامّ للأخطاء أدناه كان سيقلبه إلى embedding/rag_failed)، وفقدانُ القفل ينهي بلا لمس.
+     */
+    if (isV2) {
+      const tSent = Date.now();
+      try {
+        const r = await indexFileSentences(supabase, {
+          fileId: file.id,
+          userId: file.user_id,
+          modelTag: space.modelTag as string,
+          provider,
+          keepAlive: async () => {
+            const alive = await heartbeatRagJob(supabase, job.id, workerId, { current: totalChunks, total: totalChunks });
+            if (!alive) throw new CancelledError();
+          },
+        });
+        perfLog(job, file.id, "sentences", { status: r.status, sentences: r.embedded, ms: Date.now() - tSent, rss_end: rssMb() });
+      } catch (err) {
+        if (err instanceof CancelledError) {
+          perfLog(job, file.id, "cancelled", { stage: "sentences" });
+          return { ok: false, status: "cancelled" };
+        }
+        perfLog(job, file.id, "sentences_failed", { ms: Date.now() - tSent, err: (err as Error).message?.slice(0, 60).replace(/\s+/g, "_") });
+      }
+    }
     await completeRagJob(supabase, job.id, workerId, totalChunks);
     perfLog(job, file.id, "completed", {
       chunks: totalChunks,
