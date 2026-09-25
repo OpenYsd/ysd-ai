@@ -3,7 +3,7 @@
  *
  *   npx vite-node scripts/reliability/answer-grounding.ts \
  *     --base https://<host> --supabase-url <url> --service-key <key> --anon-key <key> \
- *     --model ysd/model-alpha --state <state.json> --out <report.json> [--retries 1] [--limit N] [--only small,empty] \
+ *     --model ysd/model-alpha --state <state.json> --out <report.json> [--retries 1] [--limit N] [--only small,empty] [--expect-provider ysd] \
  *     [--acceptance --allow-production-acceptance]
  *
  * ★ What it proves, per question (lib: answer-grounding-lib.ts):
@@ -17,13 +17,14 @@
  *   through the app as that account. Nothing is deleted.
  *
  * Exit: 0 = every case PASS/PASS_ABSENT with the expected retrieval; 1 = any FAIL, LEAK or retrieval failure;
- *       2 = no failure but something needs review (INCONCLUSIVE_PROVIDER / CHECK_ABSENT).
+ *       2 = no failure but something needs review (INCONCLUSIVE_PROVIDER / _MODEL / _NETWORK, CHECK_ABSENT).
  */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   CASES,
   EXPECTED_MODE,
+  applyExpectedProvider,
   conversationFiles,
   parseSse,
   refuseReason,
@@ -48,6 +49,8 @@ const RETRIES = Number(arg("--retries", "1"));
 const LIMIT = Number(arg("--limit", String(CASES.length)));
 /** comma-separated conversation keys (ar_en,en_ar,multi,small,empty) — e.g. `--only small` after a rollback */
 const ONLY = (arg("--only") ?? "").split(",").filter(Boolean);
+/** e.g. `ysd` for ysd/model-alpha: an answer served by another provider (fallback) is INCONCLUSIVE_MODEL, not counted */
+const EXPECT_PROVIDER = arg("--expect-provider");
 const ACCEPTANCE = argv.includes("--acceptance");
 
 const refusal = refuseReason({ base: BASE, supabaseUrl: SUPABASE_URL, acceptance: ACCEPTANCE, allowProductionAcceptance: argv.includes("--allow-production-acceptance") });
@@ -81,8 +84,9 @@ async function rest(path: string, init: { method?: string; body?: unknown } = {}
       const text = await res.text();
       return text ? JSON.parse(text) : null;
     } catch (err) {
-      if (attempt >= 4) throw err;
-      await sleep(2000 * (attempt + 1));
+      // a client-side network drop can outlast a few seconds (measured: > 1 min); reads are safe to repeat
+      if (attempt >= 7) throw err;
+      await sleep(Math.min(3000 * (attempt + 1), 15_000));
     }
   }
 }
@@ -190,6 +194,7 @@ interface Meta {
   files_scope?: { mode?: string; failed?: boolean; retrieved?: number; top_similarity?: number | null; rerank?: Record<string, unknown> };
   completion?: { status?: string };
   actual_model?: string;
+  provider?: string;
   sources?: unknown[];
 }
 async function ask(conversationId: string, q: string) {
@@ -210,8 +215,35 @@ if (!state.user) {
   saveState();
   log(`synthetic account ${state.user.userId.slice(0, 8)} created`);
 }
-const results = [];
+const results: Array<Record<string, unknown> & { verdict: string; retrievalOk: boolean | null }> = [];
 for (const c of CASES.filter((x) => ONLY.length === 0 || ONLY.includes(x.conversation)).slice(0, LIMIT)) {
+  try {
+    await runCase(c);
+  } catch (err) {
+    /**
+     * ★ A network drop between THIS client and the app/database is not an answer and not a failure of the
+     *   release: it is recorded as inconclusive and the run continues (a crash here once cost a whole run).
+     */
+    results.push({ conversation: c.conversation, question: c.q, verdict: "INCONCLUSIVE_NETWORK", retrievalOk: null, error: (err as Error).message?.slice(0, 160) });
+    log(`INCONCLUSIVE_NETWORK  ${c.conversation.padEnd(5)} ${(err as Error).message?.slice(0, 120)} | ${c.q}`);
+    retireConversation(c.conversation);
+  }
+}
+/**
+ * ★ A conversation where a question went unanswered is not reused.
+ *   Measured on staging: a question asked twice with only failure notices in reply stayed "pending" in the
+ *   history, and the NEXT question's answer was the model answering that pending one (verbatim copy of an
+ *   earlier answer). That is an artifact of the failure, not of grounding — so the next case gets a fresh
+ *   conversation with the same files, and every counted answer comes from a clean history.
+ */
+function retireConversation(key: ConversationKey) {
+  if (state.conversations[key]) {
+    delete state.conversations[key];
+    saveState();
+    log(`  conversation ${key} retired after an unanswered question — next case starts fresh`);
+  }
+}
+async function runCase(c: (typeof CASES)[number]) {
   const conv = await ensureConversation(c.conversation);
   let r = await ask(conv.id, c.q);
   const attempts = [r.meta?.completion?.status ?? `http_${r.status}`];
@@ -220,20 +252,21 @@ for (const c of CASES.filter((x) => ONLY.length === 0 || ONLY.includes(x.convers
     r = await ask(conv.id, c.q);
     attempts.push(r.meta?.completion?.status ?? `http_${r.status}`);
   }
-  const verdict = verdictFor(c, { status: r.status, text: r.text, completion: r.meta?.completion?.status ?? null });
+  const verdict = applyExpectedProvider(verdictFor(c, { status: r.status, text: r.text, completion: r.meta?.completion?.status ?? null }), EXPECT_PROVIDER, r.meta?.provider);
   const scope = r.meta?.files_scope ?? null;
   const retrievalOk =
-    verdict === "INCONCLUSIVE_PROVIDER" && !scope
+    (verdict === "INCONCLUSIVE_PROVIDER" || verdict === "INCONCLUSIVE_MODEL") && !scope
       ? null
       : Boolean(scope && scope.failed === false && scope.mode === EXPECTED_MODE[c.conversation] && (EXPECTED_MODE[c.conversation] !== "search" || scope.rerank));
-  results.push({ conversation: c.conversation, question: c.q, verdict, retrievalOk, attempts, ms: r.ms, model: r.meta?.actual_model ?? null, scope, answer: r.text });
+  results.push({ conversation: c.conversation, question: c.q, verdict, retrievalOk, attempts, ms: r.ms, provider: r.meta?.provider ?? null, model: r.meta?.actual_model ?? null, scope, answer: r.text });
   log(`${verdict.padEnd(21)} retrieval=${retrievalOk} ${c.conversation.padEnd(5)} ${r.ms}ms ${JSON.stringify(scope)} | ${c.q}`);
   log(`    A: ${r.text.slice(0, 300).replace(/\n/g, " ⏎ ")}`);
+  if (verdict === "INCONCLUSIVE_PROVIDER" || verdict === "INCONCLUSIVE_MODEL") retireConversation(c.conversation);
 }
 const tally = results.reduce<Record<string, number>>((a, r) => ((a[r.verdict] = (a[r.verdict] ?? 0) + 1), a), {});
 const retrievalFailures = results.filter((r) => r.retrievalOk === false).length;
 writeFileSync(OUT, JSON.stringify({ model: MODEL, base: BASE, at: new Date().toISOString(), tally, retrievalFailures, results }, null, 2));
 log(`TALLY ${JSON.stringify(tally)} retrieval_failures=${retrievalFailures} → ${OUT}`);
 const failed = (tally.FAIL ?? 0) + (tally.LEAK ?? 0) + retrievalFailures > 0;
-const review = (tally.INCONCLUSIVE_PROVIDER ?? 0) + (tally.CHECK_ABSENT ?? 0) > 0;
+const review = (tally.INCONCLUSIVE_PROVIDER ?? 0) + (tally.INCONCLUSIVE_NETWORK ?? 0) + (tally.INCONCLUSIVE_MODEL ?? 0) + (tally.CHECK_ABSENT ?? 0) > 0;
 process.exit(failed ? 1 : review ? 2 : 0);

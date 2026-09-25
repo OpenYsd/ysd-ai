@@ -30,7 +30,9 @@ Not changed:
 | Staging DB, shipped `retrieveSnippets` as the test user, 32 questions: is the answer in what the model receives? | **31/32** (Production behaviour: 27/32); 0 regressions |
 | Cold rerank on Railway CPU | 1.03 s (118 sentences) · 2.17 s (163 sentences, 3 files); warm ≈ 0–0.3 s |
 | Process memory, from `[rag-worker] rss_*` | new code: 332–364 MB; previous code: 342–364 MB; rerank adds ≈ 2 MB; 0 OOM |
-| Streamed answers on staging (`ysd/free`) | see the PR description (staging cannot serve `ysd/model-alpha`) |
+| Streamed answers on staging, `ysd/free`, this tool, clean conversations (staging cannot serve `ysd/model-alpha`) | 16 cases: **11 PASS, 5 correct absence statements** (3 of them the no-file leak probes, human-reviewed) · **0 LEAK · 0 invented values · 0 retrieval failures** |
+| Honesty check on the known miss (three files, notice period) | the model said "not in the sources" and invented nothing (a false "not found"; see Limitations in the PR) |
+| Staging during the answer runs | container peak 446 MB at wake/model load, then 345–356 MB · max `rss_end` 365 MB · 0 OOM · 1 `Ready in` · rerank p50 0 ms, max 2451 ms over 30 requests |
 
 ## Preconditions (all must hold; otherwise stop)
 
@@ -67,14 +69,14 @@ Record `NEW_DEPLOYMENT` and `PREV_DEPLOYMENT` (= `09bb089b`).
 npx vite-node scripts/reliability/answer-grounding.ts \
   --base https://ysd-ai-production.up.railway.app --supabase-url <prod url> \
   --service-key <from Railway vars, never printed> --anon-key <from Railway vars> \
-  --model ysd/model-alpha --retries 1 \
+  --model ysd/model-alpha --expect-provider ysd --retries 1 \
   --state <scratch>/ag-prod-state.json --out <scratch>/ag-prod.json \
   --acceptance --allow-production-acceptance
 ```
 
 **Scope.** One new synthetic free-tier account, created by beta invite and claim; those are the tool's only service-role writes. It creates 5 conversations and 5 synthetic files and asks 16 questions, plus at most 16 re-asks, well within one free account's daily limits. Nothing is deleted, and no real user's data is read or written.
 
-**Gates.** A case counts only when `actual_model` is `ysd/model-alpha`. An answer served by any other model counts as inconclusive.
+**Gates.** A case counts only when it was served by the `ysd` provider, i.e. `ysd/model-alpha` itself. `--expect-provider ysd` marks any answer from a fallback provider as `INCONCLUSIVE_MODEL`, which is not counted and falls under A6.
 
 | Gate | Condition |
 |---|---|
@@ -83,7 +85,9 @@ npx vite-node scripts/reliability/answer-grounding.ts \
 | A3 long documents | at least 6 of the 7 long-document fact cases are `PASS` (Arabic question on the English PDF, English question on the Arabic report, three files at once) |
 | A4 no hallucination | every absent-fact case is `PASS_ABSENT`, or `CHECK_ABSENT` that a human reviewer confirms contains no invented value |
 | A5 retrieval | `retrievalOk` for every answered case: `files_scope.failed=false`; mode `search` for long documents and `full` for small ones; rerank stats present; `rerank.ms` ≤ 3000 |
-| A6 provider | at most 2 `INCONCLUSIVE_PROVIDER`. More than that makes the acceptance **inconclusive**, not passed: the deployment stays if every health and rollback gate is green, and the tool is re-run later. |
+| A6 provider | at most 2 `INCONCLUSIVE_PROVIDER`, `INCONCLUSIVE_MODEL` or `INCONCLUSIVE_NETWORK` in total. `INCONCLUSIVE_NETWORK` means the operator's own connection dropped. More than 2 makes the acceptance **inconclusive**, not passed: the deployment stays if every health and rollback gate is green, and the tool is re-run later. |
+
+After any unanswered question (provider or network), the tool retires that conversation, and the next case re-uploads its files into a fresh one. On staging, a question left unanswered twice stayed pending in the history, and the model answered it instead of the next question. Every counted answer therefore comes from a clean history.
 
 ## Monitoring window: 30 minutes after deploy, overlapping the acceptance
 
