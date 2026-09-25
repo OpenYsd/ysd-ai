@@ -503,20 +503,44 @@ export async function retrieveSnippets(
    *   المرشّحين كما هو (16).
    */
   const f2 = isV2 ? getF2llmThresholds() : null;
-  const { data, error } = isV2
-    ? await supabase.rpc(space.rpc, {
-        p_query_embedding: JSON.stringify(queryEmbedding),
-        p_file_ids: fileIds,
-        p_model: space.modelTag,
-        p_match_count: 16,
-        p_min_similarity: F2LLM_RPC_FLOOR,
-      })
-    : await supabase.rpc("match_file_chunks", {
-        p_query_embedding: JSON.stringify(queryEmbedding),
-        p_file_ids: fileIds,
-        p_match_count: 16,
-        p_min_similarity: MIN_SIMILARITY,
-      });
+  /**
+   * ★ فهرسُ الجمل (0050) وتغطيتُه يُسألان بالتوازي مع بحث المقاطع — كلُّها لا تحتاج إلا متجهَ السؤال. فلا رحلةَ
+   *   إضافيّة إلى القاعدة (~310 مل من Railway)؛ ويُهمل الجوابُ إن قُرئت الملفّاتُ كاملةً أو لم يكتمل الفهرس.
+   *   قبل تطبيق الترحيل: خطأٌ صامتٌ لكليهما، فالمسارُ السابق كما هو.
+   */
+  const chunkP = Promise.resolve(
+    isV2
+      ? supabase.rpc(space.rpc, {
+          p_query_embedding: JSON.stringify(queryEmbedding),
+          p_file_ids: fileIds,
+          p_model: space.modelTag,
+          p_match_count: 16,
+          p_min_similarity: F2LLM_RPC_FLOOR,
+        })
+      : supabase.rpc("match_file_chunks", {
+          p_query_embedding: JSON.stringify(queryEmbedding),
+          p_file_ids: fileIds,
+          p_match_count: 16,
+          p_min_similarity: MIN_SIMILARITY,
+        }),
+  );
+  const coverageP = isV2
+    ? sentenceIndexCoverage(supabase, fileIds, space.modelTag as string).catch(() => ({ available: false, missing: [] as string[] }))
+    : null;
+  const tIdx = Date.now();
+  const sentenceP = isV2
+    ? Promise.resolve(
+        supabase.rpc("match_chunk_sentences_v2", {
+          p_query_embedding: JSON.stringify(queryEmbedding),
+          p_file_ids: fileIds,
+          p_model: space.modelTag,
+          p_match_count: 16,
+        }),
+      )
+        .then((r) => ({ rows: r.data as MatchRow[] | null, error: r.error as { code?: string } | null, ms: Date.now() - tIdx }))
+        .catch((err: Error) => ({ rows: null, error: { code: err.message?.slice(0, 40) }, ms: Date.now() - tIdx }))
+    : null;
+  const { data, error } = await chunkP;
   if (timings) {
     timings.searchMs = Date.now() - tSearch;
     timings.totalMs = Date.now() - tTotal;
@@ -535,9 +559,6 @@ export async function retrieveSnippets(
    * ذلك ويمضي البحثُ بالترتيب كما كان — لا يسقط الردّ ولا يصمت.
    */
   // فهرسُ الجمل (F2LLM): تُعرف تغطيتُه بالتوازي مع محاولة القراءة الكاملة — فلا زمنَ إضافيًّا للملفّات الصغيرة
-  const coverageP = isV2
-    ? sentenceIndexCoverage(supabase, fileIds, space.modelTag as string).catch(() => ({ available: false, missing: [] as string[] }))
-    : null;
   let whole: RetrievedSnippet[] | null = null;
   try {
     whole = await loadWholeFilesIfSmall(supabase, fileIds, ranked, space);
@@ -590,20 +611,13 @@ export async function retrieveSnippets(
      *   (longdoc-eval: 107/117 ⇒ 117/117)، وبلا تضمينٍ وقتيّ (~155 جملةً في السؤال البارد).
      *   يُستعمل حين يكتمل فهرسُ كلّ ملفّات النطاق؛ وإلا فالمسارُ السابق كما هو، ويُستكمل الناقص في الخلفيّة.
      */
-    const cov = await coverageP!;
+    const [cov, idx] = await Promise.all([coverageP!, sentenceP!]);
     if (cov.available && cov.missing.length === 0) {
-      const tIdx = Date.now();
-      const { data: sRows, error: sErr } = await supabase.rpc("match_chunk_sentences_v2", {
-        p_query_embedding: JSON.stringify(queryEmbedding),
-        p_file_ids: fileIds,
-        p_model: space.modelTag,
-        p_match_count: 16,
-      });
-      if (!sErr && Array.isArray(sRows) && sRows.length > 0) {
-        rows = sRows as MatchRow[];
-        rerank = { scored: sRows.length, embedded: 0, cached: 0, ms: Date.now() - tIdx, complete: true, source: "index" };
-      } else if (sErr) {
-        console.error(`[rag] sentence index search failed, using query-time rerank: code=${sErr.code}`);
+      if (!idx.error && Array.isArray(idx.rows) && idx.rows.length > 0) {
+        rows = idx.rows;
+        rerank = { scored: idx.rows.length, embedded: 0, cached: 0, ms: idx.ms, complete: true, source: "index" };
+      } else if (idx.error) {
+        console.error(`[rag] sentence index search failed, using query-time rerank: code=${idx.error.code}`);
       }
     } else if (cov.available) {
       sentenceIndexMissing = cov.missing;
