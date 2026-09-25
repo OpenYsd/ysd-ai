@@ -117,7 +117,13 @@ const counters = {
   leakageProbes: 0,
   chatUnmeasured: 0,
   providerFailures: 0,
+  /** طلباتٌ ضاع ردُّها في الشبكة فصالحها العميلُ كما يصالحها المتصفّح */
+  networkReconciles: 0,
+  networkRetries: 0,
 };
+
+/** خطأُ نقلٍ بلا ردّ HTTP (انقطاع، مهلةُ اتصال) — غيرُ خطأ الخادم */
+const isNetworkError = (err) => err?.name === "TypeError" && /fetch failed/i.test(String(err?.message));
 
 // ------------------------------------------------------------------ supabase (service, staging only)
 const ACCEPTANCE_WRITES = [/^beta_invites$/, /^rpc\/beta_claim_invite$/];
@@ -128,12 +134,22 @@ async function rest(path, { method = "GET", body, prefer } = {}) {
   const headers = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
   if (body) headers["Content-Type"] = "application/json";
   if (prefer) headers.Prefer = prefer;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(60000),
-  });
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(60000),
+      });
+      break;
+    } catch (err) {
+      if (!isNetworkError(err) || attempt >= 4) throw err;
+      counters.networkRetries++;
+      await sleep(2000 * (attempt + 1));
+    }
+  }
   if (!res.ok) throw new Error(`rest ${method} ${path.split("?")[0]} failed ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -208,7 +224,17 @@ async function freshCookie() {
  */
 async function api(path, opts = {}) {
   for (let attempt = 0; ; attempt++) {
-    const res = await apiOnce(path, opts);
+    let res;
+    try {
+      res = await apiOnce(path, opts);
+    } catch (err) {
+      const isUpload = path.startsWith("/api/files/upload");
+      if (!isNetworkError(err) || isUpload || attempt >= 4) throw err;
+      counters.networkRetries++;
+      log(`  network error on ${path.split("?")[0]} — retry ${attempt + 1}`);
+      await sleep(3000 * (attempt + 1));
+      continue;
+    }
     if (res.status !== 429 || attempt >= 6) return res;
     const wait = Math.min(Number(res.retryAfter ?? 15) || 15, 65);
     log(`  429 on ${path.split("?")[0]} — waiting ${wait}s`);
@@ -244,12 +270,33 @@ async function createConversation(title) {
 }
 
 async function upload({ conversationId, fx, clientUploadId }) {
-  const fd = new FormData();
-  fd.append("file", new Blob([fx.bytes], { type: fx.mime }), fx.name);
-  if (conversationId) fd.append("conversationId", conversationId);
-  if (clientUploadId) fd.append("clientUploadId", clientUploadId);
+  const send = () => {
+    const fd = new FormData();
+    fd.append("file", new Blob([fx.bytes], { type: fx.mime }), fx.name);
+    if (conversationId) fd.append("conversationId", conversationId);
+    if (clientUploadId) fd.append("clientUploadId", clientUploadId);
+    return api("/api/files/upload", { method: "POST", body: fd });
+  };
   counters.uploads++;
-  return api("/api/files/upload", { method: "POST", body: fd });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await send();
+    } catch (err) {
+      if (!isNetworkError(err) || !clientUploadId || attempt >= 3) throw err;
+      /**
+       * ★ ردٌّ ضاع في الشبكة: يُسأل الخادمُ عمّا حفظه بالمعرّف نفسه — كما يفعل المتصفّح.
+       *   وجده ⇒ هو الملف؛ لم يجده ⇒ يُعاد الرفعُ بالمعرّف نفسه (والخادمُ لا يكرّر).
+       */
+      counters.networkReconciles++;
+      log(`  upload response lost (${fx.name}) — reconciling by clientUploadId`);
+      for (let probe = 0; probe < 5; probe++) {
+        await sleep(2000 * (probe + 1));
+        const r = await api(`/api/files?clientUploadId=${encodeURIComponent(clientUploadId)}`);
+        const row = (r.json?.files ?? [])[0];
+        if (r.status === 200 && row) return { status: 200, json: { file: row, reused: true, reconciled: true }, text: "" };
+      }
+    }
+  }
 }
 
 /**

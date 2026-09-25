@@ -48,9 +48,11 @@ import {
   dedupeSourceCards,
   NO_MATCH_HINT,
   FILES_PENDING_HINT,
+  FILES_UNAVAILABLE_HINT,
   getActiveSpaceForDiagnostics as getActiveSpace,
   ensureActiveSpaceJobs,
   retrieveSnippets,
+  type RetrievalOutcome,
   type RetrievedSnippet,
 } from "@/lib/rag/retrieval";
 import { EVIDENCE_MODE_INSTRUCTIONS } from "@/lib/evidence/evidence-prompt";
@@ -695,6 +697,12 @@ export async function POST(req: NextRequest) {
   // RAG: استرجاع مقاطع الملفات (بعد توفّر السياق ومعرّفات الملفات معًا)
   let ragSnippets: RetrievedSnippet[] = [];
   let ragSearchedNoMatch = false;
+  /** البحثُ تعذّر (خطأ أو استثناء) — يُقال للمستخدم، لا يُقرأ «لم يوجد» */
+  let ragRetrievalFailed = false;
+  let ragMode: "full" | "search" | "gated" | "failed" | "none" = "none";
+  let ragTopSimilarity: number | null = null;
+  /** البحثُ الثانويّ بالجمل (F2LLM، search) — أعدادٌ فقط */
+  let ragRerank: RetrievalOutcome["rerank"] | null = null;
   let ragMs = 0;
   const tRag = Date.now();
   const queryText =
@@ -708,10 +716,19 @@ export async function POST(req: NextRequest) {
         ragTimings,
       );
       ragSnippets = outcome.snippets;
-      // بُحث في ملفات جاهزة لكن بلا تطابق واثق → نلمّح للنموذج بالتصريح
-      ragSearchedNoMatch = outcome.searched && outcome.snippets.length === 0;
+      ragTopSimilarity = outcome.topSimilarity;
+      ragRetrievalFailed = Boolean(outcome.failed);
+      ragMode = outcome.failed ? "failed" : (outcome.mode ?? "none");
+      ragRerank = outcome.rerank ?? null;
+      // بُحث فعلًا في ملفات جاهزة ولم يُعثر على شيء → نلمّح للنموذج بالتصريح بالغياب
+      ragSearchedNoMatch = outcome.searched && !outcome.failed && outcome.snippets.length === 0;
     } catch (err) {
-      // فشل الاسترجاع لا يمنع المحادثة — تُكمل بدون مصادر
+      /**
+       * ★ فشلُ الاسترجاع لا يمنع المحادثة — لكنه لا يمرّ صامتًا.
+       *   كان يُكمل بلا أيّ تنبيه، فيجيب النموذجُ كأن لا ملفّ مرفوعًا.
+       */
+      ragRetrievalFailed = true;
+      ragMode = "failed";
       console.error(`[rag] retrieval failed: ${(err as Error).message?.slice(0, 80)}`);
     }
     ragMs = Date.now() - tRag;
@@ -766,7 +783,12 @@ export async function POST(req: NextRequest) {
       `pending_file_ids=${pending.length > 0 ? pending.join("|") : "none"} ` +
       `space=${getActiveSpace().id} space_model=${getActiveSpace().modelTag ?? "e5"} ` +
       `retrieval_scope=${contextFileIds.length} retrieval_results=${ragSnippets.length} ` +
-      `attached_but_not_ready=${filesAttachedButNotReady}`,
+      `retrieval_mode=${ragMode} top_similarity=${ragTopSimilarity === null ? "none" : ragTopSimilarity.toFixed(3)} ` +
+      `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady}` +
+      (ragRerank
+        ? ` rerank_scored=${ragRerank.scored} rerank_embedded=${ragRerank.embedded} rerank_cached=${ragRerank.cached} ` +
+          `rerank_ms=${ragRerank.ms} rerank_complete=${ragRerank.complete}`
+        : ""),
   );
   /**
    * Evidence Mode — **قرار خادمي، وشرطه وجود مصادر دخلت الموجّه فعلًا**.
@@ -803,6 +825,8 @@ export async function POST(req: NextRequest) {
     // كتلة منفصلة مُسوَّرة — الموجه الأساسي لا يتغير ومحتوى الملفات ليس تعليمات
     systemPrompt = `${systemPrompt}\n\n${buildSourcesContext(ragSnippets)}`;
     systemPrompt = `${systemPrompt}\n\n${EVIDENCE_MODE_INSTRUCTIONS}`;
+  } else if (ragRetrievalFailed) {
+    systemPrompt = `${systemPrompt}\n\n${FILES_UNAVAILABLE_HINT}`;
   } else if (ragSearchedNoMatch) {
     systemPrompt = `${systemPrompt}\n\n${NO_MATCH_HINT}`;
   } else if (filesAttachedButNotReady) {
@@ -1552,6 +1576,13 @@ export async function POST(req: NextRequest) {
             ready: contextFileIds.length,
             pending: pending.length,
             retrieved: ragSnippets.length,
+            // كيف دخلت الملفّاتُ الموجّه (كاملةً/بحثًا/رُفضت بحدّ الثقة/تعذّرت) — ودرجةُ أعلى مقطع
+            mode: ragMode,
+            top_similarity: ragTopSimilarity === null ? null : Math.round(ragTopSimilarity * 1000) / 1000,
+            failed: ragRetrievalFailed,
+            ...(ragRerank
+              ? { rerank: { scored: ragRerank.scored, embedded: ragRerank.embedded, cached: ragRerank.cached, ms: ragRerank.ms, complete: ragRerank.complete } }
+              : {}),
           };
           if (ragSnippets.length > 0) {
             // نفس التجميع المعروض — كي لا تفترق البطاقات بعد إعادة التحميل

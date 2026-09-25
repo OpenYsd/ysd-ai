@@ -159,13 +159,23 @@ describe("★ الفقد لا يعود عبر مسارات الترشيح", () =
     );
     state.rows = rows;
 
-    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1"]);
+    // حدُّ التنويع يخصّ نطاقًا فيه أكثرُ من ملف
+    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1", "f2"]);
     expect(snippets.length).toBe(MAX_PER_FILE);
 
     // المختارة هي الأوائل بالترتيب، وكلٌّ بمعرّفه هو
     expect(snippets.map((s) => s.chunkId)).toEqual(
       rows.slice(0, MAX_PER_FILE).map((r) => r.chunk_id),
     );
+  });
+
+  it("★ ملفٌّ وحيدٌ في النطاق ينال ميزانيةَ المقاطع كلَّها — الأوائل بالترتيب بمعرّفاتها", async () => {
+    const f = uuid();
+    const rows = Array.from({ length: MAX_PER_FILE + 3 }, () => row({ file_id: f, original_name: "واحد.pdf" }));
+    state.rows = rows;
+    const { snippets } = await retrieveSnippets(supabase, "سؤال", ["f1"]);
+    expect(snippets.length).toBe(Math.min(rows.length, MAX_SNIPPETS));
+    expect(snippets.map((s) => s.chunkId)).toEqual(rows.slice(0, snippets.length).map((r) => r.chunk_id));
   });
 
   it("★ السقف الإجمالي للمقاطع لا يخلط المعرّفات", async () => {
@@ -222,11 +232,13 @@ describe("★ ما لم يتغيّر", () => {
     expect(out.searched).toBe(true);
   });
 
-  it("★ عطل القاعدة ⇒ صفر مقاطع بلا رمي", async () => {
+  it("★ عطل القاعدة ⇒ صفر مقاطع بلا رمي — ويُعلَن فشلًا لا «لم يوجد»", async () => {
     state.error = { code: "42883" };
     const out = await retrieveSnippets(supabase, "سؤال", ["f1"]);
     expect(out.snippets).toEqual([]);
-    expect(out.searched).toBe(true);
+    // ★ كان searched=true فيقرأه المسارُ «بُحث فلم يوجد» ويقول النموذج إن المعلومة غائبة
+    expect(out.failed).toBe(true);
+    expect(out.searched).toBe(false);
   });
 
   /** الإيداع الأول لا يمسّ شكل الرد: المسار يبني `sources` بحقول صريحة */
