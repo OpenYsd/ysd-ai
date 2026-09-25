@@ -18,7 +18,7 @@ import type { EmbeddingProvider } from "./embeddings";
 import { enqueueRagJob } from "./jobs";
 import { splitSentences, SECONDARY_MAX_SENTENCES_PER_CHUNK } from "./sentence-rerank";
 
-/** نبضةُ الوظيفة وفحصُ الإلغاء كلَّ هذا العدد من المقاطع */
+/** مقاطعُ عبارة الإدراج الواحدة — وعندها نبضةُ الوظيفة وفحصُ الإلغاء */
 export const SENTENCE_INDEX_HEARTBEAT_CHUNKS = 8;
 
 export interface SentenceIndexResult {
@@ -71,24 +71,35 @@ export async function indexFileSentences(
   const done = await doneIds();
   if (!done) return { status: "unavailable", chunks: chunks.length, embedded: 0 };
 
+  /**
+   * ★ جملُ عدّة مقاطع في عبارة إدراجٍ واحدة. قيس على staging: 280 جملةً (31 مقطعًا) = ~3 ث تضمين و~8 ث رحلاتٍ
+   *   إلى القاعدة (إدراجٌ لكلّ مقطع ≈ 260 مل). والعبارةُ تشمل مقاطعَ كاملةً وحدها، فالاستئنافُ كما هو: ما لم
+   *   يُحفظ يُعاد، وما حُفظ (صفُّه رقم 0) لا يُمسّ.
+   */
   let embedded = 0;
-  let sinceBeat = 0;
+  let batch: Array<Record<string, unknown>> = [];
+  let batchChunks = 0;
+  const flush = async () => {
+    if (batch.length === 0) return;
+    const { error } = await supabase.from("file_chunk_sentences").insert(batch);
+    if (error) throw new Error(`sentence insert failed: ${error.code ?? ""}`);
+    batch = [];
+    batchChunks = 0;
+    await keepAlive();
+  };
   for (const c of chunks) {
     if (done.has(c.id)) continue;
     const sentences = chunkSentences(c.content);
     if (sentences.length === 0) continue;
     const vectors = await provider.embedPassages(sentences);
     if (vectors.length !== sentences.length) throw new Error("sentence embedding mismatch");
-    const { error } = await supabase.from("file_chunk_sentences").insert(
-      vectors.map((v, i) => ({ chunk_id: c.id, file_id: fileId, user_id: userId, sentence_index: i, model: modelTag, embedding: JSON.stringify(v) })),
-    );
-    if (error) throw new Error(`sentence insert failed: ${error.code ?? ""}`);
-    embedded += sentences.length;
-    if (++sinceBeat >= SENTENCE_INDEX_HEARTBEAT_CHUNKS) {
-      sinceBeat = 0;
-      await keepAlive();
+    for (let i = 0; i < vectors.length; i++) {
+      batch.push({ chunk_id: c.id, file_id: fileId, user_id: userId, sentence_index: i, model: modelTag, embedding: JSON.stringify(vectors[i]) });
     }
+    embedded += sentences.length;
+    if (++batchChunks >= SENTENCE_INDEX_HEARTBEAT_CHUNKS) await flush();
   }
+  await flush();
 
   // تحقّقٌ نهائيّ: كلُّ مقطعٍ له جمله — وحده يرفع العلامة التي تجعل الملفَّ مرئيًّا لبحث الجمل
   const after = await doneIds();

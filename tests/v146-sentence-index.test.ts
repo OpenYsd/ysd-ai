@@ -168,12 +168,14 @@ describe("★ (٤) فشلُ مرحلة الجمل معزول، والاستئن�
     const db = newDb("v3", ({ table, op }) => {
       if (table === "file_chunk_sentences" && op === "insert" && ++inserts === 2 && broken) throw new Error("connection reset");
     });
-    const f = db.addFile({ extracted_text: [GOLD_TEXT, decoys("r", 3)].join("\n\n") });
+    // أكثرُ من عبارة إدراجٍ واحدة (8 مقاطع لكلّ عبارة): الأولى تُحفظ، والثانية تفشل
+    const f = db.addFile({ extracted_text: [GOLD_TEXT, decoys("r", 12)].join("\n\n") });
     await index(db, f);
     expect(f.status).toBe("ready_for_rag");
     expect(f.rag_v2_sentences_model).toBeNull();
     expect(db.tables.rag_jobs!.find((j) => j.file_id === f.id)!.status).toBe("completed");
     const partial = sentencesOf(db, f.id).length;
+    expect(chunksOf(db, f.id).length).toBeGreaterThan(8);
     expect(partial).toBeGreaterThan(0);
 
     broken = false;
