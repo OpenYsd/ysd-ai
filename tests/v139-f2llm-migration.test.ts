@@ -93,7 +93,7 @@ describe("★ تراجع 0048 يزيل v2 وحده", () => {
 });
 
 describe("ترقيم الترحيلات", () => {
-  it("متّصل وفريد وآخره 0049", () => {
+  it("متّصل وفريد وآخره 0050", () => {
     const nums = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
       .map((f) => f.slice(0, f.indexOf("_")))
@@ -101,7 +101,7 @@ describe("ترقيم الترحيلات", () => {
       .map(Number)
       .sort((a, b) => a - b);
     expect(new Set(nums).size).toBe(nums.length);
-    expect(nums.at(-1)).toBe(49);
-    expect(nums.slice(-2)).toEqual([48, 49]);
+    expect(nums.at(-1)).toBe(50);
+    expect(nums.slice(-3)).toEqual([48, 49, 50]);
   });
 });

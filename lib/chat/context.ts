@@ -44,6 +44,48 @@ function isProviderFailureNotice(metadata: unknown): boolean {
   return (completion as { status?: unknown }).status === "incomplete_provider";
 }
 
+/** نافذة السياق: أحدثُ هذا العدد من الرسائل */
+export const HISTORY_WINDOW = 30;
+
+interface HistoryRow {
+  role: string;
+  content: string;
+  metadata?: unknown;
+}
+
+/**
+ * ★ موجّه النموذج ينتهي بالسؤال الذي يُجاب الآن، وكلُّ سؤالٍ قبله له جوابٌ فيه.
+ *
+ *   رُصد على staging: سُئل Q1 مرّتين وفشل المزوّد في كلتيهما، ثمّ سُئل Q2 — فجاء الجوابُ
+ *   نسخةً حرفيّةً لجواب Q1 السابق. إشعاراتُ الفشل كانت تُستبعد (صحيح) لكنّ أسئلتها بقيت،
+ *   فوصل إلى النموذج ثلاثةُ أدوار مستخدمٍ متتالية فأجاب أقدمَها.
+ *
+ *   فالقاعدة، على صفوفٍ مرتّبةٍ تصاعديًّا:
+ *   - إشعارُ فشل المزوّد لا يدخل (كما كان).
+ *   - السؤالُ الذي يُجاب = آخرُ رسالة مستخدم؛ وما بعده لا يدخل (إعادةُ التوليد: الجوابُ
+ *     القديم يُستبدل في مكانه، فلا يُرسل للنموذج كأنه دورُه الأخير).
+ *   - سؤالٌ سابقٌ لم يعقبه جواب (فشلٌ أو انقطاعٌ قبل أيّ ردٍّ محفوظ) لا يدخل: لم يُجب، والمستخدمُ
+ *     أعاده أو انتقل إلى غيره — وإبقاؤه يجعل النموذج يجيبه بدل السؤال الحالي.
+ *   - نافذةٌ مقطوعة (أحدثُ HISTORY_WINDOW فقط) تبدأ بسؤال، لا بجوابٍ فقد سؤالَه.
+ *
+ *   لا يُحذف شيءٌ من القاعدة ولا من الواجهة: هذا بناءُ الموجّه وحده.
+ */
+export function buildModelContext(rows: HistoryRow[], opts: { truncated: boolean }): ChatMessage[] {
+  const kept = rows.filter((m) => !isProviderFailureNotice(m.metadata));
+  let target = -1;
+  for (let i = kept.length - 1; i >= 0; i--) {
+    if (kept[i]!.role === "user") {
+      target = i;
+      break;
+    }
+  }
+  // لا سؤال في النافذة (حالةٌ حدّيّة): كما كان
+  const scoped = target === -1 ? kept : kept.slice(0, target + 1);
+  const out = scoped.filter((m, i) => !(m.role === "user" && i < target && scoped[i + 1]?.role === "user"));
+  if (opts.truncated) while (out.length > 0 && out[0]!.role !== "user") out.shift();
+  return out.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
+}
+
 export async function gatherChatContext(
   supabase: SupabaseClient,
   params: {
@@ -63,8 +105,10 @@ export async function gatherChatContext(
       .select("role, content, metadata")
       .eq("conversation_id", conversationId)
       .is("deleted_at", null)
-      .order("created_at", { ascending: true })
-      .limit(30),
+      // ★ أحدثُ النافذة لا أقدمُها: تصاعديًّا ثمّ حدٌّ كان يُبقي أوّلَ 30 رسالة، فمحادثةٌ أطول لا
+      //   يصل سؤالُها الأخير إلى النموذج أصلًا. تُعكس أدناه إلى الترتيب الزمنيّ.
+      .order("created_at", { ascending: false })
+      .limit(HISTORY_WINDOW),
     getConversationFileScope(supabase, userId, conversationId, projectId),
     supabase.from("conversations").update(convUpdate).eq("id", conversationId),
     projectId
@@ -88,31 +132,24 @@ export async function gatherChatContext(
   if (fileIdsRes.status === "rejected") console.error(`[chat] rid=${requestId} file_context_failed`);
 
   // (أ) السياق — سلوك حالي: فشل ⇒ سياق فارغ يُكمل
-  const historyRows =
+  const newestFirst =
     historyRes.status === "fulfilled"
-      ? ((
-          historyRes.value as {
-            data?: { role: string; content: string; metadata?: unknown }[] | null;
-          }
-        ).data ?? [])
+      ? ((historyRes.value as { data?: HistoryRow[] | null }).data ?? [])
       : [];
-  const history: ChatMessage[] = historyRows
-    /**
-     * ★ إشعار فشل المزوّد يُعرض ولا يُغذّى.
-     *
-     * الفشل الطرفي يُحفظ رسالةَ مساعد كي يبقى للمستخدم أثرٌ مفهوم بعد إعادة
-     * التحميل. لكنه **ليس جواب نموذج**: تمريره في السياق يجعل النموذج يقرأ
-     * «الخدمة غير متاحة» على أنه ردُّه السابق، فيقلّد نبرته أو يعتذر عمّا لم
-     * يقله — وقد يتكرّر الاعتذار في كل دور لاحق.
-     *
-     * الاستبعاد هنا وحده: الصفّ يبقى في القاعدة، ويبقى ظاهرًا في الواجهة،
-     * ويبقى في سجلّ المحادثة للمستخدم. المحذوف هو دخوله **موجّه النموذج**.
-     */
-    .filter((m) => !isProviderFailureNotice(m.metadata))
-    .map((m) => ({
-      role: m.role as ChatMessage["role"],
-      content: m.content,
-    }));
+  /**
+   * ★ إشعار فشل المزوّد يُعرض ولا يُغذّى، وسؤالٌ لم يُجب لا يُغذّى (buildModelContext).
+   *
+   * الفشل الطرفي يُحفظ رسالةَ مساعد كي يبقى للمستخدم أثرٌ مفهوم بعد إعادة
+   * التحميل. لكنه **ليس جواب نموذج**: تمريره في السياق يجعل النموذج يقرأ
+   * «الخدمة غير متاحة» على أنه ردُّه السابق، فيقلّد نبرته أو يعتذر عمّا لم
+   * يقله — وقد يتكرّر الاعتذار في كل دور لاحق.
+   *
+   * الاستبعاد هنا وحده: الصفّ يبقى في القاعدة، ويبقى ظاهرًا في الواجهة،
+   * ويبقى في سجلّ المحادثة للمستخدم. المحذوف هو دخوله **موجّه النموذج**.
+   */
+  const history = buildModelContext([...newestFirst].reverse(), {
+    truncated: newestFirst.length >= HISTORY_WINDOW,
+  });
 
   // (ب) معرّفات ملفات السياق — سلوك حالي: فشل ⇒ لا RAG
   const scope =

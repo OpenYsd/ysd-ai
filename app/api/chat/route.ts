@@ -51,6 +51,7 @@ import {
   FILES_UNAVAILABLE_HINT,
   getActiveSpaceForDiagnostics as getActiveSpace,
   ensureActiveSpaceJobs,
+  ensureSentenceIndex,
   retrieveSnippets,
   type RetrievalOutcome,
   type RetrievedSnippet,
@@ -703,6 +704,8 @@ export async function POST(req: NextRequest) {
   let ragTopSimilarity: number | null = null;
   /** البحثُ الثانويّ بالجمل (F2LLM، search) — أعدادٌ فقط */
   let ragRerank: RetrievalOutcome["rerank"] | null = null;
+  /** ملفّاتُ النطاق بلا فهرس جمل (0050) — يُستكمل لها في الخلفيّة */
+  let ragSentenceMissing: string[] = [];
   let ragMs = 0;
   const tRag = Date.now();
   const queryText =
@@ -720,6 +723,7 @@ export async function POST(req: NextRequest) {
       ragRetrievalFailed = Boolean(outcome.failed);
       ragMode = outcome.failed ? "failed" : (outcome.mode ?? "none");
       ragRerank = outcome.rerank ?? null;
+      ragSentenceMissing = outcome.sentenceIndexMissing ?? [];
       // بُحث فعلًا في ملفات جاهزة ولم يُعثر على شيء → نلمّح للنموذج بالتصريح بالغياب
       ragSearchedNoMatch = outcome.searched && !outcome.failed && outcome.snippets.length === 0;
     } catch (err) {
@@ -773,6 +777,25 @@ export async function POST(req: NextRequest) {
   }
 
   /**
+   * ★ فهرسُ الجمل (0050) يُستكمل لملفٍّ جاهزٍ من قبله — في الخلفيّة، عبر بوّابة التصريف نفسها.
+   *   هذا السؤالُ أُجيب بالمسار السابق (إعادةُ ترتيبٍ وقتَ السؤال)، والتالي يجد الفهرس. محدود: ≤ 5 ملفّات،
+   *   ومحاولةٌ واحدةٌ لكلّ ملفٍّ في اليوم.
+   */
+  if (ragSentenceMissing.length > 0) {
+    try {
+      const enq = await ensureSentenceIndex(supabase, userId, ragSentenceMissing);
+      if (enq.length > 0) {
+        console.info(`[files-pipeline] rid=${requestId} sentence_index_enqueued=${enq.join("|")}`);
+        void drainOwnJobs(supabase, { workerId: `chat:${requestId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
+          console.error(`[files-pipeline] rid=${requestId} sentence_index_drain_failed err=${(err as Error).message?.slice(0, 120)}`),
+        );
+      }
+    } catch (err) {
+      console.error(`[files-pipeline] rid=${requestId} sentence_index_enqueue_failed err=${(err as Error).message?.slice(0, 120)}`);
+    }
+  }
+
+  /**
    * تشخيصٌ بنيويّ لمسار الملفات — معرّفات وأعداد فقط، بلا اسم ملفٍ ولا محتوى
    * ولا رمزٍ ولا سرّ. يجيب سؤالًا واحدًا كان يتعذّر جوابه من السجلّات:
    * «حين قال النموذج إنه لا يرى ملفًا، ماذا كان يرى الخادمُ فعلًا؟»
@@ -787,7 +810,8 @@ export async function POST(req: NextRequest) {
       `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady}` +
       (ragRerank
         ? ` rerank_scored=${ragRerank.scored} rerank_embedded=${ragRerank.embedded} rerank_cached=${ragRerank.cached} ` +
-          `rerank_ms=${ragRerank.ms} rerank_complete=${ragRerank.complete}`
+          `rerank_ms=${ragRerank.ms} rerank_complete=${ragRerank.complete} rerank_source=${ragRerank.source ?? "query"}` +
+          (ragSentenceMissing.length > 0 ? ` sentence_index_missing=${ragSentenceMissing.length}` : "")
         : ""),
   );
   /**
@@ -1581,7 +1605,7 @@ export async function POST(req: NextRequest) {
             top_similarity: ragTopSimilarity === null ? null : Math.round(ragTopSimilarity * 1000) / 1000,
             failed: ragRetrievalFailed,
             ...(ragRerank
-              ? { rerank: { scored: ragRerank.scored, embedded: ragRerank.embedded, cached: ragRerank.cached, ms: ragRerank.ms, complete: ragRerank.complete } }
+              ? { rerank: { scored: ragRerank.scored, embedded: ragRerank.embedded, cached: ragRerank.cached, ms: ragRerank.ms, complete: ragRerank.complete, source: ragRerank.source ?? "query" } }
               : {}),
           };
           if (ragSnippets.length > 0) {
