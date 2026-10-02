@@ -75,7 +75,7 @@ import {
 } from "@/lib/evidence/evidence-recovery";
 import { drainOwnJobs } from "@/lib/rag/worker";
 import { backfillSentenceIndex } from "@/lib/rag/sentence-backfill";
-import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
+import { gatherChatContext, isProviderFailureNotice, mergeServerTiming } from "@/lib/chat/context";
 import {
   emptyRetrievalTimings,
   type RetrievalTimings,
@@ -490,6 +490,8 @@ export async function POST(req: NextRequest) {
    * يخسر المستخدم رده عند الإيقاف أو المهلة أو انقطاع المزوّد.
    */
   let regenerateTargetId: string | null = null;
+  /** هل الهدفُ نفسُه إشعارُ فشل (لا نصَّ نموذج)؟ إشعارٌ جديد يحلّ محلَّه؛ وردٌّ حقيقيّ لا يُكتب فوقه إشعار. */
+  let regenerateTargetIsNotice = false;
 
   if (editMessageId) {
     // تعديل رسالة مستخدم سابقة: حدّث النص واحذف (ناعمًا) كل ما بعدها
@@ -579,7 +581,7 @@ export async function POST(req: NextRequest) {
      */
     const { data: prevAsst } = await supabase
       .from("messages")
-      .select("id")
+      .select("id, metadata")
       .eq("conversation_id", conversationId)
       .eq("role", "assistant")
       .gt("created_at", lastUser.created_at)
@@ -588,6 +590,7 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
     regenerateTargetId = prevAsst?.id ?? null;
+    regenerateTargetIsNotice = prevAsst ? isProviderFailureNotice(prevAsst.metadata) : false;
     userMessageId = lastUser.id;
 
     /**
@@ -1550,10 +1553,23 @@ export async function POST(req: NextRequest) {
           send({ type: "text", text: notice });
         }
 
+        /**
+         * ★ إعادةُ محاولةٍ فشلت بلا نصّ لا تمحو الردَّ القائم.
+         *
+         * عقدُ إعادة التوليد (v0.7.0 RC8): الردُّ القديم يبقى حتى يوجد بديلٌ قابلٌ للحفظ. والإشعارُ أعلاه
+         * ليس بديلًا: كتابتُه في مكان الردّ تمحو جوابًا حقيقيًّا — كاملًا، أو جزئيًّا قُطع بثُّه فتفقد «كمل»
+         * ما تُكمله. فالإشعارُ يصل العميل (أُرسل للتوّ) ولا يُحفظ؛ ويُحفظ فقط حين يكون الهدفُ نفسُه إشعارًا.
+         */
+        const keepExistingReply =
+          providerFailureNotice && regenerateTargetId !== null && !regenerateTargetIsNotice;
+
         // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
         let assistantMessageId: string | null = null;
+        if (keepExistingReply) {
+          console.log(`[chat] rid=${requestId} regenerate_failed_kept_previous=true reason=${lastErrorCode}`);
+        }
         // لا تُحفظ رسالة مساعد فارغة أو مسافات فقط
-        if (assistantText.trim()) {
+        else if (assistantText.trim()) {
           const insertRow: Record<string, unknown> = {
             conversation_id: conversationId,
             role: "assistant",
