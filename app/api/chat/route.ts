@@ -51,7 +51,6 @@ import {
   FILES_UNAVAILABLE_HINT,
   getActiveSpaceForDiagnostics as getActiveSpace,
   ensureActiveSpaceJobs,
-  ensureSentenceIndex,
   retrieveSnippets,
   type RetrievalOutcome,
   type RetrievedSnippet,
@@ -75,7 +74,8 @@ import {
   type RecoveryTelemetry,
 } from "@/lib/evidence/evidence-recovery";
 import { drainOwnJobs } from "@/lib/rag/worker";
-import { gatherChatContext, mergeServerTiming } from "@/lib/chat/context";
+import { backfillSentenceIndex } from "@/lib/rag/sentence-backfill";
+import { gatherChatContext, isProviderFailureNotice, mergeServerTiming } from "@/lib/chat/context";
 import {
   emptyRetrievalTimings,
   type RetrievalTimings,
@@ -490,6 +490,8 @@ export async function POST(req: NextRequest) {
    * يخسر المستخدم رده عند الإيقاف أو المهلة أو انقطاع المزوّد.
    */
   let regenerateTargetId: string | null = null;
+  /** هل الهدفُ نفسُه إشعارُ فشل (لا نصَّ نموذج)؟ إشعارٌ جديد يحلّ محلَّه؛ وردٌّ حقيقيّ لا يُكتب فوقه إشعار. */
+  let regenerateTargetIsNotice = false;
 
   if (editMessageId) {
     // تعديل رسالة مستخدم سابقة: حدّث النص واحذف (ناعمًا) كل ما بعدها
@@ -579,7 +581,7 @@ export async function POST(req: NextRequest) {
      */
     const { data: prevAsst } = await supabase
       .from("messages")
-      .select("id")
+      .select("id, metadata")
       .eq("conversation_id", conversationId)
       .eq("role", "assistant")
       .gt("created_at", lastUser.created_at)
@@ -588,6 +590,7 @@ export async function POST(req: NextRequest) {
       .limit(1)
       .maybeSingle();
     regenerateTargetId = prevAsst?.id ?? null;
+    regenerateTargetIsNotice = prevAsst ? isProviderFailureNotice(prevAsst.metadata) : false;
     userMessageId = lastUser.id;
 
     /**
@@ -777,22 +780,21 @@ export async function POST(req: NextRequest) {
   }
 
   /**
-   * ★ فهرسُ الجمل (0050) يُستكمل لملفٍّ جاهزٍ من قبله — في الخلفيّة، عبر بوّابة التصريف نفسها.
-   *   هذا السؤالُ أُجيب بالمسار السابق (إعادةُ ترتيبٍ وقتَ السؤال)، والتالي يجد الفهرس. محدود: ≤ 5 ملفّات،
-   *   ومحاولةٌ واحدةٌ لكلّ ملفٍّ في اليوم.
+   * ★ فهرسُ الجمل (0050) يُستكمل لملفٍّ جاهزٍ من قبله — خارجَ مسار الردّ، وحتى يكتمل.
+   *   هذا السؤالُ أُجيب بالمسار السابق (إعادةُ ترتيبٍ وقتَ السؤال)، والتالي يجد الفهرس. الحلقةُ (lib/rag/
+   *   sentence-backfill.ts) تدرج دفعاتٍ من ≤ 5 وتصرّفها عبر بوّابة التصريف نفسها إلى أن لا يبقى ناقص — وتصرّف
+   *   الوظائفَ القائمة ولو لم تُنشأ وظيفةٌ جديدة (كان ذلك يترك وظائفَ معلّقةً إلى أن يرفع المستخدمُ ملفًّا).
+   *   لا تُنتظَر: الإدراجُ نفسُه رحلاتٌ إلى القاعدة لا يدفع ثمنَها زمنُ الجواب.
    */
   if (ragSentenceMissing.length > 0) {
-    try {
-      const enq = await ensureSentenceIndex(supabase, userId, ragSentenceMissing);
-      if (enq.length > 0) {
-        console.info(`[files-pipeline] rid=${requestId} sentence_index_enqueued=${enq.join("|")}`);
-        void drainOwnJobs(supabase, { workerId: `chat:${requestId.slice(0, 8)}`, maxJobs: 3 }).catch((err) =>
-          console.error(`[files-pipeline] rid=${requestId} sentence_index_drain_failed err=${(err as Error).message?.slice(0, 120)}`),
-        );
-      }
-    } catch (err) {
-      console.error(`[files-pipeline] rid=${requestId} sentence_index_enqueue_failed err=${(err as Error).message?.slice(0, 120)}`);
-    }
+    void backfillSentenceIndex(supabase, { userId, fileIds: ragSentenceMissing, workerId: `chat:${requestId.slice(0, 8)}` })
+      .then((r) =>
+        console.info(
+          `[files-pipeline] rid=${requestId} sentence_backfill status=${r.status} rounds=${r.rounds} ` +
+            `enqueued=${r.enqueued} processed=${r.processed} missing=${r.missing} ms=${r.ms}`,
+        ),
+      )
+      .catch((err) => console.error(`[files-pipeline] rid=${requestId} sentence_backfill_failed err=${(err as Error).message?.slice(0, 120)}`));
   }
 
   /**
@@ -1551,10 +1553,23 @@ export async function POST(req: NextRequest) {
           send({ type: "text", text: notice });
         }
 
+        /**
+         * ★ إعادةُ محاولةٍ فشلت بلا نصّ لا تمحو الردَّ القائم.
+         *
+         * عقدُ إعادة التوليد (v0.7.0 RC8): الردُّ القديم يبقى حتى يوجد بديلٌ قابلٌ للحفظ. والإشعارُ أعلاه
+         * ليس بديلًا: كتابتُه في مكان الردّ تمحو جوابًا حقيقيًّا — كاملًا، أو جزئيًّا قُطع بثُّه فتفقد «كمل»
+         * ما تُكمله. فالإشعارُ يصل العميل (أُرسل للتوّ) ولا يُحفظ؛ ويُحفظ فقط حين يكون الهدفُ نفسُه إشعارًا.
+         */
+        const keepExistingReply =
+          providerFailureNotice && regenerateTargetId !== null && !regenerateTargetIsNotice;
+
         // حفظ رد المساعد (كاملًا أو جزئيًا عند الإيقاف) — مع مصادره إن وجدت
         let assistantMessageId: string | null = null;
+        if (keepExistingReply) {
+          console.log(`[chat] rid=${requestId} regenerate_failed_kept_previous=true reason=${lastErrorCode}`);
+        }
         // لا تُحفظ رسالة مساعد فارغة أو مسافات فقط
-        if (assistantText.trim()) {
+        else if (assistantText.trim()) {
           const insertRow: Record<string, unknown> = {
             conversation_id: conversationId,
             role: "assistant",
@@ -1629,6 +1644,12 @@ export async function POST(req: NextRequest) {
               notice:
                 assistantText.includes(TRUNCATED_NOTICE.trim()) ||
                 assistantText.includes(INCOMPLETE_NOTICE_TEXT),
+              /**
+               * ★ هل النصُّ المحفوظ إشعارُ الفشل (لا نصَّ من النموذج) أم جوابٌ جزئيٌّ حقيقيّ قُطع بثُّه؟
+               *   كلاهما `incomplete_provider`، وبناءُ السياق يحتاج الفرق: الإشعارُ لا يُغذّى للنموذج،
+               *   والجوابُ الجزئيّ يبقى مع سؤاله كي تجد «كمل» ما تُكمله (lib/chat/context.ts).
+               */
+              ...(completionStatus === "incomplete_provider" ? { failure_notice: providerFailureNotice } : {}),
             };
           }
           if (Object.keys(meta).length > 0) insertRow.metadata = meta;

@@ -321,7 +321,7 @@ export async function ensureActiveSpaceJobs(
 export async function ensureSentenceIndex(supabase: SupabaseClient, userId: string, fileIds: string[]): Promise<string[]> {
   const space = getActiveSpace();
   if (space.id !== "f2llm" || !space.modelTag || fileIds.length === 0) return [];
-  return ensureSentenceIndexJobs(supabase, { userId, fileIds, jobType: space.jobType, modelTag: space.modelTag });
+  return (await ensureSentenceIndexJobs(supabase, { userId, fileIds, jobType: space.jobType, modelTag: space.modelTag })).created;
 }
 
 /** ملفات سياق المحادثة: المرتبطة بها مباشرة + ملفات مشروعها — الجاهزة فقط */

@@ -14,7 +14,7 @@ import { getRagLimits } from "./pipeline";
 import { getRagRuntimeConfig } from "./runtime-config";
 import { tryAcquireDrainSlot } from "./drain-gate";
 import { settleIfCompleteInSpace } from "./space-readiness";
-import { indexFileSentences } from "./sentence-index";
+import { indexFileSentences, isSentenceBackfillJob } from "./sentence-index";
 import {
   claimRagJob,
   completeRagJob,
@@ -217,6 +217,13 @@ export async function runRagJob(
     await requeueIfMidIndexing(supabase, job, space);
     return { ok: false, status: "cancelled" };
   }
+  /**
+   * ★ وظيفةُ استكمال فهرس الجمل (ملفٌّ جاهزٌ من قبل 0050) لها مسارُها: تبني الجملَ وحدها.
+   *   لا تمرّ بالتقطيع ولا بتضمين المقاطع ولا بحالة الملفّ — فلا سبيلَ لها إلى إعادة كتابة بيانات المستخدم
+   *   (المسارُ العامّ يعيد التقطيع إن لم تثبت له «حداثةُ المقاطع»، وقراءةٌ فاشلةٌ عابرة كانت تكفي لذلك).
+   */
+  if (isV2 && isSentenceBackfillJob(job)) return runSentenceBackfillJob(supabase, job, workerId, space.modelTag as string);
+
   /** إضافة v2 لملفٍّ جاهزٍ أصلًا في e5: لا تُقلب حالتُه ولا يُكسر جاهزيتُه القديمة إن فشلت */
   let backfill = false;
 
@@ -471,6 +478,61 @@ export async function runRagJob(
         .eq("id", job.file_id);
     }
     return { ok: false, status: willRetry ? "retrying" : "failed" };
+  }
+}
+
+/**
+ * وظيفةُ استكمال فهرس الجمل — لا تكتب إلا في `file_chunk_sentences` و`files.rag_v2_sentences_model`.
+ *
+ *   - الملفُّ غيرُ جاهزٍ في هذا الفضاء (قيد الفهرسة، أو حُذف، أو تبدّل الفضاء): تُغلق بلا عمل — وظيفةُ الفهرسة
+ *     العاديّة تبني فهرسَ الجمل في آخرها.
+ *   - فشلٌ عابر (قراءةٌ أو إدراج): تُعاد بتراجعٍ حتى `max_attempts`، ثمّ تفشل وحدها. حالةُ الملفّ ومقاطعُه لا تُمسّ
+ *     في أيّ حال، والاستئنافُ بلا تكرار (مقطعٌ حُفظت جملُه لا يُعاد).
+ */
+async function runSentenceBackfillJob(
+  supabase: SupabaseClient,
+  job: RagJob,
+  workerId: string,
+  modelTag: string,
+): Promise<{ ok: boolean; status: string }> {
+  const t0 = Date.now();
+  const rssStart = rssMb();
+  try {
+    const { data: file, error } = await supabase
+      .from("files")
+      .select("id, user_id, status, rag_v2_model, deleted_at")
+      .eq("id", job.file_id)
+      .eq("user_id", job.user_id)
+      .maybeSingle();
+    if (error) throw new Error("file read failed");
+    const f = file as { id: string; user_id: string; status: string; rag_v2_model: string | null; deleted_at: string | null } | null;
+    if (!f || f.deleted_at || f.status !== "ready_for_rag" || f.rag_v2_model !== modelTag) {
+      await completeRagJob(supabase, job.id, workerId, 0);
+      perfLog(job, job.file_id, "sentences", { status: "not_ready", backfill: 1 });
+      return { ok: true, status: "completed" };
+    }
+    const r = await indexFileSentences(supabase, {
+      fileId: f.id,
+      userId: f.user_id,
+      modelTag,
+      provider: getEmbeddingProvider(),
+      keepAlive: async () => {
+        const alive = await heartbeatRagJob(supabase, job.id, workerId, { current: 0, total: 0 });
+        if (!alive) throw new CancelledError();
+      },
+    });
+    if (r.status === "unavailable") throw new Error("sentence index unavailable");
+    await completeRagJob(supabase, job.id, workerId, r.chunks);
+    perfLog(job, f.id, "sentences", { status: r.status, sentences: r.embedded, ms: Date.now() - t0, rss_start: rssStart, rss_end: rssMb(), backfill: 1 });
+    return { ok: true, status: "completed" };
+  } catch (err) {
+    if (err instanceof CancelledError) {
+      perfLog(job, job.file_id, "cancelled", { stage: "sentences" });
+      return { ok: false, status: "cancelled" };
+    }
+    perfLog(job, job.file_id, "sentences_failed", { ms: Date.now() - t0, backfill: 1, err: (err as Error).message?.slice(0, 60).replace(/\s+/g, "_") });
+    await failRagJob(supabase, job, workerId, "transient", "sentence_backfill_failed", "تعذّر بناء فهرس الجمل مؤقتًا — ستُعاد المحاولة.");
+    return { ok: false, status: job.attempts < job.max_attempts ? "retrying" : "failed" };
   }
 }
 
