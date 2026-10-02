@@ -22,9 +22,10 @@ interface Row {
   metadata?: unknown;
 }
 
-/** عميل Supabase مُحاكى: يعيد الصفوف المعطاة لاستعلام الرسائل */
+/** عميل Supabase مُحاكى: يعيد الصفوف المعطاة (بترتيبها الزمنيّ) لاستعلام الرسائل، محترمًا اتّجاه الترتيب */
 function fakeSupabase(rows: Row[]) {
   const selected: string[] = [];
+  let ascending = true;
   const messagesQuery = {
     select(cols: string) {
       selected.push(cols);
@@ -36,11 +37,12 @@ function fakeSupabase(rows: Row[]) {
     is() {
       return this;
     },
-    order() {
+    order(_col: string, opts?: { ascending?: boolean }) {
+      ascending = opts?.ascending ?? true;
       return this;
     },
     limit() {
-      return Promise.resolve({ data: rows, error: null });
+      return Promise.resolve({ data: ascending ? rows : [...rows].reverse(), error: null });
     },
   };
   return {
@@ -99,9 +101,10 @@ describe("★ حارس: إشعار الفشل لا يدخل موجّه النم�
   /**
    * ★ الحالة المطلوبة حرفيًا: Q1 يفشل ⇒ إشعار محفوظ ⇒ Q2 يُرسل.
    *
-   * السياق المُرسل مع Q2 يجب أن يحوي سؤالي المستخدم فقط — بلا نصّ الإشعار.
+   * السياق المُرسل مع Q2 بلا نصّ الإشعار — وبلا Q1 أيضًا (v145): سؤالٌ لم يُجب كان يبقى فيصل
+   * إلى النموذج دورا مستخدمٍ متتاليان، فيجيب Q1 بدل Q2 (مرصودٌ على staging).
    */
-  it("★ Q1 يفشل ثم Q2: السياق يحمل أسئلة المستخدم بلا الإشعار", async () => {
+  it("★ Q1 يفشل ثم Q2: السياق يحمل Q2 وحده بلا الإشعار ولا السؤال المعلّق", async () => {
     const { history } = await historyFor([
       { role: "user", content: "Q1: ما عاصمة السعودية؟" },
       failureRow,
@@ -113,11 +116,8 @@ describe("★ حارس: إشعار الفشل لا يدخل موجّه النم�
     expect(joined).not.toContain(NOTICE);
     // ولا رسالة مساعد أصلًا في هذا المسار
     expect(history.filter((m) => m.role === "assistant")).toHaveLength(0);
-    // وسؤالا المستخدم باقيان بترتيبهما
-    expect(history.map((m) => m.content)).toEqual([
-      "Q1: ما عاصمة السعودية؟",
-      "Q2: وما عاصمة مصر؟",
-    ]);
+    // والسؤالُ الحاليّ وحده — Q1 باقٍ في القاعدة والواجهة، لا في الموجّه
+    expect(history.map((m) => m.content)).toEqual(["Q2: وما عاصمة مصر؟"]);
   });
 
   /**
