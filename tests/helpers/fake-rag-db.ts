@@ -129,6 +129,14 @@ export function createFakeRagDb(opts: FakeRagDbOptions) {
           if (c.error) return { data: null, error: c.error };
           built.push({ ...r, ...c.row });
         }
+        if (table === "rag_jobs") {
+          // 0008: uniq_rag_job_idempotency (المفتاح فريد) و uniq_active_rag_job (وظيفةٌ نشطةٌ واحدة لكلّ ملفّ ونوع)
+          const isActive = (r: Row) => ["queued", "running", "retrying"].includes(r.status as string);
+          for (const r of built) {
+            if (rows.some((x) => x.idempotency_key === r.idempotency_key && (isActive(x) || x.status === "completed"))) return { data: null, error: { code: "23505", message: 'duplicate key value violates unique constraint "uniq_rag_job_idempotency"' } };
+            if (isActive(r) && rows.some((x) => isActive(x) && x.file_id === r.file_id && x.job_type === r.job_type)) return { data: null, error: { code: "23505", message: 'duplicate key value violates unique constraint "uniq_active_rag_job"' } };
+          }
+        }
         if (table === "file_chunk_sentences") {
           // المفتاح الأساسيّ (chunk_id, model, sentence_index) — العبارةُ كلُّها تفشل كما في SQL
           const key = (r: Row) => `${r.chunk_id}|${r.model}|${r.sentence_index}`;
