@@ -76,6 +76,7 @@ import {
 import { drainOwnJobs } from "@/lib/rag/worker";
 import { backfillSentenceIndex } from "@/lib/rag/sentence-backfill";
 import { gatherChatContext, isProviderFailureNotice, mergeServerTiming } from "@/lib/chat/context";
+import { deriveRetrievalQuery, type RetrievalQuerySource } from "@/lib/chat/retrieval-query";
 import {
   emptyRetrievalTimings,
   type RetrievalTimings,
@@ -709,15 +710,23 @@ export async function POST(req: NextRequest) {
   let ragRerank: RetrievalOutcome["rerank"] | null = null;
   /** ملفّاتُ النطاق بلا فهرس جمل (0050) — يُستكمل لها في الخلفيّة */
   let ragSentenceMissing: string[] = [];
+  /**
+   * ★ مصدرُ نصّ استعلام الاسترجاع: الرسالةُ نفسُها، أو السؤالُ الذي تُكمله «كمل» / «continue».
+   *   متابعةٌ مجرّدة كانت تُضمَّن حرفيًّا فتجيء مقاطعُ لا صلةَ لها (lib/chat/retrieval-query.ts). رمزٌ فقط — لا نصّ.
+   */
+  let ragQuerySource: RetrievalQuerySource = "message";
   let ragMs = 0;
   const tRag = Date.now();
   const queryText =
     message ?? [...history].reverse().find((m) => m.role === "user")?.content ?? "";
   if (queryText && contextFileIds.length > 0) {
     try {
+      // استعلامُ الاسترجاع وحده يتغيّر لدورِ متابعةٍ مجرّدة؛ النموذجُ يرى الدورَ كما كُتب
+      const retrievalQuery = deriveRetrievalQuery(queryText, history);
+      ragQuerySource = retrievalQuery.source;
       const outcome = await retrieveSnippets(
         supabase,
-        queryText,
+        retrievalQuery.text,
         contextFileIds,
         ragTimings,
       );
@@ -809,7 +818,8 @@ export async function POST(req: NextRequest) {
       `space=${getActiveSpace().id} space_model=${getActiveSpace().modelTag ?? "e5"} ` +
       `retrieval_scope=${contextFileIds.length} retrieval_results=${ragSnippets.length} ` +
       `retrieval_mode=${ragMode} top_similarity=${ragTopSimilarity === null ? "none" : ragTopSimilarity.toFixed(3)} ` +
-      `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady}` +
+      `retrieval_failed=${ragRetrievalFailed} attached_but_not_ready=${filesAttachedButNotReady} ` +
+      `retrieval_query=${ragQuerySource}` +
       (ragRerank
         ? ` rerank_scored=${ragRerank.scored} rerank_embedded=${ragRerank.embedded} rerank_cached=${ragRerank.cached} ` +
           `rerank_ms=${ragRerank.ms} rerank_complete=${ragRerank.complete} rerank_source=${ragRerank.source ?? "query"}` +
@@ -1619,6 +1629,8 @@ export async function POST(req: NextRequest) {
             mode: ragMode,
             top_similarity: ragTopSimilarity === null ? null : Math.round(ragTopSimilarity * 1000) / 1000,
             failed: ragRetrievalFailed,
+            // رمزٌ فقط: هل بُحث بالرسالة أم بالسؤال الذي تُكمله («continued»)
+            query_source: ragQuerySource,
             ...(ragRerank
               ? { rerank: { scored: ragRerank.scored, embedded: ragRerank.embedded, cached: ragRerank.cached, ms: ragRerank.ms, complete: ragRerank.complete, source: ragRerank.source ?? "query" } }
               : {}),
