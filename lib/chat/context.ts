@@ -31,17 +31,31 @@ export interface ChatContextResult {
  * ترتيب فحوص الملكية/الحظر/الحدود يبقى **قبل** استدعاء هذه الدالة في المسار.
  */
 /**
+ * أسبابٌ تُنهي بها المحوّلاتُ بثًّا انقطع **بعد نصٍّ ظاهر** (openrouter / nine-router / ysd-runtime: `stream_interrupted`،
+ * ysd: `runtime_stream_ended`). الصفُّ المحفوظ معها يحمل نصَّ النموذج الجزئيّ، لا إشعارًا.
+ */
+export const PARTIAL_STREAM_REASONS: readonly string[] = ["stream_interrupted", "runtime_stream_ended"];
+
+/**
  * هل هذا الصفّ إشعارَ فشل مزوّد لا جوابَ نموذج؟
  *
- * `metadata.completion.status === "incomplete_provider"` هي العلامة التي
- * يكتبها المسار عند الفشل الطرفي. وأي شكل آخر للبيانات يُقرأ **جوابًا**
- * عاديًا — فالتصفية تخصّ العلامة الصريحة وحدها ولا تُسقط شيئًا بالشك.
+ * ★ `completion.status === "incomplete_provider"` وحدها لا تكفي: المسارُ يكتبها للإشعار (فشلٌ بلا أيّ نصّ)،
+ *   والمحوّلاتُ تكتبها أيضًا لجوابٍ **حقيقيٍّ جزئيّ** قُطع بثُّه. وكان كلاهما يُعدّ إشعارًا، فيسقط الجوابُ الجزئيّ
+ *   من السياق ثمّ يسقط سؤالُه معه (سؤالٌ بلا جواب) — فتصل «كمل» إلى النموذج بلا ما تُكمله.
+ *
+ *   فالتمييزُ بنيويّ:
+ *   - صفٌّ كُتب بعد هذا الإصلاح يحمل `completion.failure_notice` صراحةً (المسارُ يعرف هل النصُّ إشعارُه أم نصُّ النموذج).
+ *   - صفٌّ أقدم: السببُ يفصل — أسبابُ الانقطاع بعد نصّ ⇒ جوابٌ جزئيّ؛ وما عداها (رمزُ خطأ المزوّد) ⇒ إشعار.
+ *   وأيُّ شكلٍ آخر للبيانات يُقرأ **جوابًا** عاديًّا — لا يُسقط شيءٌ بالشكّ.
  */
-function isProviderFailureNotice(metadata: unknown): boolean {
+export function isProviderFailureNotice(metadata: unknown): boolean {
   if (!metadata || typeof metadata !== "object") return false;
   const completion = (metadata as { completion?: unknown }).completion;
   if (!completion || typeof completion !== "object") return false;
-  return (completion as { status?: unknown }).status === "incomplete_provider";
+  const c = completion as { status?: unknown; reason?: unknown; failure_notice?: unknown };
+  if (c.status !== "incomplete_provider") return false;
+  if (typeof c.failure_notice === "boolean") return c.failure_notice;
+  return !(typeof c.reason === "string" && PARTIAL_STREAM_REASONS.includes(c.reason));
 }
 
 /** نافذة السياق: أحدثُ هذا العدد من الرسائل */
@@ -61,7 +75,7 @@ interface HistoryRow {
  *   فوصل إلى النموذج ثلاثةُ أدوار مستخدمٍ متتالية فأجاب أقدمَها.
  *
  *   فالقاعدة، على صفوفٍ مرتّبةٍ تصاعديًّا:
- *   - إشعارُ فشل المزوّد لا يدخل (كما كان).
+ *   - إشعارُ فشل المزوّد لا يدخل (كما كان). وجوابٌ جزئيٌّ قُطع بثُّه ليس إشعارًا: يبقى مع سؤاله، فتجد «كمل» ما تُكمله.
  *   - السؤالُ الذي يُجاب = آخرُ رسالة مستخدم؛ وما بعده لا يدخل (إعادةُ التوليد: الجوابُ
  *     القديم يُستبدل في مكانه، فلا يُرسل للنموذج كأنه دورُه الأخير).
  *   - سؤالٌ سابقٌ لم يعقبه جواب (فشلٌ أو انقطاعٌ قبل أيّ ردٍّ محفوظ) لا يدخل: لم يُجب، والمستخدمُ

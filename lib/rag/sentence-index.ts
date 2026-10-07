@@ -124,32 +124,70 @@ export async function sentenceIndexCoverage(
   return { available: true, missing: fileIds.filter((id) => !covered.has(id)) };
 }
 
-/** أقصى ملفّاتٍ يُدرج لها استكمالٌ في طلبٍ واحد */
+/** أقصى ملفّاتٍ يُدرج لها استكمالٌ في الدفعة الواحدة */
 export const SENTENCE_BACKFILL_MAX_FILES = 5;
 
+/** وظيفةُ استكمالٍ لفهرس الجمل وحده (لا وظيفةُ فهرسةٍ عاديّة) — تُعرف من مفتاحها */
+export const isSentenceBackfillJob = (job: { idempotency_key: string }): boolean => job.idempotency_key.includes(":sentences:");
+
+export interface SentenceBackfillEnqueue {
+  /** ملفّاتٌ أُنشئت لها وظيفةٌ الآن */
+  created: string[];
+  /** ملفّاتٌ لها وظيفةٌ نشطةٌ قائمة (queued/running/retrying) — عملٌ ينتظر التصريف ولو لم يُنشأ شيء */
+  pending: string[];
+  /** ملفّاتٌ لا يمكن أن تتقدّم اليوم (وظيفةُ اليوم انتهت بلا فهرس، أو فشلت، أو لا بصمةَ محتوى) — لا تُعاد في هذه الحلقة */
+  exhausted: string[];
+}
+
 /**
- * ملفٌّ جاهزٌ من قبل 0050 بلا فهرس جمل: تُدرج له وظيفةُ الفضاء نفسُها بمفتاحٍ مختلف — فتتخطّى كلَّ ما اكتمل
- * (المقاطع ومتجهاتها) وتبني فهرسَ الجمل وحده. المفتاحُ يحمل اليوم: محاولةٌ واحدةٌ على الأكثر لكلّ ملفٍّ في اليوم.
+ * ملفٌّ جاهزٌ من قبل 0050 بلا فهرس جمل: تُدرج له وظيفةُ الفضاء نفسُها بمفتاحٍ مختلف — فتبني فهرسَ الجمل وحده
+ * (lib/rag/worker.ts: لا تقطيعَ ولا تضمينَ مقاطع ولا لمسَ لحالة الملفّ). المفتاحُ يحمل اليوم: وظيفةٌ واحدةٌ على
+ * الأكثر لكلّ ملفٍّ في اليوم، والفهرسُ الفريد `uniq_active_rag_job` يمنع وظيفتين نشطتين لملفٍّ واحد.
  */
 export async function ensureSentenceIndexJobs(
   supabase: SupabaseClient,
   params: { userId: string; fileIds: string[]; jobType: string; modelTag: string; day?: string },
-): Promise<string[]> {
+): Promise<SentenceBackfillEnqueue> {
   const ids = params.fileIds.slice(0, SENTENCE_BACKFILL_MAX_FILES);
-  if (ids.length === 0) return [];
-  const { data } = await supabase.from("files").select("id, rag_content_hash").in("id", ids).eq("user_id", params.userId);
+  const result: SentenceBackfillEnqueue = { created: [], pending: [], exhausted: [] };
+  if (ids.length === 0) return result;
+  const { data, error } = await supabase.from("files").select("id, rag_content_hash").in("id", ids).eq("user_id", params.userId);
+  if (error) return result; // قراءةٌ تعذّرت: لا يُحكم على ملفٍّ بالاستنفاد — الجولةُ التالية تعيد المحاولة
+  const rows = (data ?? []) as Array<{ id: string; rag_content_hash: string | null }>;
   const day = params.day ?? new Date().toISOString().slice(0, 10);
-  const enqueued: string[] = [];
-  for (const f of (data ?? []) as Array<{ id: string; rag_content_hash: string | null }>) {
-    if (!f.rag_content_hash) continue;
-    const res = await enqueueRagJob(supabase, {
-      userId: params.userId,
-      fileId: f.id,
-      contentHash: f.rag_content_hash,
-      jobType: params.jobType,
-      keySuffix: `${params.modelTag}:sentences:${day}`,
-    });
-    if (!("error" in res) && res.created) enqueued.push(f.id);
+  const keySuffix = `${params.modelTag}:sentences:${day}`;
+  const keyOf = (f: { id: string; rag_content_hash: string | null }) => `${f.id}:${f.rag_content_hash}:${params.jobType}:${keySuffix}`;
+  /**
+   * وظيفةُ اليوم لكلّ ملفّ تُقرأ بحالتها أيًّا كانت. الفهرسُ الفريد للمفتاح لا يشمل الفاشلةَ والملغاة، فبدون هذه
+   * القراءة تُنشأ لملفٍّ يفشل دائمًا وظيفةٌ جديدة (بأربع محاولات) مع كلّ سؤال.
+   */
+  const keys = rows.filter((f) => f.rag_content_hash).map(keyOf);
+  const { data: todays, error: jobsErr } = keys.length
+    ? await supabase.from("rag_jobs").select("idempotency_key, status").in("idempotency_key", keys)
+    : { data: [], error: null };
+  if (jobsErr) return result;
+  const today = (todays ?? []) as Array<{ idempotency_key: string; status: string }>;
+  const isActive = (st: string) => ["queued", "running", "retrying"].includes(st);
+  for (const id of ids) {
+    const f = rows.find((r) => r.id === id);
+    if (!f || !f.rag_content_hash) {
+      result.exhausted.push(id);
+      continue;
+    }
+    const mine = today.filter((j) => j.idempotency_key === keyOf(f));
+    if (mine.some((j) => isActive(j.status))) {
+      result.pending.push(id);
+      continue;
+    }
+    if (mine.length > 0) {
+      result.exhausted.push(id); // وظيفةُ اليوم انتهت (اكتملت بلا فهرس، أو فشلت، أو أُلغيت) — لا أخرى اليوم
+      continue;
+    }
+    const res = await enqueueRagJob(supabase, { userId: params.userId, fileId: f.id, contentHash: f.rag_content_hash, jobType: params.jobType, keySuffix });
+    if ("error" in res) result.exhausted.push(id);
+    else if (res.created) result.created.push(id);
+    else if (isActive(res.job.status)) result.pending.push(id); // وظيفةُ فهرسةٍ عاديّة نشطة للملفّ — تبني الفهرسَ في آخرها
+    else result.exhausted.push(id);
   }
-  return enqueued;
+  return result;
 }
