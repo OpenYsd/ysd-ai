@@ -24,6 +24,8 @@
 #       الحلقة المحلّية) ولم يرَها المتصفّح (فلا تظهر الميزةُ أصلًا) — وهو
 #       عطبٌ صامت: لوحةُ المنصّة تبدو صحيحة والمنتَجُ لا يعمل.
 #       الغياب/الفراغ ⇒ مطفأة (وضعُ الإنتاج). و`1` حرفيًّا ⇒ مشتعلة.
+#     والقاعدةُ نفسُها لرايتَي الصوت: NEXT_PUBLIC_YSD_LOCAL_VOICE
+#     وNEXT_PUBLIC_YSD_BROWSER_VOICE — تُعلَن أدناه بلا قيمة.
 # ============================================================
 
 # ---------- 1) الاعتماديات ----------
@@ -72,12 +74,21 @@ ARG NEXT_PUBLIC_YSD_LOCAL_IMAGE
 # غيابُها أو خلوُّها ⇒ مطفأة (وهو وضعُ الإنتاج). والقيمةُ الحرفيّة
 # `1` وحدها تُشعلها، وتُمرّر من المنصّة بـ`--build-arg` لبيئة التجربة.
 ARG NEXT_PUBLIC_YSD_LOCAL_VOICE
+#
+# رايةُ الصوت في المتصفّح — مستقلّةٌ عن الصوت المحلّيّ (المرحلة 1: الرايةُ وحدها).
+#
+# ★ ولا تُثبّت قيمتُها هنا بحال — كالرايتين قبلها سواءً بسواء.
+#
+# غيابُها أو خلوُّها ⇒ مطفأة (وهو وضعُ الإنتاج). والقيمةُ الحرفيّة
+# `1` وحدها تُشعلها، وتُمرّر من المنصّة بـ`--build-arg` لبيئة التجربة.
+ARG NEXT_PUBLIC_YSD_BROWSER_VOICE
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_APP_NAME=$NEXT_PUBLIC_APP_NAME \
     NEXT_PUBLIC_DEFAULT_LOCALE=$NEXT_PUBLIC_DEFAULT_LOCALE \
     NEXT_PUBLIC_YSD_LOCAL_IMAGE=$NEXT_PUBLIC_YSD_LOCAL_IMAGE \
     NEXT_PUBLIC_YSD_LOCAL_VOICE=$NEXT_PUBLIC_YSD_LOCAL_VOICE \
+    NEXT_PUBLIC_YSD_BROWSER_VOICE=$NEXT_PUBLIC_YSD_BROWSER_VOICE \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_ENV=production
 

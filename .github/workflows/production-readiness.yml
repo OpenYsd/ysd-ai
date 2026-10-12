@@ -100,6 +100,17 @@ jobs:
           fi
           echo "OK: NEXT_PUBLIC_YSD_LOCAL_VOICE is absent from the gate environment."
 
+      # والرايةُ الثالثة — صوتُ المتصفّح — خطوةٌ مستقلّةٌ للسبب نفسِه.
+      # وهي في المرحلة 1 رايةٌ بلا ميزة؛ ومع ذلك تُحرَس من اليوم الأوّل.
+      - name: Assert the CI environment does not enable Browser Voice
+        run: |
+          if [ -n "${NEXT_PUBLIC_YSD_BROWSER_VOICE:-}" ]; then
+            echo "FAIL: NEXT_PUBLIC_YSD_BROWSER_VOICE is present in the gate environment."
+            echo "The production-default build must run with the variable absent, not set to 0."
+            exit 1
+          fi
+          echo "OK: NEXT_PUBLIC_YSD_BROWSER_VOICE is absent from the gate environment."
+
       - name: Assert no checked-in env file enables a local feature
         run: |
           # الملفّاتُ المتتبَّعة وحدها — ولا تُطبع قيمةُ أيّ متغيّر،
@@ -109,14 +120,14 @@ jobs:
             | grep -E '(^|/)\.env|env\..*example' || true)
           bad=0
           for f in $hits; do
-            for v in NEXT_PUBLIC_YSD_LOCAL_IMAGE NEXT_PUBLIC_YSD_LOCAL_VOICE; do
+            for v in NEXT_PUBLIC_YSD_LOCAL_IMAGE NEXT_PUBLIC_YSD_LOCAL_VOICE NEXT_PUBLIC_YSD_BROWSER_VOICE; do
               if grep -qE "^[[:space:]]*${v}[[:space:]]*=" "$f"; then
                 echo "FAIL: $f sets $v"
                 bad=1
               fi
             done
           done
-          [ "$bad" = "0" ] && echo "OK: no tracked env file sets a local-feature flag."
+          [ "$bad" = "0" ] && echo "OK: no tracked env file sets a local-feature or browser-voice flag."
           exit $bad
 
       - name: Install dependencies (clean, lockfile-exact)
@@ -204,6 +215,15 @@ jobs:
           npx vitest run
           tests/v135-permissions-policy.test.ts
 
+      # ── صوتُ المتصفّح (المرحلة 1): الرايةُ وتهيئتُها الأمنيّة وحدهما ──
+      #
+      # يُثبت أنّ الرايةَ لا تشتعل إلا بـ`1` حرفيًّا، وأنّ الترويسات بغيابها
+      # هي نفسُها حرفًا بحرف، وأنّ سياسةَ المحتوى لا تعرفها أصلًا.
+      - name: Browser Voice flag tests
+        run: >-
+          npx vitest run
+          tests/v149-browser-voice-flag.test.ts
+
       - name: Browser Assistant tests
         run: >-
           npx vitest run
@@ -220,7 +240,7 @@ jobs:
             echo "### production-readiness/gate"
             echo ""
             echo "- lint, typecheck, full test suite: passed"
-            echo "- production-default build ran with both local flags **absent**"
+            echo "- production-default build ran with all three feature flags **absent** (Local Image, Local Voice, Browser Voice)"
             echo ""
             echo "**Local Image**"
             echo "- OFF shipped gate executes to \`false\` (client and server)"
@@ -237,4 +257,12 @@ jobs:
             echo "> Local Voice remains OFF unless \`NEXT_PUBLIC_YSD_LOCAL_VOICE\` is literal \`1\` at build time."
             echo "> This gate does not enable it anywhere, and Production must not set it —"
             echo "> see \`docs/local-voice-engine-contract.md\` (PRODUCTION ENABLEMENT BLOCKER)."
+            echo ""
+            echo "**Browser Voice (Phase 1: flag only)**"
+            echo "- \`NEXT_PUBLIC_YSD_BROWSER_VOICE\` absent from the gate environment and from every tracked env file"
+            echo "- flag and Permissions-Policy wiring only; no STT/TTS code reads it yet; CSP unaffected"
+            echo "- with the flag absent the production-default headers are byte-identical to before"
+            echo ""
+            echo "> Browser Voice remains OFF unless \`NEXT_PUBLIC_YSD_BROWSER_VOICE\` is literal \`1\` at build time."
+            echo "> This gate does not enable it anywhere, and Production must not set it."
           } >> "$GITHUB_STEP_SUMMARY"
