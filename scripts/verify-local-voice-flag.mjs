@@ -48,6 +48,14 @@ import { request as httpRequest } from "node:http";
 const ROOT = process.cwd();
 const VOICE = "NEXT_PUBLIC_YSD_LOCAL_VOICE";
 const IMAGE = "NEXT_PUBLIC_YSD_LOCAL_IMAGE";
+/**
+ * ★ رايةُ صوت المتصفّح لا تُبنى مشتعلةً هنا — لكنّها تُحيَّد.
+ *
+ * `microphone=()` في حالة الإطفاء يفترض غيابَ **رايتَي** الصوت معًا. ففي
+ * CI الغيابُ مُثبَتٌ بخطوةٍ مستقلّة، أمّا على جهاز مطوّرٍ فقد يضبطها ملفُّ
+ * `.env.local`؛ فتُضبط «0» كالرايتين سواءً بسواء، ولا تُشعل في أيّ حالة.
+ */
+const BROWSER = "NEXT_PUBLIC_YSD_BROWSER_VOICE";
 const CHUNKS = join(ROOT, ".next", "static", "chunks");
 const SERVER_DIR = join(ROOT, ".next", "server");
 const STANDALONE = join(ROOT, ".next", "standalone", "server.js");
@@ -243,18 +251,19 @@ function offValue(name) {
 }
 function envFor(voiceOn, imageOn) {
   const e = {};
-  const vOff = offValue(VOICE), iOff = offValue(IMAGE);
+  const vOff = offValue(VOICE), iOff = offValue(IMAGE), bOff = offValue(BROWSER);
   if (voiceOn) e[VOICE] = "1"; else if (vOff !== undefined) e[VOICE] = vOff;
   if (imageOn) e[IMAGE] = "1"; else if (iOff !== undefined) e[IMAGE] = iOff;
+  if (bOff !== undefined) e[BROWSER] = bOff;
   return e;
 }
 
 console.log("=== local-voice flag: semantic proof from the shipped build ===");
 console.log("builds four combinations, serves each, and EXECUTES the shipped gate\n");
 {
-  const v = offValue(VOICE), i = offValue(IMAGE);
-  console.log(`  OFF is expressed as: ${VOICE}=${v ?? "<absent>"} · ${IMAGE}=${i ?? "<absent>"}`);
-  if (v !== undefined || i !== undefined) {
+  const v = offValue(VOICE), i = offValue(IMAGE), b = offValue(BROWSER);
+  console.log(`  OFF is expressed as: ${VOICE}=${v ?? "<absent>"} · ${IMAGE}=${i ?? "<absent>"} · ${BROWSER}=${b ?? "<absent>"}`);
+  if (v !== undefined || i !== undefined || b !== undefined) {
     console.log('  (an untracked env file sets a flag on this machine, so "0" is used instead of absence;');
     console.log("   absence itself is still proven by executing the shipped gate with no value)");
   }
@@ -358,7 +367,7 @@ for (const c of CASES) {
 
 console.log("\n--- restoring the production-default build ---");
 build(envFor(false, false));
-console.log("  .next rebuilt with both local flags off");
+console.log("  .next rebuilt with both local flags off (browser-voice flag never set)");
 
 console.log(`\n═══ ${pass} PASS / ${fail} FAIL ═══`);
 if (failed.length) console.log("failed:\n" + failed.map((f) => "  - " + f).join("\n"));

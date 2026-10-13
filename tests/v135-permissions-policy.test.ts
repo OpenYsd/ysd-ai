@@ -25,10 +25,15 @@ import { spawnSync } from "node:child_process";
 
 import { buildPermissionsPolicy, isVoiceOn, NEVER_ENABLED } from "@/lib/permissions-policy.mjs";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
+import { isBrowserVoiceEnabled } from "@/lib/browser-voice/flag";
 
 const V = "NEXT_PUBLIC_YSD_LOCAL_VOICE";
+/** رايةُ الصوت في المتصفّح (v149) — أيٌّ من الرايتين تفتح الميكروفونَ لـ`self` */
+const B = "NEXT_PUBLIC_YSD_BROWSER_VOICE";
 const OFF = {};
 const ON = { [V]: "1" };
+const BROWSER_ON = { [B]: "1" };
+const BOTH_ON = { [V]: "1", [B]: "1" };
 
 /** النصُّ المُصلَّب — إن تغيّر حرفٌ منه في حالة الإطفاء فقد تغيّر السلوك */
 const HARDENED = "camera=(), microphone=(), geolocation=()";
@@ -55,21 +60,35 @@ describe("v135 — القيمتان بالحرف", () => {
     const on = buildPermissionsPolicy(ON);
     expect(on.replace("microphone=(self)", "microphone=()")).toBe(off);
   });
+
+  /** ★ رايةُ المتصفّح وحدَها تكفي — والنصُّ هو نفسُه، لا صيغةٌ ثالثة */
+  it("رايةُ المتصفّح وحدَها ⇒ `self` بالنصّ نفسِه", () => {
+    expect(buildPermissionsPolicy(BROWSER_ON)).toBe(VOICE_ON);
+  });
+
+  it("وكلتاهما ⇒ `self` مرّةً واحدة بالنصّ نفسِه", () => {
+    expect(buildPermissionsPolicy(BOTH_ON)).toBe(VOICE_ON);
+  });
+
+  it("وكلتاهما مطفأتان صراحةً ⇒ النصُّ المُصلَّب حرفًا بحرف", () => {
+    expect(buildPermissionsPolicy({ [V]: undefined, [B]: undefined })).toBe(HARDENED);
+    expect(buildPermissionsPolicy({ [V]: "0", [B]: "0" })).toBe(HARDENED);
+  });
 });
 
 describe("v135 — ما لا يُفتح البتّة", () => {
-  it.each([OFF, ON])("الكاميرا مغلقة في الحالتين", (env) => {
+  it.each([OFF, ON, BROWSER_ON, BOTH_ON])("الكاميرا مغلقة في كلّ الحالات", (env) => {
     expect(buildPermissionsPolicy(env)).toMatch(/camera=\(\)/);
     expect(buildPermissionsPolicy(env)).not.toMatch(/camera=\((self|\*)/);
   });
 
-  it.each([OFF, ON])("والموقعُ مغلقٌ في الحالتين", (env) => {
+  it.each([OFF, ON, BROWSER_ON, BOTH_ON])("والموقعُ مغلقٌ في كلّ الحالات", (env) => {
     expect(buildPermissionsPolicy(env)).toMatch(/geolocation=\(\)/);
     expect(buildPermissionsPolicy(env)).not.toMatch(/geolocation=\((self|\*)/);
   });
 
   /** ★ ولا قدرةَ أخرى تتسلّل مع الميكروفون */
-  it.each([OFF, ON])("ولا قدرةَ غير الثلاث تُذكر أصلًا", (env) => {
+  it.each([OFF, ON, BROWSER_ON, BOTH_ON])("ولا قدرةَ غير الثلاث تُذكر أصلًا", (env) => {
     const policy = buildPermissionsPolicy(env);
     for (const cap of NEVER_ENABLED) {
       if (cap === "camera" || cap === "geolocation") continue;
@@ -77,7 +96,7 @@ describe("v135 — ما لا يُفتح البتّة", () => {
     }
   });
 
-  it.each([OFF, ON])("ولا حرفَ عامّ في أيّ توجيه", (env) => {
+  it.each([OFF, ON, BROWSER_ON, BOTH_ON])("ولا حرفَ عامّ في أيّ توجيه", (env) => {
     expect(buildPermissionsPolicy(env)).not.toContain("*");
   });
 
@@ -87,7 +106,7 @@ describe("v135 — ما لا يُفتح البتّة", () => {
    * `127.0.0.1:47615` وجهةُ **طلبٍ** موضعُها `connect-src`. وذكرُها هنا
    * يمنح المحرّكَ ميكروفونَ المستخدم — قدرةٌ لا يحتاجها ولا تُراد.
    */
-  it.each([OFF, ON])("ولا عنوانَ ولا نطاقَ خارجيّ — `self` وحدَها", (env) => {
+  it.each([OFF, ON, BROWSER_ON, BOTH_ON])("ولا عنوانَ ولا نطاقَ خارجيّ — `self` وحدَها", (env) => {
     const policy = buildPermissionsPolicy(env);
     expect(policy).not.toMatch(/127\.0\.0\.1|localhost|:\d{2,5}/);
     expect(policy).not.toMatch(/https?:\/\//);
@@ -107,6 +126,15 @@ describe("v135 — «1» الحرفيّة وحدَها تُشعل", () => {
     expect(buildPermissionsPolicy({ [V]: undefined })).toBe(HARDENED);
   });
 
+  /** ★ والجدولُ نفسُه على راية المتصفّح — ولا تُنقذها رايةُ الصوت المحلّيّ المطفأة */
+  it.each(["0", "", "false", "true", "yes", "on", " 1", "1 ", "01", "TRUE"])(
+    "«%s» في راية المتصفّح تُبقي الميكروفونَ ممنوعًا",
+    (value) => {
+      expect(buildPermissionsPolicy({ [B]: value })).toBe(HARDENED);
+      expect(buildPermissionsPolicy({ [V]: "0", [B]: value })).toBe(HARDENED);
+    },
+  );
+
   /**
    * ★ رايةٌ واحدة لا اثنتان.
    *
@@ -125,7 +153,16 @@ describe("v135 — «1» الحرفيّة وحدَها تُشعل", () => {
 
   it("والغيابُ كذلك متطابق", () => {
     expect(isVoiceOn({})).toBe(isLocalVoiceEnabled({}));
+    expect(isVoiceOn({})).toBe(isBrowserVoiceEnabled({}));
   });
+
+  /** ★ وراية المتصفّح على الجدول نفسِه: الترويسةُ تطابق واجهتَها حرفًا بحرف */
+  it.each(["1", "0", "", "false", "true", "yes", " 1", "1 ", "01"])(
+    "ودلالةُ «%s» في راية المتصفّح واحدةٌ في الترويسة والواجهة",
+    (value) => {
+      expect(isVoiceOn({ [B]: value })).toBe(isBrowserVoiceEnabled({ [B]: value }));
+    },
+  );
 
   /** ★ الاسمُ حرفيٌّ — وإلا لم يجد المُجمِّعُ شكلًا يستبدله */
   it("والاسمُ مكتوبٌ حرفيًّا في المصدر", async () => {
@@ -133,6 +170,7 @@ describe("v135 — «1» الحرفيّة وحدَها تُشعل", () => {
     const { join } = await import("node:path");
     const src = readFileSync(join(process.cwd(), "lib", "permissions-policy.mjs"), "utf8");
     expect(src).toContain("NEXT_PUBLIC_YSD_LOCAL_VOICE");
+    expect(src).toContain("NEXT_PUBLIC_YSD_BROWSER_VOICE");
     expect(src).not.toMatch(/process\.env\[/);
   });
 });
@@ -174,15 +212,27 @@ describe("v135 — الترويسةُ تصل إلى كلّ مسار", () => {
   }
 
   it("مطفأة ⇒ الإعدادُ المُشغَّل يُصدر النصَّ المُصلَّب لكلّ مسار", () => {
-    const out = headersFrom({ [V]: undefined });
+    /** ★ الرايتان محذوفتان معًا — وهذا هو بناءُ الإنتاج بعينه */
+    const out = headersFrom({ [V]: undefined, [B]: undefined });
     expect(out.source).toBe("/(.*)");
     expect(out.value).toBe(HARDENED);
   });
 
   it("مشتعلة ⇒ الإعدادُ المُشغَّل يُصدر `self` لكلّ مسار", () => {
-    const out = headersFrom({ [V]: "1" });
+    const out = headersFrom({ [V]: "1", [B]: undefined });
     expect(out.source).toBe("/(.*)");
     expect(out.value).toBe(VOICE_ON);
+  });
+
+  it("ورايةُ المتصفّح وحدَها ⇒ الإعدادُ المُشغَّل يُصدر `self` بالنصّ نفسِه", () => {
+    const out = headersFrom({ [V]: undefined, [B]: "1" });
+    expect(out.source).toBe("/(.*)");
+    expect(out.value).toBe(VOICE_ON);
+  });
+
+  it("وقيمةٌ قريبة في راية المتصفّح ⇒ الإعدادُ المُشغَّل يبقى مُصلَّبًا", () => {
+    const out = headersFrom({ [V]: undefined, [B]: "true" });
+    expect(out.value).toBe(HARDENED);
   });
 
   /** ★ ولا ترويسةَ أذوناتٍ ثانية تُصدَر من مكانٍ آخر فتتقاطع مع هذه */
