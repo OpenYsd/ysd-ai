@@ -50,6 +50,8 @@ import { detectImageIntent } from "@/lib/local-image/intent";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
+import { isBrowserVoiceEnabled } from "@/lib/browser-voice/flag";
+import { ReadAloudButton } from "@/components/browser-voice/read-aloud-button";
 
 export interface ChatModel {
   id: string;
@@ -99,6 +101,14 @@ const localImageEnabled = isLocalImageEnabled();
  * يذهب إلى الحلقة المحلّية أصلًا.
  */
 const localVoiceEnabled = isLocalVoiceEnabled();
+/**
+ * ★ رايةٌ ثالثة، مستقلّةٌ عن الاثنتين: القراءةُ بصوت المتصفّح.
+ *
+ * مطفأةً لا تُضيف إلى الصفحة عقدةً ولا مستمعًا ولا صنفًا: صفُّ أزرار
+ * الرد يبقى حرفًا بحرف كما كان. ومشتعلةً تُضيف زرَّ «استمع» إلى الرد
+ * المكتمل — ولا تمسّ الصوتَ المحلّيّ ولا ما يُمرَّر إليه.
+ */
+const browserVoiceEnabled = isBrowserVoiceEnabled();
 
 export interface MsgSource {
   fileId: string;
@@ -1311,7 +1321,7 @@ export function ChatView({
                           </div>
                         )}
                         {!m.streaming && m.content && (
-                          <div className="flex gap-1 mt-2">
+                          <div className={browserVoiceEnabled ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}>
                             <MsgAction
                               icon={<Copy size={12} />}
                               label={t("copy")}
@@ -1332,6 +1342,21 @@ export function ChatView({
                                 disabled={generating}
                               />
                             )}
+                            {/*
+                              القراءةُ بصوت المتصفّح — خلف رايتها وحدَها.
+
+                              يُسلَّم النصُّ الخام لا نصُّ الصفحة، ولا يُقرأ
+                              شيءٌ إلا بضغطة: الردُّ المحفوظ والمُعادُ توليدُه
+                              يظهران صامتَين. والحالةُ والأعطالُ في المكوّن
+                              نفسِه، لا في هذا الملفّ.
+
+                              والنطاقُ معرّفُ المحادثة: المحادثةُ الجديدة يُعاد
+                              تركيبُها بعد أوّل ردّ فتستمرّ قراءتُها، ومحادثةٌ
+                              أخرى فيها النصُّ نفسُه لا ترثها.
+                            */}
+                            {browserVoiceEnabled ? (
+                              <ReadAloudButton text={m.content} scope={convIdRef.current ?? conversationId} />
+                            ) : null}
                             {/*
                               ★ بلاغٌ يصل إنسانًا — لا إبهامٌ لا يُخزَّن.
 

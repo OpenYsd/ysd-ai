@@ -1235,6 +1235,39 @@ const dict = {
   },
   previewSource: { ar: "المصدر · صفحة ٤", en: "Source · page 4" },
 
+  // القراءة بصوت المتصفّح — تظهر خلف راية الصوت في المتصفّح وحدها
+  readAloudListen: { ar: "استمع", en: "Listen" },
+  readAloudStop: { ar: "إيقاف القراءة", en: "Stop reading" },
+  readAloudReplay: { ar: "إعادة الاستماع", en: "Replay" },
+  readAloudUnsupported: {
+    ar: "متصفّحك لا يدعم قراءة النص بصوتٍ مسموع.",
+    en: "Your browser cannot read text aloud.",
+  },
+  readAloudNoArabicVoice: {
+    ar: "لا يتوفّر في متصفّحك صوتٌ عربيّ. أضف صوتًا عربيًّا من إعدادات النظام ثم أعد المحاولة.",
+    en: "No Arabic voice is available in your browser. Add an Arabic voice in your system settings, then try again.",
+  },
+  readAloudNoEnglishVoice: {
+    ar: "لا يتوفّر في متصفّحك صوتٌ إنجليزيّ. أضف صوتًا إنجليزيًّا من إعدادات النظام ثم أعد المحاولة.",
+    en: "No English voice is available in your browser. Add an English voice in your system settings, then try again.",
+  },
+  readAloudBlocked: {
+    ar: "منع المتصفّح تشغيل الصوت. اضغط الزرّ مرةً أخرى.",
+    en: "The browser blocked audio playback. Press the button again.",
+  },
+  readAloudNetwork: {
+    ar: "تعذّر الوصول إلى خدمة الصوت. تحقّق من اتصالك ثم أعد المحاولة.",
+    en: "The voice service could not be reached. Check your connection and try again.",
+  },
+  readAloudFailed: {
+    ar: "تعذّرت قراءة هذا الرد بصوتٍ مسموع. أعد المحاولة.",
+    en: "This reply could not be read aloud. Try again.",
+  },
+  readAloudNetworkNote: {
+    ar: "يُقرأ هذا الرد بصوتٍ يقدّمه متصفّحك عبر الإنترنت، وقد يُنقل نصُّه إلى مزوّد المتصفّح.",
+    en: "This reply is read by an online voice from your browser; its text may be transmitted to the browser vendor.",
+  },
+
   suggestions: {
     ar: [
       { title: "ساعدني في البرمجة", desc: "اكتب، اشرح، أو صحّح كودًا" },
