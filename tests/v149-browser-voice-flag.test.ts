@@ -16,8 +16,9 @@
  * ══════════════════════════════════════════════════════════════════
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 
 import { BROWSER_VOICE_ENV_VAR, isBrowserVoiceEnabled } from "@/lib/browser-voice/flag";
 import { isLocalVoiceEnabled, LOCAL_VOICE_ENV_VAR, LOCAL_ENGINE_ORIGIN } from "@/lib/local-voice/flag";
@@ -180,10 +181,25 @@ describe("v149 — بوّابةُ الإنتاج تحرس الراية", () => {
 
   it("تؤكّد غيابَها في بيئة البناء (خطوةٌ مستقلّة، وفاشلةٌ لا مُسجِّلة)", () => {
     const s = step("Assert the CI environment does not enable Browser Voice");
-    expect(s).toMatch(new RegExp(`if \\[ -n "\\$\\{${B}:-\\}" \\]; then`));
+    /**
+     * ★ `+x` لا `:-` — المطلوبُ الغيابُ لا «الإطفاء».
+     *
+     * `${VAR:-}` يُسوّي بين الغائب والمعرَّف فارغًا، فيمرّ `VAR=""` وكأنّه
+     * غائب. والسلوكُ نفسُه يُقاس تنفيذًا في القسم التالي؛ وهذا السطرُ يمنع
+     * «توحيدَ» الصيغة مع جارتَيها عن حسن نيّة.
+     */
+    expect(s).toMatch(new RegExp(`if \\[ -n "\\$\\{${B}\\+x\\}" \\]; then`));
+    expect(s).not.toContain(`\${${B}:-`);
     expect(s).toContain(`FAIL: ${B} is present in the gate environment.`);
     expect(s).toMatch(/^\s*exit 1\s*$/m);
     expect(s).toContain(`OK: ${B} is absent from the gate environment.`);
+    /**
+     * ★ وسقوطُ الخطوة يُسقط المهمّة: لا مفتاحَ على مستوى الخطوة يُحيّده.
+     *
+     * `continue-on-error: true` أو `if: false` يجعلان الحارسَ سطرَ سجلّ
+     * وجسمُه سليمٌ يخرج بـ1. والخطوةُ اليوم `name` و`run` لا غير.
+     */
+    expect(s).not.toMatch(/^ {8}(continue-on-error|if|shell|env|working-directory):/m);
     // ولا تُطوى في خطوة الصوت المحلّيّ
     expect(step("Assert the CI environment does not enable Local Voice")).not.toContain(B);
   });
@@ -217,6 +233,173 @@ describe("v149 — بوّابةُ الإنتاج تحرس الراية", () => {
       expect(text, f).not.toMatch(new RegExp(`^\\s*${B}\\s*=`, "m"));
     }
     expect(seen).toBeGreaterThan(0);
+  });
+});
+
+describe("v149 — الحارسُ يُنفَّذ: الغيابُ وحدَه يمرّ، وكلُّ تعريفٍ يسقط", () => {
+  /**
+   * ★ يُنفَّذ نصُّ الخطوة نفسُه — لا نسخةٌ منه ولا مطابقةُ حروف.
+   *
+   * العطبُ الذي أُغلق: كان الحارسُ `[ -n "${VAR:-}" ]`، وهو يكشف القيمةَ غيرَ
+   * الفارغة ولا يكشف متغيّرًا **معرَّفًا بقيمةٍ فارغة** — فيطبع «absent»
+   * والمتغيّرُ حاضر. والمطلوبُ غيابٌ صارم لا إطفاء.
+   *
+   * ومطابقةُ النصّ لا تكفي لإثبات ذلك: فتُقتطع `run: |` من ملفّ السير كما
+   * هي، وتُسلَّم إلى bash ببيئةٍ حقيقيّة يُحذف منها المتغيّرُ أو يُعرَّف.
+   */
+  const workflow = readFileSync(join(ROOT, ".github", "workflows", "production-readiness.yml"), "utf8").replace(/\r\n/g, "\n");
+
+  /** نصُّ `run: |` للخطوة المسمّاة بلا إزاحةِ YAML — وهو ما يكتبه المُشغِّل في ملفّه */
+  function runBody(name: string): string {
+    const lines = workflow.split("\n");
+    const at = lines.findIndex((l) => l.trim() === `- name: ${name}`);
+    expect(at, `step "${name}" exists`).toBeGreaterThan(-1);
+    const runAt = lines.findIndex((l, k) => k > at && /^\s*run:\s*\|\s*$/.test(l));
+    const nextStep = lines.findIndex((l, k) => k > at && /^\s*- name:/.test(l));
+    expect(runAt, `step "${name}" has a block run`).toBeGreaterThan(at);
+    if (nextStep !== -1) expect(runAt).toBeLessThan(nextStep);
+    const indentOf = (l: string) => l.length - l.replace(/^ +/, "").length;
+    const base = indentOf(lines[runAt] ?? "");
+    const body: string[] = [];
+    for (const line of lines.slice(runAt + 1)) {
+      if (line.trim() === "") { body.push(""); continue; }
+      if (indentOf(line) <= base) break;
+      body.push(line);
+    }
+    const min = Math.min(...body.filter((l) => l.trim() !== "").map(indentOf));
+    return `${body.map((l) => l.slice(min)).join("\n").replace(/\n+$/, "")}\n`;
+  }
+
+  /**
+   * ★ bash الحقيقيّ — وعلى ويندوز bash المرافقُ لـGit لا `System32\bash.exe`.
+   *
+   * ذاك مدخلُ WSL: قد لا يكون مثبَّتًا، ولا يرى بيئةَ العمليّة كما هي. فيُشتقّ
+   * المسارُ من `git --exec-path` صعودًا حتى يُعثر على `bin/bash.exe`.
+   */
+  function findBash(): string | null {
+    const works = (bin: string) => {
+      try { return spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 15_000 }).status === 0; } catch { return false; }
+    };
+    if (process.platform === "win32") {
+      try {
+        let dir = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
+        for (let up = 0; up < 6; up++) {
+          for (const rel of [["bin", "bash.exe"], ["usr", "bin", "bash.exe"]]) {
+            const candidate = join(dir, ...rel);
+            if (existsSync(candidate) && works(candidate)) return candidate;
+          }
+          const parent = dirname(dir);
+          if (parent === dir) break;
+          dir = parent;
+        }
+      } catch { /* لا git في المسار */ }
+      return null;
+    }
+    return works("bash") ? "bash" : null;
+  }
+  const BASH = findBash();
+
+  /**
+   * يُنفَّذ كما ينفّذه المُشغِّل على لينكس: `bash -e` — والنصُّ من المدخل
+   * القياسيّ، فلا اقتباسَ يُفسده ولا مسارَ ملفٍّ يُترجَم.
+   *
+   * @param value `undefined` ⇒ يُحذف المتغيّرُ حذفًا (غيابٌ حقيقيّ)؛ وأيُّ نصٍّ
+   *              — ومنه الفارغ — ⇒ يُعرَّف به.
+   */
+  function exec(script: string, variable: string, value: string | undefined): { status: number | null; out: string } {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env[variable];
+    delete env.BASH_ENV;
+    if (value !== undefined) env[variable] = value;
+    const r = spawnSync(BASH as string, ["--noprofile", "--norc", "-e", "-s"], { input: script, env, encoding: "utf8", timeout: 20_000 });
+    return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  }
+
+  const BROWSER_STEP = "Assert the CI environment does not enable Browser Voice";
+
+  /** ★ حيث تعمل البوّابةُ لا يُتخطّى شيء: غيابُ bash هناك سقوطٌ لا تجاوز */
+  it("bash موجودٌ حيث تعمل البوّابة (لينكس و CI)", () => {
+    if (process.platform !== "win32" || process.env.CI) expect(BASH).not.toBeNull();
+  });
+
+  describe.skipIf(!BASH)("تنفيذًا في bash", () => {
+    it("المُقتطَع هو جسمُ الخطوة وحدَه — بلا إزاحةٍ ولا خطوةٍ مجاورة", () => {
+      const body = runBody(BROWSER_STEP);
+      expect(body.startsWith("if [ ")).toBe(true);
+      expect(body).toContain(B);
+      expect(body).toMatch(/^\s*exit 1$/m);
+      expect(body).not.toContain("- name:");
+      expect(body).not.toContain("NEXT_PUBLIC_YSD_LOCAL_");
+    });
+
+    /**
+     * ★ العُدّةُ نفسُها تُميّز الغائبَ من المعرَّف فارغًا.
+     *
+     * وإلا لكانت حالةُ `""` أدناه تقيس الغيابَ مرّتين وتُسمّي إحداهما فراغًا.
+     */
+    it("والعُدّةُ تُوصل «معرَّفًا فارغًا» إلى الصَّدفة غيرَ «غائب»", () => {
+      const probe = `if [ -n "\${${B}+x}" ]; then printf 'defined:%s' "\${#${B}}"; else printf 'unset'; fi\n`;
+      expect(exec(probe, B, undefined).out).toBe("unset");
+      expect(exec(probe, B, "").out).toBe("defined:0");
+      expect(exec(probe, B, "0").out).toBe("defined:1");
+    });
+
+    it("غائبةٌ حقًّا ⇒ تمرّ (خروج 0) وتقول «absent»", () => {
+      const r = exec(runBody(BROWSER_STEP), B, undefined);
+      expect(r.out).toContain(`OK: ${B} is absent from the gate environment.`);
+      expect(r.out).not.toContain("FAIL:");
+      expect(r.status).toBe(0);
+    });
+
+    /** ★ كلُّ تعريفٍ يسقط — والفارغُ أوّلُها، وهو العطبُ بعينه */
+    it.each([
+      ["معرَّفةٌ بقيمةٍ فارغة", ""],
+      ["«0»", "0"],
+      ["«1»", "1"],
+      ["«false»", "false"],
+      ["«true»", "true"],
+      ["«off»", "off"],
+    ])("%s ⇒ تسقط (خروج 1) وتقول «present»", (_label, value) => {
+      const r = exec(runBody(BROWSER_STEP), B, value);
+      expect(r.out).toContain(`FAIL: ${B} is present in the gate environment.`);
+      expect(r.out).not.toContain("OK:");
+      expect(r.status).toBe(1);
+    });
+
+    /**
+     * ★ وحارسا الصورِ والصوتِ المحلّيّ باقيان كما هما.
+     *
+     * يُقاس سلوكُهما القائم — الغيابُ يمرّ وكلُّ قيمةٍ غيرِ فارغةٍ تسقط — ولا
+     * يُثبَّت هنا ما يفعلانه بالفارغ: فتشديدُهما قرارٌ مستقلّ، لا يُمنع ولا
+     * يُفرض من اختبارِ راية المتصفّح.
+     */
+    it.each([
+      ["Assert the CI environment does not enable Local Voice", L],
+      ["Assert the CI environment does not enable Local Image", "NEXT_PUBLIC_YSD_LOCAL_IMAGE"],
+    ])("«%s» لم يتغيّر سلوكُه", (stepName, variable) => {
+      const body = runBody(stepName);
+      expect(body).toContain(variable);
+      expect(body).not.toContain(B);
+      expect(exec(body, variable, undefined).status).toBe(0);
+      for (const value of ["0", "1", "false"]) {
+        const r = exec(body, variable, value);
+        expect(r.status, `${variable}=${value}`).toBe(1);
+        expect(r.out).toContain(`FAIL: ${variable} is present in the gate environment.`);
+      }
+    });
+
+    /** ★ ولا يتأثّر حارسٌ بمتغيّرِ جاره: كلٌّ يقرأ اسمَه وحدَه — ويُقاس الاتّجاهان تنفيذًا */
+    it("ورايةُ الصوت المحلّيّ المعرَّفة لا تُسقط حارسَ المتصفّح، ولا العكس", () => {
+      /** يُعرَّف `defined` ويُحذف `absent` حذفًا، ثم يُنفَّذ جسمُ الخطوة */
+      const cross = (stepName: string, defined: string, absent: string) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, [defined]: "1" };
+        delete env[absent];
+        delete env.BASH_ENV;
+        return spawnSync(BASH as string, ["--noprofile", "--norc", "-e", "-s"], { input: runBody(stepName), env, encoding: "utf8", timeout: 20_000 }).status;
+      };
+      expect(cross(BROWSER_STEP, L, B)).toBe(0);
+      expect(cross("Assert the CI environment does not enable Local Voice", B, L)).toBe(0);
+    });
   });
 });
 

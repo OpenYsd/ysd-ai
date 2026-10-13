@@ -39,9 +39,9 @@ NEXT_PUBLIC_YSD_BROWSER_VOICE=1
 
 - `Dockerfile` يُعلن `ARG NEXT_PUBLIC_YSD_BROWSER_VOICE` ويُمرّرها `ENV`
   **بلا قيمةٍ افتراضيّة**.
-- بوّابةُ `production-readiness` تفشل إن وُجد المتغيّرُ في بيئة البناء
-  أو ضبطه ملفُّ `.env` متتبَّع، وتُشغّل `tests/v149-browser-voice-flag.test.ts`
-  خطوةً مسمّاة.
+- بوّابةُ `production-readiness` تفشل إن **عُرِّف** المتغيّرُ في بيئة البوّابة
+  (مُشغِّل CI) — ولو بقيمةٍ فارغة: المطلوبُ هناك غيابُه لا إطفاؤه — أو ضبطه
+  ملفُّ `.env` متتبَّع، وتُشغّل `tests/v149-browser-voice-flag.test.ts` خطوةً مسمّاة.
 - الإنتاجُ لا يضبط المتغيّرَ أصلًا؛ وتشغيلُ الميزة في أيّ بيئةٍ قرارٌ لاحق
   منفصل.
 

@@ -102,11 +102,18 @@ jobs:
 
       # والرايةُ الثالثة — صوتُ المتصفّح — خطوةٌ مستقلّةٌ للسبب نفسِه.
       # وهي في المرحلة 1 رايةٌ بلا ميزة؛ ومع ذلك تُحرَس من اليوم الأوّل.
+      #
+      # ★ `${VAR+x}` لا `${VAR:-}` — المطلوبُ **الغيابُ** لا «الإطفاء».
+      #
+      # `:-` يُسوّي بين الغائب والمعرَّف بقيمةٍ فارغة، فيمرّ `VAR=""` ويُطبع
+      # «absent» والمتغيّرُ حاضر. و`+x` يتمدّد إلى `x` متى عُرِّف المتغيّرُ ولو
+      # بلا قيمة، وإلى لا شيء إن لم يُعرَّف أصلًا — فلا يمرّ إلا غيابٌ حقيقيّ.
+      # ويُنفَّذ هذا النصُّ بعينه في tests/v149-browser-voice-flag.test.ts.
       - name: Assert the CI environment does not enable Browser Voice
         run: |
-          if [ -n "${NEXT_PUBLIC_YSD_BROWSER_VOICE:-}" ]; then
+          if [ -n "${NEXT_PUBLIC_YSD_BROWSER_VOICE+x}" ]; then
             echo "FAIL: NEXT_PUBLIC_YSD_BROWSER_VOICE is present in the gate environment."
-            echo "The production-default build must run with the variable absent, not set to 0."
+            echo "The production-default build must run with the variable absent, not set to 0 and not set to an empty value."
             exit 1
           fi
           echo "OK: NEXT_PUBLIC_YSD_BROWSER_VOICE is absent from the gate environment."
