@@ -23,8 +23,9 @@ import {
   ReadAloudController,
   getReadAloud,
   resetReadAloudForTests,
+  type NetworkVoiceConsent,
 } from "@/lib/browser-voice/read-aloud";
-import { MAX_CHUNK_CHARS } from "@/lib/browser-voice/speech-text";
+import { MAX_CHUNK_CHARS, chunkSpeechText } from "@/lib/browser-voice/speech-text";
 import { AR_EG, AR_SA, EN_US, FakeSynth, installFakeSpeech, microtasks, voice } from "./helpers/fake-speech";
 
 const TIMINGS = { startTimeoutMs: 600, voicesWaitMs: 120, cancelSettleMs: 8, adoptGraceMs: 25, assumedStartCeilingMs: 5000 };
@@ -37,8 +38,11 @@ const TIMINGS = { startTimeoutMs: 600, voicesWaitMs: 120, cancelSettleMs: 8, ado
  * بديله. وفي المنتَج مُتحكِّمٌ واحد، فلا يقع ذلك.
  */
 const made: ReadAloudController[] = [];
-const make = (allowNetworkVoices?: boolean) => {
-  const controller = new ReadAloudController({ timings: TIMINGS, allowNetworkVoices });
+/**
+ * @param networkVoiceConsent قرارٌ ابتدائيّ للاختبار. الافتراضُ «لم يُسأل» — كما في المنتَج.
+ */
+const make = (allowNetworkVoices?: boolean, networkVoiceConsent?: NetworkVoiceConsent) => {
+  const controller = new ReadAloudController({ timings: TIMINGS, allowNetworkVoices, networkVoiceConsent });
   made.push(controller);
   return controller;
 };
@@ -461,19 +465,28 @@ describe("v150 — توفّرُ الأصوات", () => {
     expect(synth.last.voice).toBe(AR_EG);
   });
 
-  /** ★ أندرويد: القائمةُ قد لا تأتي أبدًا والمحرّكُ يعمل — يُقرأ بوسم اللغة وحدَه */
-  it("قائمةٌ لا تصل: بعد المهلة يُقرأ بوسم اللغة بلا صوتٍ معيَّن، ولا يُنتظر ثانيةً", async () => {
+  /**
+   * ★ أندرويد: القائمةُ قد لا تأتي أبدًا والمحرّكُ يعمل.
+   *
+   * وصوتٌ يختاره المحرّكُ لا يُعرف مصدرُه: فيُسأل المستخدمُ قبله، وبعد موافقته
+   * يُقرأ بوسم اللغة وحدَه — ويُعلَّم أنّه ليس من أصوات الجهاز المعلومة.
+   */
+  it("قائمةٌ لا تصل: بعد المهلة يُسأل؛ وبعد الموافقة يُقرأ بوسم اللغة بلا صوتٍ معيَّن، ولا يُنتظر ثانيةً", async () => {
     const synth = installFakeSpeech([]);
     const c = make();
     c.speak(A, ARABIC);
     vi.advanceTimersByTime(TIMINGS.voicesWaitMs - 1);
-    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().status).toBe("loading");
     vi.advanceTimersByTime(1);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+    expect(synth.voiceListeners).toBe(0);
+    c.allowNetworkVoice(A);
     expect(synth.spoken).toHaveLength(1);
     expect(synth.last.voice).toBeNull();
     expect(synth.last.lang).toBe("ar-SA");
-    expect(synth.voiceListeners).toBe(0);
     await microtasks();
+    expect(c.getSnapshot()).toEqual({ status: "speaking", owner: A, error: null, networkVoice: true });
     synth.end(synth.last);
 
     c.speak(A, ENGLISH);
@@ -545,11 +558,11 @@ describe("v150 — توفّرُ الأصوات", () => {
     expect(c.getSnapshot()).toEqual({ status: "speaking", owner: A, error: null, networkVoice: false });
   });
 
-  /** ★ لا ادّعاءَ بمعالجةٍ على الجهاز: صوتُ الشبكة يُعلَن */
-  it("صوتُ شبكةٍ وحدَه: يُقرأ به ويُعلَّم أنّه عبر الشبكة — ويزول العلَم عند الانتهاء", async () => {
+  /** ★ لا ادّعاءَ بمعالجةٍ على الجهاز: صوتُ الشبكة يُعلَن ما دامت القراءة — وهذا بعد الموافقة */
+  it("بعد الموافقة: صوتُ شبكةٍ وحدَه يُقرأ به ويُعلَّم أنّه ليس من أصوات الجهاز — ويزول العلَم عند الانتهاء", async () => {
     const online = voice("Online Saudi", "ar-SA", { network: true });
     const synth = installFakeSpeech([online]);
-    const c = make(true);
+    const c = make(true, "granted");
     c.speak(A, ARABIC);
     expect(synth.last.voice).toBe(online);
     expect(c.getSnapshot().networkVoice).toBe(true);
@@ -609,17 +622,19 @@ describe("v150 — توفّرُ الأصوات", () => {
     }
   });
 
-  it("وبالسياسة الافتراضيّة: قائمةٌ تفرغ أثناء القراءة ⇒ يُكمَل بوسم اللغة", async () => {
+  it("وبالسياسة الافتراضيّة بعد الموافقة: قائمةٌ تفرغ أثناء القراءة ⇒ يُكمَل بوسم اللغة ويُعلَّم", async () => {
     const synth = installFakeSpeech([AR_SA]);
-    const c = make(true);
+    const c = make(true, "granted");
     c.speak(A, Array.from({ length: 10 }, () => "جملةٌ طويلةٌ بما يكفي لتكون مقطعًا مستقلًّا عن جاراتها في هذا الرد الطويل.").join(" "));
     await microtasks();
+    expect(c.getSnapshot().networkVoice).toBe(false);
     synth.voices = [];
     synth.end(synth.last);
     expect(synth.spoken).toHaveLength(2);
     expect(synth.last.voice).toBeNull();
     expect(synth.last.lang).toBe("ar-SA");
     expect(c.getSnapshot().error).toBeNull();
+    expect(c.getSnapshot().networkVoice).toBe(true);
   });
 
   /** ★ نصٌّ لا لغةَ له لا يُنقل إلى صوت شبكةٍ وصوتُ الجهاز يقرؤه */
@@ -628,12 +643,17 @@ describe("v150 — توفّرُ الأصوات", () => {
     const synth = installFakeSpeech([EN_US, online]);
     const c = make(true);
     c.speak(A, "2 + 2 = 4.");
+    // صوتُ الجهاز يقرؤه: لا سؤالَ ولا علَم
     expect(synth.last.voice).toBe(EN_US);
     expect(c.getSnapshot().networkVoice).toBe(false);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
     c.stop();
-    // والنصُّ العربيّ المحسوم ما زال يُقرأ بصوته العربيّ ولو كان عبر الشبكة
+    // والنصُّ العربيّ المحسوم لا صوتَ له بين أصوات الجهاز: يُسأل قبله، ثم يُقرأ بصوته العربيّ عبر الشبكة
     c.speak(A, ARABIC);
     vi.advanceTimersByTime(TIMINGS.cancelSettleMs);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot().status).toBe("consent");
+    c.allowNetworkVoice(A);
     expect(synth.last.voice).toBe(online);
     expect(c.getSnapshot().networkVoice).toBe(true);
   });
@@ -654,11 +674,14 @@ describe("v150 — توفّرُ الأصوات", () => {
    * «٧ × ٨ = ٥٦» بلا حروف، فكان يُعدّ بلا لغة ويُسلَّم لصوت الجهاز الإنجليزيّ —
    * وهذا لا ينطق تلك الأرقام: صمتٌ ثم «إعادة الاستماع».
    */
-  it("نصٌّ بلا حروفٍ بأرقامٍ عربيّة-هنديّة ⇒ صوتٌ عربيّ ولو عبر الشبكة، لا صوتُ الجهاز الإنجليزيّ", async () => {
+  it("نصٌّ بلا حروفٍ بأرقامٍ عربيّة-هنديّة ⇒ يُسأل عن الصوت العربيّ عبر الشبكة، ولا يُسلَّم لصوت الجهاز الإنجليزيّ", async () => {
     const online = voice("Online Arabic", "ar-SA", { network: true });
     const synth = installFakeSpeech([EN_US, online]);
     const c = make();
     c.speak(A, "٧ × ٨ = ٥٦.");
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().status).toBe("consent");
+    c.allowNetworkVoice(A);
     await microtasks();
     expect(synth.spoken).toHaveLength(1);
     expect(synth.last.voice).toBe(online);
@@ -1235,13 +1258,23 @@ describe("v150 — المخزن", () => {
     const count = (spy: typeof add | typeof remove) => spy.mock.calls.filter(([type]) => type === "pagehide").length;
 
     const online = installFakeSpeech([voice("Online Saudi", "ar-SA", { network: true })]);
-    const onNetwork = make(true);
+    const onNetwork = make(true, "granted");
     onNetwork.subscribe(() => {
       if (onNetwork.getSnapshot().networkVoice) onNetwork.stop();
     });
     onNetwork.speak(A, ARABIC);
     expect(online.spoken).toHaveLength(0);
     expect(onNetwork.getSnapshot().status).toBe("idle");
+
+    // وعند إعلان «بانتظار الموافقة»: الإيقافُ إلغاءٌ للسؤال — لا عبارة، ولا صاحب، ولا قرار
+    const asked = make(true);
+    asked.subscribe(() => {
+      if (asked.getSnapshot().status === "consent") asked.stop();
+    });
+    asked.speak(A, ARABIC);
+    expect(online.spoken).toHaveLength(0);
+    expect(asked.getSnapshot()).toBe(IDLE_STATE);
+    expect(asked.getNetworkVoiceConsent()).toBe("undecided");
 
     const local = installFakeSpeech();
     const onLoading = make();
@@ -1272,5 +1305,663 @@ describe("v150 — المخزن", () => {
     await microtasks();
     resetReadAloudForTests({ timings: TIMINGS });
     expect(synth.cancels).toBe(1);
+  });
+});
+
+/**
+ * ══════════════════════════════════════════════════════════════════
+ *  ★ ★ ★ الموافقةُ قبل أيّ صوتٍ ليس من أصوات الجهاز
+ *
+ *  صوتٌ يذكر المتصفّحُ أنّه عبر الشبكة، أو لا يذكر عنه شيئًا، أو يختاره
+ *  المحرّكُ من قائمةٍ لا تُعرف: قد يُنقل معه نصُّ الرد إلى مزوّد الصوت. فلا
+ *  يُستدعى `speak` معه قبل ضغطة موافقة — وهذا ما يُقاس هنا على المُتحكِّم
+ *  نفسِه: عددُ العبارات المسلَّمة قبل القرار صفر.
+ *
+ *  والميزانُ العامّ: كلُّ عبارةٍ سُلّمت والقرارُ ليس «موافق» صوتُها مذكورٌ
+ *  أنّه من أصوات الجهاز.
+ * ══════════════════════════════════════════════════════════════════
+ */
+describe("v150 — الموافقةُ قبل صوتٍ ليس من أصوات الجهاز", () => {
+  const ONLINE_AR = voice("Online Saudi", "ar-SA", { network: true });
+  const ONLINE_EN = voice("Online English", "en-US", { network: true });
+  const UNREPORTED_AR = voice("Unreported Arabic", "ar-SA", { unreported: true });
+  /** جملٌ متمايزة: فالمقطعُ يُعرف بنصّه */
+  const LONG = ["الأولى", "الثانية", "الثالثة", "الرابعة", "الخامسة", "السادسة", "السابعة", "الثامنة"]
+    .map((nth) => `هذه الجملةُ ${nth} طويلةٌ بما يكفي لتكون مقطعًا مستقلًّا عن جاراتها في هذا الرد الطويل.`)
+    .join(" ");
+  /** العربيّةُ غالبة، وفيه سطرٌ إنجليزيٌّ قصير */
+  const MIXED =
+    "هذا ردٌّ عربيٌّ طويلٌ فيه كلامٌ كثيرٌ بالعربيّة قبل أن يأتي سطرٌ قصيرٌ بلغةٍ أخرى في آخره.\nA short English line.";
+  /** كلُّ ما سُلّم مذكورٌ أنّه من أصوات الجهاز */
+  const allDevice = (synth: FakeSynth) => synth.spoken.every((u) => u.voice !== null && u.voice.localService === true);
+
+  /** ★ ★ ★ لا تسليمَ قبل الموافقة */
+  it.each([
+    ["صوتٌ يذكر المتصفّحُ أنّه عبر الشبكة", [ONLINE_AR]],
+    ["صوتٌ لا يذكر المتصفّحُ عنه شيئًا", [UNREPORTED_AR]],
+    ["صوتُ شبكةٍ للّغة وصوتُ جهازٍ للغةٍ أخرى", [EN_US, ONLINE_AR]],
+  ] as const)("%s ⇒ يُسأل، ولا عبارةَ تُسلَّم قبل القرار", (_name, voices) => {
+    const synth = installFakeSpeech([...voices]);
+    const c = make();
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    c.speak(A, ARABIC);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    // ولا مؤقّتَ يدور والسؤالُ مفتوح: لا مهلةَ بدءٍ ولا سقف — وما مرّ من وقتٍ لا يبدأ قراءة
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(TIMINGS.startTimeoutMs * 10);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().status).toBe("consent");
+  });
+
+  it("الموافقة ⇒ يُقرأ في الضغطة نفسِها بالصوت المسؤول عنه، ويُعلَّم؛ والقرارُ يبقى للردود التالية", async () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.allowNetworkVoice(A);
+    // في الضغطة نفسِها: لا مهلة، فهي الإيماءةُ التي يشترطها المتصفّح
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(ONLINE_AR);
+    expect(c.getNetworkVoiceConsent()).toBe("granted");
+    expect(c.getSnapshot()).toEqual({ status: "loading", owner: A, error: null, networkVoice: true });
+    await microtasks();
+    expect(c.getSnapshot()).toEqual({ status: "speaking", owner: A, error: null, networkVoice: true });
+    synth.end(synth.last);
+
+    // ردٌّ آخر في الصفحة نفسِها: لا يُسأل ثانيةً
+    c.speak(B, ARABIC);
+    expect(synth.spoken).toHaveLength(2);
+    expect(c.getSnapshot().status).toBe("loading");
+    expect(c.getSnapshot().owner).toBe(B);
+  });
+
+  /**
+   * ★ مشتركٌ يتصرّف عند إعلان الاستئناف بعد القرار.
+   *
+   * الاستئنافُ يُعلن «جارٍ التحميل» ثم يسلّم المقطع: فمشتركٌ أوقف عند الإعلان،
+   * أو بدأ ردًّا آخر، جعل الجلسةَ المستأنفة غيرَ الحاضرة — ولا يُسلَّم مقطعُها.
+   */
+  it.each(["allow", "decline"] as const)("القرار (%s) ثم إيقافٌ عند إعلان الاستئناف ⇒ لا عبارةَ تُسلَّم", (decision) => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    expect(c.getSnapshot().status).toBe("consent");
+    let fired = false;
+    c.subscribe(() => {
+      if (!fired && c.getSnapshot().status === "loading") {
+        fired = true;
+        c.stop();
+      }
+    });
+    if (decision === "allow") c.allowNetworkVoice(A);
+    else c.declineNetworkVoice(A);
+    expect(fired).toBe(true);
+    vi.advanceTimersByTime(TIMINGS.startTimeoutMs * 2);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "idle", owner: A, error: null, networkVoice: false });
+    expect(c.getNetworkVoiceConsent()).toBe(decision === "allow" ? "granted" : "declined");
+  });
+
+  it("الموافقةُ ثم ردٌّ آخر يبدأ عند إعلان الاستئناف ⇒ لا يُسلَّم إلا الردُّ الآخر", () => {
+    const synth = installFakeSpeech([ONLINE_AR, EN_US]);
+    const c = make();
+    c.speak(A, ARABIC);
+    expect(c.getSnapshot().status).toBe("consent");
+    let fired = false;
+    c.subscribe(() => {
+      const state = c.getSnapshot();
+      if (!fired && state.status === "loading" && state.owner === A) {
+        fired = true;
+        c.speak(B, ENGLISH);
+      }
+    });
+    c.allowNetworkVoice(A);
+    expect(fired).toBe(true);
+    vi.advanceTimersByTime(TIMINGS.cancelSettleMs);
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(EN_US);
+    expect(synth.spoken.some((u) => u.voice === ONLINE_AR)).toBe(false);
+    expect(c.getSnapshot().owner).toBe(B);
+  });
+
+  it("صوتٌ لا يذكر المتصفّحُ مصدرَه يُعامل كصوت الشبكة: يُؤخَّر عن صوت الجهاز، ويُعلَّم بعد الموافقة", async () => {
+    const synth = installFakeSpeech([UNREPORTED_AR, AR_EG]);
+    const c = make();
+    c.speak(A, ARABIC);
+    // صوتُ الجهاز حاضر (ولو بلهجةٍ غيرِ المفضَّلة): لا سؤال
+    expect(synth.last.voice).toBe(AR_EG);
+    expect(c.getSnapshot().networkVoice).toBe(false);
+    c.stop();
+
+    synth.voices = [UNREPORTED_AR];
+    c.speak(A, ARABIC);
+    vi.advanceTimersByTime(TIMINGS.cancelSettleMs);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot().status).toBe("consent");
+    c.allowNetworkVoice(A);
+    expect(synth.last.voice).toBe(UNREPORTED_AR);
+    expect(c.getSnapshot().networkVoice).toBe(true);
+  });
+
+  /** ★ ★ ★ الرفض: أصواتُ الجهاز وحدَها */
+  it("الرفضُ ولا صوتَ جهازٍ للّغة ⇒ اعتذارٌ بسببه، ولا عبارةَ تُسلَّم — لا الآن ولا في الردود التالية", () => {
+    const synth = installFakeSpeech([EN_US, ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.declineNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getNetworkVoiceConsent()).toBe("declined");
+    // سببٌ يخصّ الاختيار: «لا صوتَ عربيًّا في متصفّحك» كذبٌ هنا — فيه صوتٌ رُفض
+    expect(c.getSnapshot()).toEqual({ status: "error", owner: A, error: "device_only_ar", networkVoice: false });
+
+    // ردٌّ عربيٌّ آخر: لا يُسأل ثانيةً، ولا يُقرأ
+    c.speak(B, ARABIC);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "error", owner: B, error: "device_only_ar", networkVoice: false });
+
+    // وردٌّ إنجليزيّ له صوتُ جهاز: يُقرأ به
+    c.speak(B, ENGLISH);
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(EN_US);
+    expect(allDevice(synth)).toBe(true);
+  });
+
+  it("الرفضُ والقائمةُ لا تُعرف ⇒ اعتذارٌ باختيار «أصوات الجهاز فقط»، ولا عبارة", () => {
+    const synth = installFakeSpeech([]);
+    const c = make();
+    c.speak(A, ENGLISH);
+    vi.advanceTimersByTime(TIMINGS.voicesWaitMs);
+    expect(c.getSnapshot().status).toBe("consent");
+    c.declineNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "error", owner: A, error: "device_only_en", networkVoice: false });
+  });
+
+  it("الرفضُ ولا صوتَ للّغة أصلًا ⇒ «لا صوتَ» لا «اختيارُك»", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make(true, "declined");
+    c.speak(A, ENGLISH);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().error).toBe("no_voice_en");
+  });
+
+  /** ★ يُسأل قبل أن يُسمع شيء، لا في وسط الرد */
+  it("ردٌّ بلغتين وللثانية صوتُ شبكةٍ وحدَه ⇒ يُسأل قبل المقطع الأوّل", async () => {
+    const synth = installFakeSpeech([AR_SA, ONLINE_EN]);
+    const c = make();
+    c.speak(A, MIXED);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().status).toBe("consent");
+
+    c.allowNetworkVoice(A);
+    await microtasks();
+    expect(synth.last.voice).toBe(AR_SA);
+    expect(c.getSnapshot().networkVoice).toBe(false);
+    synth.end(synth.last);
+    await microtasks();
+    expect(synth.last.voice).toBe(ONLINE_EN);
+    expect(c.getSnapshot().networkVoice).toBe(true);
+  });
+
+  it("وبالرفض: المقطعُ الذي لا صوتَ جهازٍ للغته يُقرأ بصوت الجهاز للّغة الغالبة — ولا عبارةَ بصوت الشبكة", async () => {
+    const synth = installFakeSpeech([AR_SA, ONLINE_EN]);
+    const c = make();
+    c.speak(A, MIXED);
+    c.declineNetworkVoice(A);
+    await microtasks();
+    synth.end(synth.last);
+    await microtasks();
+    expect(synth.spoken.length).toBeGreaterThan(1);
+    expect(allDevice(synth)).toBe(true);
+    expect(c.getSnapshot().networkVoice).toBe(false);
+    expect(c.getSnapshot().error).toBeNull();
+  });
+
+  /** ★ ★ الإلغاءُ ليس رفضًا ولا موافقة */
+  it("الإيقافُ والسؤالُ مفتوح ⇒ لا عبارة، ولا صاحب («استمع» لا «إعادة الاستماع»)، والقرارُ على حاله", () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    const count = (spy: typeof add | typeof remove) => spy.mock.calls.filter(([type]) => type === "pagehide").length;
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.stop();
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toBe(IDLE_STATE);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(count(remove)).toBe(count(add));
+    // والضغطةُ التالية تسأل ثانيةً
+    c.speak(A, ARABIC);
+    expect(c.getSnapshot().status).toBe("consent");
+    expect(synth.spoken).toHaveLength(0);
+    c.stop();
+    expect(count(remove)).toBe(count(add));
+    add.mockRestore();
+    remove.mockRestore();
+  });
+
+  it("`pagehide` والسؤالُ مفتوح ⇒ يُلغى السؤال بلا قرار", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(c.getSnapshot()).toBe(IDLE_STATE);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(synth.spoken).toHaveLength(0);
+    // ولا يبقى مستمعٌ يُلغي جلسةً لاحقة
+    c.allowNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+  });
+
+  /**
+   * ★ السؤالُ الذي فتحه المستخدمُ لا يختفي من تلقاء نفسه بإعادة التركيب.
+   *
+   * المحادثةُ الجديدة يُعاد تركيبُها بعد أوّل ردّ. والقراءةُ الجارية تعبر ذلك
+   * بالتبنّي — والسؤالُ المفتوح مثلُها: الزرُّ البديل للردّ نفسِه في المحادثة
+   * نفسِها يتبنّاه، وغيرُه لا. ولا يُسلَّم شيءٌ ولا يُسجَّل قرارٌ في الحالين.
+   */
+  it("فكُّ الزرّ والسؤالُ مفتوح ⇒ يُمهَل للتبنّي: بديلُه للردّ نفسِه يرثه، بتركيزه — ولا عبارة", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC, "conversation-1");
+    c.release(A, true);
+    // السؤالُ باقٍ خلال المهلة
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+    expect(c.adopt(B, ARABIC, "conversation-1")).toBe(true);
+    expect(c.takeReleasedFocus()).toBe(true);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: B, error: null, networkVoice: false });
+    vi.advanceTimersByTime(TIMINGS.adoptGraceMs * 4);
+    expect(c.getSnapshot().status).toBe("consent");
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    // وقرارُ الزرّ القديم لا يُحسب بعد التبنّي؛ وقرارُ البديل يُحسب
+    c.allowNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+    c.allowNetworkVoice(B);
+    expect(synth.spoken).toHaveLength(1);
+  });
+
+  it("فكُّ الزرّ والسؤالُ مفتوح ولا بديلَ يتبنّاه (محادثةٌ أخرى، أو نصٌّ آخر) ⇒ يزول بعد المهلة بلا قرار", () => {
+    for (const [text, scope] of [
+      [ARABIC, "conversation-2"],
+      [ENGLISH, "conversation-1"],
+    ] as const) {
+      const synth = installFakeSpeech([ONLINE_AR]);
+      const c = make();
+      c.speak(A, ARABIC, "conversation-1");
+      c.release(A, true);
+      expect(c.adopt(B, text, scope)).toBe(false);
+      vi.advanceTimersByTime(TIMINGS.adoptGraceMs - 1);
+      expect(c.getSnapshot().status).toBe("consent");
+      vi.advanceTimersByTime(1);
+      expect(c.getSnapshot()).toBe(IDLE_STATE);
+      expect(c.takeReleasedFocus()).toBe(false);
+      expect(synth.spoken).toHaveLength(0);
+      expect(synth.cancels).toBe(0);
+      expect(c.getNetworkVoiceConsent()).toBe("undecided");
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  });
+
+  /** ★ النظرُ في المقاطع كلِّها عند الأوّل: يُسأل قبل أن يُسمع شيء، ولو كان المقطعُ المعنيّ في آخر الرد */
+  it("المقطعُ الذي يحتاج صوتَ شبكةٍ في آخر ردٍّ طويل ⇒ يُسأل قبل المقطع الأوّل", () => {
+    const text = `${LONG}\nA short English line.`;
+    expect(chunkSpeechText(text).length).toBeGreaterThan(3);
+    expect(chunkSpeechText(text).at(-1)?.lang).toBe("en");
+    const synth = installFakeSpeech([AR_SA, ONLINE_EN]);
+    const c = make();
+    c.speak(A, text);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+  });
+
+  /** ★ والنظرُ عند كلّ مقطعٍ بعده في ذلك المقطع وحدَه: مقاطعُ صوت الجهاز تمضي بلا سؤال */
+  it("القائمةُ تتبدّل والقراءةُ جارية فلا يحتاج صوتَ الشبكة إلا المقطعُ الأخير ⇒ ما قبله يُقرأ بلا سؤال، والسؤالُ قبل الأخير", async () => {
+    const text = `${LONG}\nA short English line.`;
+    const total = chunkSpeechText(text).length;
+    const synth = installFakeSpeech([AR_SA, EN_US]);
+    const c = make();
+    c.speak(A, text);
+    await microtasks();
+    expect(synth.spoken).toHaveLength(1);
+    synth.voices = [AR_SA, ONLINE_EN];
+    for (let handed = 1; handed < total - 1; handed++) {
+      synth.end(synth.last);
+      expect(synth.spoken).toHaveLength(handed + 1);
+      expect(synth.last.voice).toBe(AR_SA);
+      expect(c.getSnapshot().status).not.toBe("consent");
+      await microtasks();
+    }
+    synth.end(synth.last);
+    // المقطعُ الأخير لم يُسلَّم: السؤالُ قبله
+    expect(synth.spoken).toHaveLength(total - 1);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+    c.allowNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(total);
+    expect(synth.last.voice).toBe(ONLINE_EN);
+    expect(synth.last.text).toBe("A short English line.");
+  });
+
+  /** ★ مشتركٌ يوقف عند إعلان «جارٍ» الذي يتلو القرار: لا عبارةَ تُسلَّم لجلسةٍ انتهت */
+  it.each(["allow", "decline"] as const)("إيقافٌ عند إعلان «جارٍ» بعد القرار (%s) ⇒ لا عبارة ولا مؤقّت", (decide) => {
+    const synth = installFakeSpeech([AR_SA, ONLINE_EN]);
+    const c = make();
+    c.speak(A, MIXED);
+    expect(c.getSnapshot().status).toBe("consent");
+    c.subscribe(() => {
+      if (c.getSnapshot().status === "loading") c.stop();
+    });
+    if (decide === "allow") c.allowNetworkVoice(A);
+    else c.declineNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().status).toBe("idle");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  /** ★ المقطعُ الأوّل يُعاد اختيارُه من اللغة المحسومة، لا ممّا اختير والسؤالُ يُفتح */
+  it("نصٌّ بلا حروف: صوتٌ للّغة المفترضة يظهر والسؤالُ مفتوح ⇒ بعد الموافقة يُقرأ به", () => {
+    const synth = installFakeSpeech([ONLINE_EN]);
+    const c = make();
+    c.speak(A, "2 + 2 = 4.");
+    expect(c.getSnapshot().status).toBe("consent");
+    synth.voices = [ONLINE_EN, ONLINE_AR];
+    c.allowNetworkVoice(A);
+    expect(synth.last.voice).toBe(ONLINE_AR);
+  });
+
+  /** ★ السؤالُ في وسط الرد لا يترك في المُتحكِّم عبارةً «مسلَّمة»: الردُّ التالي يبدأ في ضغطته */
+  it("سؤالٌ في وسط الرد ثم «استمع» على ردٍّ آخر ⇒ يُسلَّم فورًا، بلا إلغاءٍ ولا مهلة", async () => {
+    const synth = installFakeSpeech([AR_SA]);
+    const c = make();
+    c.speak(A, LONG);
+    await microtasks();
+    synth.voices = [ONLINE_AR];
+    synth.end(synth.last);
+    expect(c.getSnapshot().status).toBe("consent");
+    synth.voices = [AR_SA];
+    c.speak(B, ARABIC);
+    expect(synth.cancels).toBe(0);
+    expect(synth.spoken).toHaveLength(2);
+    expect(synth.last.voice).toBe(AR_SA);
+  });
+
+  /** ★ الاعتذارُ يسمّي لغةَ المقطع الذي تعذّر، لا لغةَ الرد الغالبة */
+  it("بأصوات الجهاز وحدَها وقائمةٌ لا تُعرف: الاعتذارُ بلغة المقطع الأوّل", () => {
+    installFakeSpeech([]);
+    const c = make(true, "declined");
+    c.speak(A, `A short English line.\n${LONG}`);
+    vi.advanceTimersByTime(TIMINGS.voicesWaitMs);
+    expect(c.getSnapshot().error).toBe("device_only_en");
+  });
+
+  /**
+   * ★ نصٌّ بلا حروفٍ تحسم لغتَه، والرفضُ هو المانع: يُقال ذلك، لا «لا صوتَ عربيًّا».
+   *
+   * «144» يُقرأ بصوت أيٍّ من اللغتين. فإن لم يكن في المتصفّح إلا صوتٌ إنجليزيٌّ
+   * ليس من أصوات الجهاز ورُفض، فالمانعُ الرفض — ولغتُه لغةُ ذلك الصوت. وكان
+   * يُقال «لا يتوفّر في متصفّحك صوتٌ عربيّ» ولا يُعرض «تغيير الاختيار».
+   */
+  it("الرفضُ ونصٌّ بلا حروفٍ وليس إلا صوتُ شبكةٍ للّغة الأخرى ⇒ اعتذارٌ بالاختيار وبلغة ذلك الصوت", () => {
+    for (const text of ["144", "2 + 2 = 4.", "اب ab."]) {
+      for (const only of [ONLINE_EN, voice("Unreported English", "en-US", { unreported: true })]) {
+        const synth = installFakeSpeech([only]);
+        const c = make();
+        c.speak(A, text);
+        expect(c.getSnapshot().status, text).toBe("consent");
+        c.declineNetworkVoice(A);
+        expect(synth.spoken).toHaveLength(0);
+        expect(c.getSnapshot().error, text).toBe("device_only_en");
+        // وبالموافقة كان يُقرأ بذلك الصوت: فالرفضُ هو المانعُ حقًّا
+        c.reconsiderNetworkVoice(A, text);
+        c.allowNetworkVoice(A);
+        expect(synth.last.voice).toBe(only);
+        c.stop();
+      }
+    }
+    // وإن لم يكن للّغتين صوتٌ أصلًا: «لا صوت» لا «اختيارُك»
+    const synth = installFakeSpeech([voice("French", "fr-FR")]);
+    const c = make(true, "declined");
+    c.speak(A, "144");
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().error).toBe("no_voice_ar");
+  });
+
+  /**
+   * ★ سحبُ الموافقة بعد انتهاء القراءة — بلا تسليم ردٍّ آخر.
+   *
+   * كان زرُّ السحب يظهر والقراءةُ بصوت الشبكة جاريةٌ وحدَها: فمن أراد سحبَ
+   * موافقته بعد انتهائها لزمه أن يُقرئ ردًّا آخر بذلك الصوت ليجد الزرّ.
+   */
+  it("سحبُ الموافقة بعد انتهاء القراءة ⇒ يُسجَّل بلا نداءٍ للمحرّك، وما بعده بأصوات الجهاز وحدَها", async () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.allowNetworkVoice(A);
+    await microtasks();
+    synth.end(synth.last);
+    expect(c.getSnapshot()).toEqual({ status: "idle", owner: A, error: null, networkVoice: false });
+    // غيرُ صاحب الجلسة لا يسحب
+    c.declineNetworkVoice(B);
+    expect(c.getNetworkVoiceConsent()).toBe("granted");
+    c.declineNetworkVoice(A);
+    expect(c.getNetworkVoiceConsent()).toBe("declined");
+    expect(synth.cancels).toBe(0);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot()).toEqual({ status: "idle", owner: A, error: null, networkVoice: false });
+    c.speak(A, ARABIC);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot().error).toBe("device_only_ar");
+  });
+
+  it("وبلا موافقةٍ سبقت لا يُسجَّل «رفض» من زرٍّ ليس أمامه سؤال — لا خاملًا ولا بعد عطب", async () => {
+    const synth = installFakeSpeech([AR_SA]);
+    const c = make();
+    c.speak(A, ARABIC);
+    await microtasks();
+    synth.end(synth.last);
+    c.declineNetworkVoice(A);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    c.speak(A, ARABIC);
+    await microtasks();
+    synth.fail(synth.last, "synthesis-failed");
+    c.declineNetworkVoice(A);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    // وبعد عطبٍ في قراءةٍ بصوت الشبكة لا يُسحب من حالة العطب: الزرُّ هناك غيرُ معروض
+    const online = installFakeSpeech([ONLINE_AR]);
+    const granted = make(true, "granted");
+    granted.speak(A, ARABIC);
+    await microtasks();
+    online.fail(online.last, "synthesis-failed");
+    granted.declineNetworkVoice(A);
+    expect(granted.getNetworkVoiceConsent()).toBe("granted");
+  });
+
+  it("ضغطةٌ على ردٍّ آخر والسؤالُ مفتوح ⇒ السؤالُ ينتقل إليه، وموافقةُ الأوّل لا تُحسب", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.speak(B, ARABIC);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: B, error: null, networkVoice: false });
+    c.allowNetworkVoice(A);
+    c.declineNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(c.getSnapshot().owner).toBe(B);
+  });
+
+  it("الموافقةُ والرفضُ بلا سؤالٍ مفتوح لا يفعلان شيئًا — ولا يُسجَّل قرار", async () => {
+    const synth = installFakeSpeech();
+    const c = make();
+    c.allowNetworkVoice(A);
+    c.declineNetworkVoice(A);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(c.getSnapshot()).toBe(IDLE_STATE);
+    // وأثناء قراءةٍ بصوت الجهاز: «أصوات الجهاز فقط» لا تقطعها ولا تُسجَّل
+    c.speak(A, ARABIC);
+    await microtasks();
+    c.allowNetworkVoice(A);
+    c.declineNetworkVoice(A);
+    expect(synth.cancels).toBe(0);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(c.getSnapshot()).toEqual({ status: "speaking", owner: A, error: null, networkVoice: false });
+  });
+
+  /** ★ ★ تبدّلُ الأصوات */
+  it("صوتُ جهازٍ يظهر والسؤالُ مفتوح ⇒ بعد القرار يُقرأ به هو، أيًّا كان القرار — ولا علَم", () => {
+    for (const decide of ["allow", "decline"] as const) {
+      const synth = installFakeSpeech([ONLINE_AR]);
+      const c = make();
+      c.speak(A, ARABIC);
+      expect(c.getSnapshot().status).toBe("consent");
+      synth.loadVoices([ONLINE_AR, AR_EG]);
+      // القائمةُ تبدّلت والسؤالُ مفتوح: لا شيءَ يبدأ بلا ضغطة
+      expect(synth.spoken).toHaveLength(0);
+      if (decide === "allow") c.allowNetworkVoice(A);
+      else c.declineNetworkVoice(A);
+      expect(synth.spoken).toHaveLength(1);
+      expect(synth.last.voice).toBe(AR_EG);
+      expect(c.getSnapshot().networkVoice).toBe(false);
+      c.stop();
+    }
+  });
+
+  it("صوتُ الجهاز يغيب بين مقطعين والقرارُ لم يُتّخذ ⇒ تقف القراءةُ وتسأل؛ والموافقةُ تُكمل من المقطع نفسِه", async () => {
+    const synth = installFakeSpeech([AR_SA]);
+    const c = make();
+    c.speak(A, LONG);
+    await microtasks();
+    expect(synth.spoken).toHaveLength(1);
+    synth.voices = [ONLINE_AR];
+    synth.end(synth.last);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot()).toEqual({ status: "consent", owner: A, error: null, networkVoice: false });
+    expect(vi.getTimerCount()).toBe(0);
+
+    c.allowNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(2);
+    expect(synth.last.voice).toBe(ONLINE_AR);
+    // المقطعُ الثاني لا الأوّل: لا يُعاد ما سُمع
+    expect(synth.spoken[1]!.text).not.toBe(synth.spoken[0]!.text);
+    expect(c.getSnapshot().networkVoice).toBe(true);
+  });
+
+  it("وبالرفض: صوتُ الجهاز يغيب بين مقطعين ⇒ اعتذارٌ باختياره، ولا مقطعَ تالٍ يُسلَّم", async () => {
+    for (const later of [[ONLINE_AR], []]) {
+      const synth = installFakeSpeech([AR_SA]);
+      const c = make(true, "declined");
+      c.speak(A, LONG);
+      await microtasks();
+      synth.voices = later;
+      synth.end(synth.last);
+      expect(synth.spoken).toHaveLength(1);
+      expect(c.getSnapshot()).toEqual({ status: "error", owner: A, error: "device_only_ar", networkVoice: false });
+      expect(allDevice(synth)).toBe(true);
+    }
+  });
+
+  it("بعد الموافقة: الردُّ التالي يُقرأ بصوت الجهاز إن وُجد — الموافقةُ إذنٌ لا تفضيل", async () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.allowNetworkVoice(A);
+    await microtasks();
+    synth.end(synth.last);
+    synth.voices = [ONLINE_AR, AR_SA];
+    c.speak(B, ARABIC);
+    expect(synth.last.voice).toBe(AR_SA);
+    expect(c.getSnapshot().networkVoice).toBe(false);
+  });
+
+  /** ★ ★ الرجوعُ عن القرار */
+  it("سحبُ الموافقة أثناء قراءةٍ بصوت الشبكة ⇒ تسكت فورًا، وما بعدها بأصوات الجهاز وحدَها", async () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, LONG);
+    c.allowNetworkVoice(A);
+    await microtasks();
+    expect(c.getSnapshot().networkVoice).toBe(true);
+    c.declineNetworkVoice(A);
+    expect(synth.cancels).toBe(1);
+    expect(c.getNetworkVoiceConsent()).toBe("declined");
+    expect(c.getSnapshot()).toEqual({ status: "idle", owner: A, error: null, networkVoice: false });
+    // ونهايةُ العبارة الملغاة لا تُكمل المقطعَ التالي
+    synth.lateEnd(synth.last);
+    expect(synth.spoken).toHaveLength(1);
+
+    c.speak(A, ARABIC);
+    vi.advanceTimersByTime(TIMINGS.cancelSettleMs);
+    expect(synth.spoken).toHaveLength(1);
+    expect(c.getSnapshot().error).toBe("device_only_ar");
+  });
+
+  it("«تغيير الاختيار» بعد رفضٍ ⇒ يُسأل من جديد ولا يُفترض شيء؛ ثم الموافقةُ تقرأ", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make();
+    c.speak(A, ARABIC);
+    c.declineNetworkVoice(A);
+    expect(c.getSnapshot().error).toBe("device_only_ar");
+    c.reconsiderNetworkVoice(A, ARABIC);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(c.getSnapshot().status).toBe("consent");
+    c.allowNetworkVoice(A);
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(ONLINE_AR);
+  });
+
+  it("«تغيير الاختيار» لا يمحو موافقةً سبقت", () => {
+    installFakeSpeech([ONLINE_AR]);
+    const c = make(true, "granted");
+    c.reconsiderNetworkVoice(A, ARABIC);
+    expect(c.getNetworkVoiceConsent()).toBe("granted");
+  });
+
+  /** ★ سياسةُ المالك أعلى من السؤال: بـ`false` لا يُعرض صوتُ شبكةٍ ولا يُسأل عنه */
+  it("برفض أصوات الشبكة سياسةً: لا سؤالَ أبدًا، والموافقةُ لا تفتح بابًا", () => {
+    for (const voices of [[ONLINE_AR], [UNREPORTED_AR], []]) {
+      const synth = installFakeSpeech(voices);
+      const c = make(false);
+      const seen: string[] = [];
+      c.subscribe(() => seen.push(c.getSnapshot().status));
+      c.speak(A, ARABIC);
+      vi.advanceTimersByTime(TIMINGS.voicesWaitMs);
+      c.allowNetworkVoice(A);
+      expect(seen).not.toContain("consent");
+      expect(synth.spoken).toHaveLength(0);
+      expect(c.getSnapshot().error).toBe("no_voice_ar");
+      expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    }
+  });
+
+  it("موافقةٌ ابتدائيّة لا تتجاوز سياسةَ المالك", () => {
+    const synth = installFakeSpeech([ONLINE_AR]);
+    const c = make(false, "granted");
+    c.speak(A, ARABIC);
+    expect(synth.spoken).toHaveLength(0);
+    expect(c.getSnapshot().error).toBe("no_voice_ar");
+  });
+
+  /** ★ المُتحكِّمُ المشترك لا يوافق عن المستخدم أحد */
+  it("المُتحكِّمُ المشترك يبدأ «لم يُسأل»", () => {
+    expect(resetReadAloudForTests({ timings: TIMINGS }).getNetworkVoiceConsent()).toBe("undecided");
+    expect(getReadAloud().getNetworkVoiceConsent()).toBe("undecided");
+  });
+
+  it("مشتركٌ يبدأ قراءةً أخرى عند إعلان «بانتظار الموافقة»: الأخيرةُ وحدَها تمضي", () => {
+    const synth = installFakeSpeech([ONLINE_AR, EN_US]);
+    const c = make();
+    let moved = false;
+    c.subscribe(() => {
+      if (!moved && c.getSnapshot().status === "consent") {
+        moved = true;
+        c.speak(B, ENGLISH);
+      }
+    });
+    c.speak(A, ARABIC);
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(EN_US);
+    expect(c.getSnapshot().owner).toBe(B);
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
   });
 });

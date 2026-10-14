@@ -26,17 +26,23 @@ const { renderToString } = (await import("react-dom/server" as string)) as {
 };
 
 const FLAG = "NEXT_PUBLIC_YSD_BROWSER_VOICE";
+const LOCAL_FLAG = "NEXT_PUBLIC_YSD_LOCAL_VOICE";
 const ORIGINAL = process.env[FLAG];
+const ORIGINAL_LOCAL = process.env[LOCAL_FLAG];
 
 afterEach(() => {
   if (ORIGINAL === undefined) delete process.env[FLAG];
   else process.env[FLAG] = ORIGINAL;
+  if (ORIGINAL_LOCAL === undefined) delete process.env[LOCAL_FLAG];
+  else process.env[LOCAL_FLAG] = ORIGINAL_LOCAL;
   vi.resetModules();
 });
 
 async function load(flag: string | undefined) {
   if (flag === undefined) delete process.env[FLAG];
   else process.env[FLAG] = flag;
+  // ★ الصوتُ المحلّيّ يحجب «استمع»: فيُنزع صراحةً، لئلّا يقيس الملفُّ حالةً أخرى على جهازٍ يضبطه
+  delete process.env[LOCAL_FLAG];
   vi.resetModules();
   const { ReadAloudButton } = await import("@/components/browser-voice/read-aloud-button");
   const { I18nProvider } = await import("@/lib/i18n");
@@ -77,6 +83,20 @@ describe("v150 — وحداتُ الميزة تُحمَّل بلا نافذة", 
     expect(() => c.stop()).not.toThrow();
     // والمشتركُ بين الطلبات على الخادم لا يحمل إلا الخامل
     expect(getReadAloud().getSnapshot()).toBe(IDLE_STATE);
+    /**
+     * ★ ولا قرارَ موافقةٍ على الخادم: المشتركُ هناك واحدٌ لكلّ الطلبات.
+     *
+     * فلو سُجّل عليه قرارٌ لصار قرارَ كلّ مَن بعده. والقرارُ لا يتغيّر إلا من
+     * سؤالٍ مفتوح — ولا سؤالَ يُفتح بلا واجهة صوت.
+     */
+    expect(getReadAloud().getNetworkVoiceConsent()).toBe("undecided");
+    expect(() => {
+      c.allowNetworkVoice(owner);
+      c.declineNetworkVoice(owner);
+      c.reconsiderNetworkVoice(owner, "نصٌّ يُقرأ.", null);
+    }).not.toThrow();
+    expect(c.getNetworkVoiceConsent()).toBe("undecided");
+    expect(getReadAloud().getNetworkVoiceConsent()).toBe("undecided");
   });
 
   it("النصُّ والأصوات: دوالُّ محضة تعمل كما هي", async () => {
@@ -99,6 +119,10 @@ describe("v150 — الرسمُ على الخادم", () => {
     expect(ar).not.toContain("aria-disabled");
     expect(ar).not.toContain("aria-busy");
     expect(ar).not.toContain('role="alert"');
+    // ولا سؤالَ موافقةٍ يُرسم على الخادم: يظهر بعد ضغطةٍ في المتصفّح وحدَه
+    expect(ar).not.toContain("data-read-aloud-consent");
+    expect(ar).not.toContain("aria-expanded");
+    expect(ar).not.toContain("aria-controls");
     expect(html("A reply worth reading.", "en")).toContain("Listen");
   }, 20000);
 

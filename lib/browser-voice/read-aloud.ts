@@ -26,6 +26,15 @@
  *  `speak()` تُستدعى من معالج النقر وحدَه. لا تأثيرَ يستدعيها، ولا ردٌّ
  *  محفوظٌ ولا مُعادٌ توليدُه يُقرأ من تلقاء نفسه.
  *
+ *  ★ ولا نصَّ يُسلَّم لصوتٍ ليس من أصوات الجهاز إلا بموافقة
+ *
+ *  صوتٌ يذكر المتصفّحُ أنّه عبر الشبكة، أو لا يذكر عنه شيئًا، أو يختاره
+ *  المحرّكُ من قائمةٍ لا تُعرف: قد يُنقل معه نصُّ الرد إلى مزوّد الصوت في
+ *  المتصفّح. فقبل **كلّ** تسليمٍ يُنظر في الصوت المختار؛ فإن لم يكن من
+ *  أصوات الجهاز ولم يوافق المستخدم بعدُ، وقفت الجلسةُ على «بانتظار
+ *  الموافقة» ولم يُستدعَ `speak`. الموافقةُ والرفضُ ضغطتان منه، ويبقيان
+ *  في الذاكرة ما بقيت الصفحة — لا يُحفظان ولا يُفترضان.
+ *
  *  ★ ولا شيءَ على مستوى الوحدة
  *
  *  لا `window` ولا `speechSynthesis` يُلمسان عند التحميل: الوحدةُ تُحمَّل
@@ -36,12 +45,24 @@
 import { chunkSpeechText, countScripts, detectSpeechLanguage, type SpeechChunk, type SpeechLanguage } from "@/lib/browser-voice/speech-text";
 import { ALLOW_NETWORK_VOICES, DEFAULT_LANG_TAG, pickVoice } from "@/lib/browser-voice/voices";
 
-export type ReadAloudStatus = "idle" | "loading" | "speaking" | "error";
+/** `consent`: الجلسةُ واقفةٌ تنتظر قرارَ المستخدم في صوتٍ ليس من أصوات الجهاز — ولم يُسلَّم شيء */
+export type ReadAloudStatus = "idle" | "consent" | "loading" | "speaking" | "error";
+
+/**
+ * قرارُ المستخدم في الأصوات التي ليست من أصوات الجهاز — للصفحة المفتوحة كلِّها.
+ *
+ * `undecided`: لم يُسأل بعد، فيُسأل قبل أوّل تسليم. `granted`: وافق.
+ * `declined`: اختار أصواتَ الجهاز وحدَها.
+ */
+export type NetworkVoiceConsent = "undecided" | "granted" | "declined";
 
 export type ReadAloudError =
   | "unsupported"
   | "no_voice_ar"
   | "no_voice_en"
+  /** اختار المستخدمُ أصواتَ الجهاز وحدَها، وليس بينها ما ينطق لغةَ الرد */
+  | "device_only_ar"
+  | "device_only_en"
   | "blocked"
   | "network"
   | "failed";
@@ -51,7 +72,7 @@ export interface ReadAloudState {
   /** صاحبُ الجلسة الجارية أو آخرِ جلسة — `null` قبل أيّ قراءة */
   readonly owner: symbol | null;
   readonly error: ReadAloudError | null;
-  /** أذكر المتصفّحُ أنّ الصوت المختار ليس على الجهاز؟ */
+  /** أيُقرأ الآن بصوتٍ ليس من أصوات الجهاز (عبر الشبكة أو لا يُعرف) — بعد موافقة؟ */
   readonly networkVoice: boolean;
 }
 
@@ -91,6 +112,11 @@ export const DEFAULT_TIMINGS: ReadAloudTimings = Object.freeze({
 export interface ReadAloudOptions {
   timings?: Partial<ReadAloudTimings>;
   allowNetworkVoices?: boolean;
+  /**
+   * قرارٌ ابتدائيّ — **للاختبار وحدَه**. المُتحكِّمُ المشترك يُنشأ بلا خيارات،
+   * فيبدأ «لم يُسأل» ولا يوافق عن المستخدم أحد.
+   */
+  networkVoiceConsent?: NetworkVoiceConsent;
 }
 
 interface SpeechEnv {
@@ -182,6 +208,8 @@ export class ReadAloudController {
    * اعتذارٌ معتاد) يجعلان القراءةَ تعبر إلى محادثةٍ لم يضغط فيها أحد.
    */
   private scope: string | null = null;
+  /** اللغةُ كما حُسمت من النصّ — منها يُعاد الاختيارُ بعد كلّ قرار */
+  private detected: SpeechLanguage = "ar";
   private language: SpeechLanguage = "ar";
   /** ألِلنصّ حروفٌ تحسم لغتَه؟ — «2 + 2 = 4» لا لغةَ له، فيُقرأ بما حضر من صوت */
   private languageCertain = true;
@@ -198,10 +226,13 @@ export class ReadAloudController {
   private warmed = false;
   /** قائمةٌ بقيت فارغةً بعد انتظار: لا يُنتظر لها ثانيةً في هذه الصفحة */
   private voiceListEmpty = false;
+  /** قرارُ المستخدم في الأصوات التي ليست من أصوات الجهاز — في الذاكرة، ما بقيت الصفحة */
+  private consent: NetworkVoiceConsent;
 
   constructor(options: ReadAloudOptions = {}) {
     this.timings = { ...DEFAULT_TIMINGS, ...options.timings };
     this.allowNetworkVoices = options.allowNetworkVoices ?? ALLOW_NETWORK_VOICES;
+    this.consent = options.networkVoiceConsent ?? "undecided";
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -215,6 +246,11 @@ export class ReadAloudController {
 
   isSupported(): boolean {
     return lookupEnv() !== null;
+  }
+
+  /** القرارُ الحاضر — للعرض والاختبار؛ لا يُغيَّر إلا بضغطةٍ من المستخدم */
+  getNetworkVoiceConsent(): NetworkVoiceConsent {
+    return this.consent;
   }
 
   /**
@@ -262,7 +298,8 @@ export class ReadAloudController {
     this.index = 0;
     this.text = speechText;
     this.scope = scope;
-    this.language = detectSpeechLanguage(speechText);
+    this.detected = detectSpeechLanguage(speechText);
+    this.language = this.detected;
     const scripts = countScripts(speechText);
     // والأرقامُ العربيّة-الهنديّة تحسم العربيّة: صوتٌ إنجليزيّ لا ينطق ما كُتب بها
     this.languageCertain = scripts.arabic !== scripts.latin || ARABIC_INDIC_DIGIT.test(speechText);
@@ -285,13 +322,142 @@ export class ReadAloudController {
     this.begin(session);
   }
 
-  /** إيقافٌ فوريّ — من الزرّ، ومن مغادرة الصفحة */
+  /**
+   * ★ موافقةٌ صريحة — من ضغطة «أوافق» وحدَها.
+   *
+   * تُسجَّل للصفحة المفتوحة، وتُستأنف الجلسةُ الواقفة من مقطعها في الضغطة
+   * نفسِها (فهي الإيماءةُ التي يشترطها المتصفّح للنطق).
+   */
+  allowNetworkVoice(owner: symbol): void {
+    if (this.state.status !== "consent" || this.state.owner !== owner) return;
+    this.consent = "granted";
+    this.resume();
+  }
+
+  /**
+   * ★ رفضٌ صريح: أصواتُ الجهاز وحدَها — من ضغطةٍ وحدَها.
+   *
+   * والجلسةُ واقفة: تُستأنف بأصوات الجهاز، فإن لم يكن بينها ما ينطق لغةَ
+   * الرد اعتُذر بذلك.
+   *
+   * وبعد موافقةٍ سبقت هو **سحبٌ لها**: أثناء قراءةٍ بصوتٍ ليس من أصوات الجهاز
+   * تسكت القراءةُ فورًا؛ وبعد انتهاء قراءةِ صاحبها يُسجَّل للقادم بلا نداءٍ
+   * آخر للمحرّك — فلا يلزم لسحب الموافقة أن يُسلَّم ردٌّ آخر. وقراءةٌ جاريةٌ
+   * بصوت الجهاز لا يقطعها ولا يُسجَّل معها شيء: لا زرَّ له هناك.
+   */
+  declineNetworkVoice(owner: symbol): void {
+    const state = this.state;
+    if (state.owner !== owner) return;
+    if (state.status === "consent") {
+      this.consent = "declined";
+      this.resume();
+      return;
+    }
+    if (this.consent !== "granted") return;
+    const reading = state.status === "loading" || state.status === "speaking";
+    if (reading && state.networkVoice) {
+      this.consent = "declined";
+      this.stop();
+    } else if (state.status === "idle") {
+      this.consent = "declined";
+    }
+  }
+
+  /**
+   * ★ يُعاد السؤال — من ضغطة «تغيير الاختيار» بعد رفضٍ لم يُبقِ ما يُقرأ به.
+   *
+   * لا يوافق عن المستخدم: يمحو الرفضَ ويبدأ من جديد، فيُسأل قبل أيّ تسليم.
+   */
+  reconsiderNetworkVoice(owner: symbol, speechText: string, scope: string | null = null): void {
+    if (this.consent === "declined") this.consent = "undecided";
+    this.speak(owner, speechText, scope);
+  }
+
+  /** إيقافٌ فوريّ — من الزرّ، ومن مغادرة الصفحة. وهو إلغاءُ السؤال أيضًا: لا يُعدّ رفضًا ولا موافقة */
   stop(): void {
-    const active = this.state.status === "loading" || this.state.status === "speaking";
+    const status = this.state.status;
+    const active = status === "loading" || status === "speaking";
     this.invalidate();
+    if (status === "consent") {
+      // لم يُسمع شيء: يعود الزرُّ «استمع»، والقرارُ على حاله
+      this.set(IDLE_STATE);
+      return;
+    }
     if (!active) return;
     silence(lookupEnv());
     this.set({ status: "idle", owner: this.state.owner, error: null, networkVoice: false });
+  }
+
+  /** الجلسةُ الواقفة على السؤال تمضي من مقطعها بعد القرار */
+  private resume(): void {
+    const session = this.session;
+    const owner = this.state.owner;
+    this.set({ status: "loading", owner, error: null, networkVoice: false });
+    // مشتركٌ أوقف أو بدأ جلسةً أخرى عند ذلك الإعلان: `speakChunk` يُهمل جلسةً لم تعد الحاضرة
+    this.speakChunk(session, this.index);
+  }
+
+  /** الجلسةُ تقف على السؤال قبل تسليم هذا المقطع — ولا شيءَ في المحرّك */
+  private askConsent(index: number): void {
+    this.index = index;
+    this.clearStartTimer();
+    this.utterance = null;
+    this.set({ status: "consent", owner: this.state.owner, error: null, networkVoice: false });
+  }
+
+  /** أيُختار الآن صوتٌ ليس من أصوات الجهاز؟ — السياسةُ أوّلًا، ثم ما لم يرفضه المستخدم */
+  private mayPickNetwork(): boolean {
+    return this.allowNetworkVoices && this.consent !== "declined";
+  }
+
+  /**
+   * صوتُ لغة الرد — ولغتُه.
+   *
+   * نصٌّ بلا حروفٍ تحسم لغتَه (أرقامٌ ورموز) يُقرأ بما حضر من صوت: فإن لم
+   * يكن للّغة المفترضة صوت، أو لم يكن صوتُها من أصوات الجهاز وللأخرى صوتٌ
+   * منها، أُخذت الأخرى — لا يُنقل «2 + 2 = 4» إلى مزوّدٍ وصوتُ الجهاز يقرؤه.
+   */
+  private pickMain(
+    voices: SpeechSynthesisVoice[],
+    policy: { allowNetwork: boolean },
+  ): { main: ReturnType<typeof pickVoice<SpeechSynthesisVoice>>; language: SpeechLanguage } {
+    let language = this.detected;
+    let main = pickVoice(voices, language, policy);
+    if (voices.length > 0 && !this.languageCertain) {
+      const other: SpeechLanguage = language === "ar" ? "en" : "ar";
+      const alternative = pickVoice(voices, other, policy);
+      if (alternative && (main === null || (main.network && !alternative.network))) {
+        language = other;
+        main = alternative;
+      }
+    }
+    return { main, language };
+  }
+
+  /**
+   * لا صوتَ للمقطع الأوّل والأصواتُ حاضرة: أهو غيابُ الصوت، أم أثرُ الرفض؟
+   *
+   * يُنظر فيما كان يُختار لولا الرفض — **ولغتِه**: نصٌّ بلا حروفٍ تحسم لغتَه
+   * («2 + 2 = 4») يُقرأ بصوت أيٍّ من اللغتين. فلو سُئل عن لغته المفترضة وحدَها
+   * لقيل «لا صوتَ عربيًّا في متصفّحك» والمانعُ اختيارُ المستخدم لا غيابُ
+   * الصوت، ولَما عُرض عليه أن يغيّره.
+   */
+  private missingMain(voices: SpeechSynthesisVoice[]): ReadAloudError {
+    if (this.allowNetworkVoices && this.consent === "declined") {
+      const open = this.pickMain(voices, { allowNetwork: true });
+      if (open.main !== null) return open.language === "ar" ? "device_only_ar" : "device_only_en";
+    }
+    return this.language === "ar" ? "no_voice_ar" : "no_voice_en";
+  }
+
+  /** لا صوتَ يُقرأ به مقطعٌ: أهو غيابُ الصوت، أم أثرُ اختيار «أصوات الجهاز فقط»؟ */
+  private missingVoice(voices: SpeechSynthesisVoice[], language: SpeechLanguage): ReadAloudError {
+    if (this.allowNetworkVoices && this.consent === "declined") {
+      // قائمةٌ لا تُعرف، أو فيها صوتٌ للّغة ليس من أصوات الجهاز: الرفضُ هو ما منع القراءة
+      const refused = voices.length === 0 || pickVoice(voices, language, { allowNetwork: true }) !== null;
+      if (refused) return language === "ar" ? "device_only_ar" : "device_only_en";
+    }
+    return language === "ar" ? "no_voice_ar" : "no_voice_en";
   }
 
   /**
@@ -302,11 +468,16 @@ export class ReadAloudController {
    * لحظةً ليتبنّاها. وإن لم يتبنَّها أحد — تنقّلٌ، أو إعادةُ توليد، أو
    * حذف — أُوقفت.
    *
+   * والجلسةُ الواقفةُ على سؤال الموافقة مثلُ الجارية: السؤالُ الذي فتحه
+   * المستخدمُ لا يختفي من تلقاء نفسه بإعادة التركيب تلك. يتبنّاه الزرُّ
+   * البديل للردّ نفسِه في المحادثة نفسِها، وإلا زال بلا قرار.
+   *
    * @param hadFocus أكان التركيزُ على الزرّ حين غادر؟
    */
   release(owner: symbol, hadFocus = false): void {
     if (this.state.owner !== owner) return;
-    const active = this.state.status === "loading" || this.state.status === "speaking";
+    const status = this.state.status;
+    const active = status === "loading" || status === "speaking" || status === "consent";
     if (!active) {
       this.invalidate();
       this.set(IDLE_STATE);
@@ -425,39 +596,49 @@ export class ReadAloudController {
       return;
     }
     const voices = readVoices(env);
-    const policy = { allowNetwork: this.allowNetworkVoices };
-    let main = pickVoice(voices, this.language, policy);
-    if (index === 0 && voices.length > 0 && !this.languageCertain) {
-      /**
-       * نصٌّ بلا حروفٍ تحسم لغتَه (أرقامٌ ورموز) يُقرأ بما حضر من صوت.
-       *
-       * فإن لم يكن للّغة المفترضة صوت، أو كان صوتُها عبر الشبكة وللأخرى صوتٌ
-       * على الجهاز، أُخذت الأخرى: لا يُنقل «2 + 2 = 4» إلى مزوّدٍ وصوتُ الجهاز
-       * يقرؤه.
-       */
-      const other: SpeechLanguage = this.language === "ar" ? "en" : "ar";
-      const alternative = pickVoice(voices, other, policy);
-      if (alternative && (main === null || (main.network && !alternative.network))) {
-        this.language = other;
-        main = alternative;
+    const policy = { allowNetwork: this.mayPickNetwork() };
+    let main: ReturnType<typeof pickVoice<SpeechSynthesisVoice>>;
+    if (index === 0) {
+      // من اللغة المحسومة في كلّ مرّة: فالمقطعُ الأوّل يُعاد النظرُ فيه بعد الموافقة والرفض
+      const picked = this.pickMain(voices, policy);
+      this.language = picked.language;
+      main = picked.main;
+      if (main === null && voices.length > 0) {
+        // أصواتٌ حاضرة وليس فيها ما ينطق لغةَ الرد: اعتذارٌ بسببه، لا هذيان
+        this.fail(this.missingMain(voices));
+        return;
       }
-    }
-    if (index === 0 && main === null && voices.length > 0) {
-      // أصواتٌ حاضرة وليس فيها ما ينطق لغةَ الرد: اعتذارٌ بسببه، لا هذيان
-      this.fail(this.language === "ar" ? "no_voice_ar" : "no_voice_en");
-      return;
+    } else {
+      main = pickVoice(voices, this.language, policy);
     }
     // والنصُّ غيرُ المحسوم يُقرأ كلُّه بالصوت الذي اختير له، لا بصوتٍ لكلّ مقطع
-    const choice = this.languageCertain ? (pickVoice(voices, chunk.lang, policy) ?? main) : main;
-    if (choice === null && !this.allowNetworkVoices) {
+    const choiceFor = (part: SpeechChunk) => (this.languageCertain ? (pickVoice(voices, part.lang, policy) ?? main) : main);
+    const choice = choiceFor(chunk);
+    if (choice === null && !policy.allowNetwork) {
       /**
-       * برفض أصوات الشبكة لا يُترك الاختيارُ للمحرّك — في أيّ مقطع.
+       * بأصوات الجهاز وحدَها لا يُترك الاختيارُ للمحرّك — في أيّ مقطع.
        *
        * صوتٌ يختاره هو (قائمةٌ لا تُعرف، أو تبدّلت والقراءةُ جارية) لا يُعلم
-       * أهو على الجهاز. فتسليمُه النصَّ ينقض السياسة.
+       * أهو من أصوات الجهاز. فتسليمُه النصَّ ينقض السياسةَ أو اختيارَ المستخدم.
        */
-      this.fail(chunk.lang === "ar" ? "no_voice_ar" : "no_voice_en");
+      this.fail(this.missingVoice(voices, chunk.lang));
       return;
+    }
+    if (policy.allowNetwork && this.consent !== "granted") {
+      /**
+       * ★ ★ ★ السؤالُ قبل التسليم — وهذا موضعُه الوحيد.
+       *
+       * `null` صوتٌ يختاره المحرّك (لا تُعرف القائمة)، و`network` صوتٌ لم يذكر
+       * المتصفّحُ أنّه من أصوات الجهاز. وعند المقطع الأوّل يُنظر في المقاطع
+       * كلِّها: فيُسأل المستخدمُ قبل أن يُسمع شيء، لا في وسط الرد. والنظرُ عند
+       * كلّ مقطعٍ بعده يحرس قائمةً تبدّلت والقراءةُ جارية.
+       */
+      const offDevice = (picked: typeof choice) => picked === null || picked.network;
+      const ahead = index === 0 && this.chunks.some((part, at) => at > 0 && offDevice(choiceFor(part)));
+      if (offDevice(choice) || ahead) {
+        this.askConsent(index);
+        return;
+      }
     }
 
     let utterance: SpeechSynthesisUtterance;
@@ -495,7 +676,8 @@ export class ReadAloudController {
 
     this.index = index;
     this.utterance = utterance;
-    if (choice?.network && !this.state.networkVoice) this.set({ ...this.state, networkVoice: true });
+    // بعد الموافقة: صوتٌ لم يُذكر أنّه من أصوات الجهاز، أو صوتٌ يختاره المحرّك — يُعلَّم ما دامت القراءة
+    if ((choice === null || choice.network) && !this.state.networkVoice) this.set({ ...this.state, networkVoice: true });
     // مشتركٌ أوقف أو بدأ جلسةً أخرى عند ذلك الإعلان: لا تُسلَّم عبارةٌ لجلسةٍ انتهت
     if (!live()) return;
 

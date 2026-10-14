@@ -25,7 +25,13 @@ import {
   isSupportedSpeechLanguage,
   toSpeechText,
 } from "@/lib/browser-voice/speech-text";
-import { ALLOW_NETWORK_VOICES, DEFAULT_LANG_TAG, normalizeLangTag, pickVoice } from "@/lib/browser-voice/voices";
+import {
+  ALLOW_NETWORK_VOICES,
+  DEFAULT_LANG_TAG,
+  isReportedDeviceVoice,
+  normalizeLangTag,
+  pickVoice,
+} from "@/lib/browser-voice/voices";
 import { AR_EG, AR_SA, EN_GB, EN_US, voice } from "./helpers/fake-speech";
 
 describe("v150 — لغةُ النصّ", () => {
@@ -803,6 +809,36 @@ describe("v150 — اختيارُ الصوت", () => {
     expect(pickVoice([online], "ar", { allowNetwork: false })).toBeNull();
     expect(pickVoice([online, AR_EG], "ar", { allowNetwork: false })?.voice).toBe(AR_EG);
     expect(pickVoice([online], "ar", { allowNetwork: true })?.voice).toBe(online);
+  });
+
+  /**
+   * ★ المجهولُ يُعامل بالأحوط: `true` وحدَها تأكيدٌ أنّ الصوت من أصوات الجهاز.
+   *
+   * كان غيابُ `localService` يُعدّ «على الجهاز»: فصوتٌ لا يُعرف مصدرُه يُقرأ به
+   * بلا سؤالٍ ولا ملاحظة. والآن يُؤخَّر في الترتيب، ويُعلَّم، ويُستبعد حين
+   * تُطلب أصواتُ الجهاز وحدَها.
+   */
+  it("صوتٌ لا يذكر المتصفّحُ مصدرَه ليس من أصوات الجهاز: يُؤخَّر، ويُعلَّم، ويُستبعد بالرفض", () => {
+    const unreported = voice("Unreported", "ar-SA", { unreported: true });
+    expect("localService" in unreported).toBe(false);
+    expect(isReportedDeviceVoice(unreported)).toBe(false);
+    expect(isReportedDeviceVoice(AR_EG)).toBe(true);
+    expect(isReportedDeviceVoice(voice("Online", "ar-SA", { network: true }))).toBe(false);
+    // يُؤخَّر عن صوت الجهاز ولو كانت لهجتُه هي المفضَّلة
+    expect(pickVoice([unreported, AR_EG], "ar")?.voice).toBe(AR_EG);
+    expect(pickVoice([unreported, AR_EG], "ar")?.network).toBe(false);
+    // وحدَه: يُختار ويُعلَّم أنّه ليس من أصوات الجهاز
+    expect(pickVoice([unreported], "ar", { allowNetwork: true })?.voice).toBe(unreported);
+    expect(pickVoice([unreported], "ar", { allowNetwork: true })?.network).toBe(true);
+    // وبأصوات الجهاز وحدَها: كأنّه غائب
+    expect(pickVoice([unreported], "ar", { allowNetwork: false })).toBeNull();
+    // وقيمةٌ ليست منطقيّة ليست تأكيدًا
+    for (const odd of [null, "true", 1, 0, undefined]) {
+      const strange = { name: "odd", lang: "ar-SA", localService: odd } as unknown as ReturnType<typeof voice>;
+      expect(isReportedDeviceVoice(strange), String(odd)).toBe(false);
+      expect(pickVoice([strange], "ar", { allowNetwork: false }), String(odd)).toBeNull();
+      expect(pickVoice([strange], "ar", { allowNetwork: true })?.network, String(odd)).toBe(true);
+    }
   });
 
   it("السياسةُ الافتراضيّة معلَنة، والافتراضُ بلا خيارٍ يتبعها", () => {

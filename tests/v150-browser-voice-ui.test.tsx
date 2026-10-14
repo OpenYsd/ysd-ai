@@ -122,6 +122,14 @@ const button = (index: number) => {
   return found;
 };
 const label = (index: number) => button(index).textContent?.trim();
+/** سؤالُ الموافقة المعروض — واحدٌ على الأكثر في الصفحة */
+const consent = () => document.querySelector<HTMLElement>("[data-read-aloud-consent]");
+/** زرُّ قرارٍ باسمه: allow · decline · reconsider · withdraw */
+const choice = (name: string) => {
+  const found = document.querySelector<HTMLButtonElement>(`button[data-read-aloud-consent-action="${name}"]`);
+  if (!found) throw new Error(`no consent action "${name}"`);
+  return found;
+};
 const phase = (index: number) => button(index).getAttribute("data-read-aloud-state");
 const click = async (el: Element) => {
   await act(async () => {
@@ -507,16 +515,23 @@ describe("v150 — ما لا يتوفّر يُقال", () => {
     expect(screen.getByRole("alert").textContent).toContain("The browser blocked audio playback.");
   });
 
-  /** ★ لا ادّعاءَ بمعالجةٍ على الجهاز: صوتُ الشبكة يُنبَّه إليه ما دامت القراءة */
-  it("صوتُ شبكة: ملاحظةٌ تظهر أثناء القراءة وتزول بإيقافها؛ وصوتُ الجهاز بلا ملاحظة", async () => {
+  /** ★ لا ادّعاءَ بمعالجةٍ على الجهاز: صوتُ الشبكة يُسأل عنه أوّلًا، ثم يُنبَّه إليه ما دامت القراءة */
+  it("صوتُ شبكة بعد الموافقة: ملاحظةٌ تظهر أثناء القراءة وتزول بإيقافها؛ وصوتُ الجهاز بلا ملاحظة", async () => {
     synth.voices = [voice("Online Saudi", "ar-SA", { network: true })];
     render(view());
     await settle();
     expect(document.querySelector("[data-read-aloud-note]")).toBeNull();
     await click(button(0));
     await settle();
+    // السؤالُ أوّلًا: لا ملاحظةَ ولا قراءة قبل القرار
+    expect(consent()).not.toBeNull();
+    expect(document.querySelector("[data-read-aloud-note]")).toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+    await click(choice("allow"));
+    await settle();
     const note = document.querySelector("[data-read-aloud-note]");
     expect(note?.textContent).toContain("عبر الإنترنت");
+    expect(note?.textContent).toContain("مزوّد الصوت في متصفّحك");
     // ★ مربوطةٌ بالزرّ: القارئُ الآليّ يقرؤها مع اسمه الجديد «إيقاف القراءة»
     expect(note?.getAttribute("role")).toBe("note");
     expect(note?.id).toBeTruthy();
@@ -918,8 +933,19 @@ describe("v150 — إتاحةُ الوصول والاتّجاهُ والشاشا
     await settle();
     await click(button(0));
     await settle();
+    // السؤالُ وأزرارُه حاضرةٌ الآن: تُقاس معها
+    const asked = consent();
+    expect(asked).not.toBeNull();
+    const asking = [asked!, ...asked!.querySelectorAll<HTMLElement>("*")];
+    expect(asking.length).toBeGreaterThan(3);
+    for (const n of asking) expect(n.getAttribute("class") ?? "").not.toMatch(directional);
+    await click(choice("allow"));
+    await settle();
     const note = document.querySelector("[data-read-aloud-note]");
     expect(note).not.toBeNull();
+    const withdraw = choice("withdraw");
+    expect(withdraw.className).not.toMatch(directional);
+    expect(withdraw.parentElement!.className).not.toMatch(directional);
     await act(async () => {
       synth.fail(synth.last, "synthesis-failed");
     });
@@ -935,6 +961,13 @@ describe("v150 — إتاحةُ الوصول والاتّجاهُ والشاشا
     const row = button(1).parentElement!;
     expect(row.className).toBe("flex flex-wrap gap-1 mt-2");
     await click(button(1));
+    await settle();
+    // السؤالُ سطرٌ كاملٌ بعد الأزرار، في الصفّ نفسِه
+    const asked = consent()!;
+    expect(asked.className).toContain("basis-full");
+    expect(asked.className).toContain("order-last");
+    expect(asked.parentElement).toBe(row);
+    await click(choice("allow"));
     await settle();
     const note = document.querySelector("[data-read-aloud-note]")!;
     expect(note.className).toContain("basis-full");
@@ -1056,6 +1089,585 @@ describe("v150 — الخادمُ والمتصفّحُ يتّفقان، والو
   });
 });
 
+/**
+ * ══════════════════════════════════════════════════════════════════
+ *  ★ ★ ★ الموافقةُ في الواجهة: سؤالٌ قبل أيّ صوتٍ ليس من أصوات الجهاز
+ *
+ *  المقيسُ هنا ما يراه المستخدمُ ويضغطه، على المحادثة الحقيقيّة: لا عبارةَ
+ *  تُسلَّم بين ضغطة «استمع» وضغطة «أوافق»؛ والرفضُ والإلغاءُ لا يُسلّمان
+ *  شيئًا؛ والتركيزُ يذهب إلى الرفض لا الموافقة ويعود إلى الزرّ.
+ * ══════════════════════════════════════════════════════════════════
+ */
+describe("v150 — الموافقةُ في الواجهة", () => {
+  const ONLINE_AR = voice("Online Saudi", "ar-SA", { network: true });
+  const UNREPORTED_AR = voice("Unreported Arabic", "ar-SA", { unreported: true });
+  const decided = () => getReadAloud().getNetworkVoiceConsent();
+
+  it.each([
+    ["صوتٌ يذكر المتصفّحُ أنّه عبر الشبكة", [ONLINE_AR], 0],
+    ["صوتٌ لا يذكر المتصفّحُ عنه شيئًا", [UNREPORTED_AR], 0],
+    ["قائمةٌ لا تُعرف", [], TIMINGS.voicesWaitMs * 3],
+  ] as const)("%s ⇒ سؤالٌ تحت الزرّ، والاسمُ «استمع»، ولا عبارةَ قبل «أوافق»", async (_name, voices, delay) => {
+    synth.voices = [...voices];
+    render(view());
+    await settle();
+    expect(consent()).toBeNull();
+    await click(button(0));
+    if (delay) await wait(delay);
+    await settle();
+
+    const asked = consent()!;
+    expect(asked).not.toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+    expect(phase(0)).toBe("consent");
+    expect(label(0)).toBe("استمع");
+    expect(decided()).toBe("undecided");
+    // سؤالٌ واحد، تحت الرد الذي ضُغط — لا تحت غيره
+    expect(document.querySelectorAll("[data-read-aloud-consent]")).toHaveLength(1);
+    expect(asked.parentElement).toBe(button(0).parentElement);
+    expect(phase(1)).toBe("idle");
+    // والوقتُ لا يوافق: لا شيءَ يبدأ ما لم يُضغط
+    await wait(TIMINGS.startTimeoutMs / 2);
+    expect(synth.spoken).toHaveLength(0);
+    expect(consent()).not.toBeNull();
+
+    await click(choice("allow"));
+    // في الضغطة نفسِها — فهي الإيماءةُ التي يشترطها المتصفّح للنطق
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.text).toBe(FIRST);
+    await settle();
+    expect(consent()).toBeNull();
+    expect(decided()).toBe("granted");
+    expect(label(0)).toBe("إيقاف القراءة");
+    expect(document.querySelector("[data-read-aloud-note]")).not.toBeNull();
+  });
+
+  it("السؤالُ يقول إلى مَن قد يذهب النصّ وإلى مَن لا يذهب — بلغة الواجهة", async () => {
+    synth.voices = [ONLINE_AR];
+    const mounted = render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    const ar = consent()!.textContent!;
+    expect(ar).toContain("مزوّد الصوت في متصفّحك");
+    expect(ar).toContain("لا إلى خوادم YSD");
+    expect(ar).toContain("عبر الإنترنت");
+    expect(ar).toContain("صوتًا يلزم لقراءة هذا الرد");
+    expect(ar).toContain("على كلّ صوتٍ كهذا");
+    expect(ar).toContain("في أيّ محادثةٍ تفتحها");
+    expect(choice("decline").textContent).toBe("أصوات الجهاز فقط");
+    expect(choice("allow").textContent).toBe("أوافق");
+    mounted.unmount();
+    // السؤالُ المفتوح يُمهَل للتبنّي بعد الفكّ: تُنتظر المهلةُ ليزول، فلا يرثه العرضُ التالي
+    await wait(TIMINGS.adoptGraceMs * 4);
+
+    render(view({ locale: "en" }));
+    await settle();
+    await click(button(0));
+    await settle();
+    const en = consent()!.textContent!;
+    expect(en).toContain("your browser's voice provider");
+    expect(en).toContain("not to YSD servers");
+    expect(en).toContain("a voice needed for this reply");
+    expect(en).toContain("every such voice");
+    expect(en).toContain("in this tab, in any conversation you open");
+    expect(choice("decline").textContent).toBe("Device voices only");
+    expect(choice("allow").textContent).toBe("I agree");
+    // ولا ادّعاءَ بأنّ شيئًا لا يغادر الجهاز
+    expect(`${ar} ${en}`).not.toMatch(/never leaves|لا يغادر|stays on/i);
+  });
+
+  it("السؤالُ مجموعةٌ مسمّاةٌ بنصّها، مربوطةٌ بالزرّ، بلا منطقةٍ حيّة؛ والرفضُ قبل الموافقة", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    const liveBefore = document.querySelectorAll("[aria-live]").length;
+    expect(button(0).getAttribute("aria-expanded")).toBeNull();
+    expect(button(0).getAttribute("aria-controls")).toBeNull();
+    await click(button(0));
+    await settle();
+
+    const asked = consent()!;
+    expect(asked.getAttribute("role")).toBe("group");
+    const labelledBy = asked.getAttribute("aria-labelledby")!;
+    expect(document.getElementById(labelledBy)?.textContent).toContain("YSD");
+    expect(button(0).getAttribute("aria-expanded")).toBe("true");
+    expect(button(0).getAttribute("aria-controls")).toBe(asked.id);
+    expect(asked.id).toBeTruthy();
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(liveBefore);
+    expect(asked.querySelector("[aria-live], [role='alert'], [role='status']")).toBeNull();
+
+    // زرّان حقيقيّان باسمَيهما، والرفضُ أوّلُهما في الترتيب
+    const actions = [...asked.querySelectorAll("button")];
+    expect(actions.map((b) => b.getAttribute("data-read-aloud-consent-action"))).toEqual(["decline", "allow"]);
+    for (const b of actions) {
+      expect(b.getAttribute("type")).toBe("button");
+      expect(b.textContent?.trim().length).toBeGreaterThan(0);
+      expect(b.getAttribute("aria-label")).toBeNull();
+      expect(b.getAttribute("tabindex")).toBeNull();
+      // ليسا «زرَّ استماع»: لا يُعدّان في أزرار الردود
+      expect(b.hasAttribute("data-read-aloud")).toBe(false);
+    }
+    expect(buttons()).toHaveLength(2);
+
+    await click(choice("allow"));
+    await settle();
+    expect(button(0).getAttribute("aria-expanded")).toBeNull();
+    expect(button(0).getAttribute("aria-controls")).toBeNull();
+  });
+
+  /** ★ ★ ★ الرفض */
+  it("«أصوات الجهاز فقط» ولا صوتَ جهازٍ للّغة ⇒ لا عبارة، واعتذارٌ بسببه، و«تغيير الاختيار» يسأل من جديد", async () => {
+    synth.voices = [EN_US, ONLINE_AR];
+    render(view());
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    // ضغطةُ لوحة المفاتيح تترك التركيزَ على الزرّ المضغوط: منه يعود إلى «استمع»، لا إلى جسم الصفحة
+    choice("decline").focus();
+    await click(choice("decline"));
+    await settle();
+    expect(document.activeElement).toBe(button(0));
+
+    expect(synth.spoken).toHaveLength(0);
+    expect(decided()).toBe("declined");
+    expect(consent()).toBeNull();
+    expect(label(0)).toBe("استمع");
+    expect(phase(0)).toBe("error");
+    const alert = screen.getByRole("alert");
+    expect(alert.getAttribute("data-read-aloud-error")).toBe("device_only_ar");
+    expect(alert.textContent).toContain("اخترتَ أصواتَ الجهاز فقط");
+    // لا يُقال «لا صوتَ عربيًّا في متصفّحك»: فيه صوتٌ رُفض
+    expect(alert.textContent).not.toContain("لا يتوفّر في متصفّحك");
+
+    // ردٌّ آخر: لا يُسأل ثانيةً، ولا يُقرأ
+    await click(button(1));
+    await settle();
+    expect(consent()).toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+    expect(phase(1)).toBe("error");
+
+    // وله أن يغيّر اختيارَه: يُسأل من جديد، ولا يُفترض شيء — والتركيزُ يذهب إلى السؤال
+    expect(choice("reconsider").textContent).toBe("تغيير الاختيار");
+    choice("reconsider").focus();
+    await click(choice("reconsider"));
+    await settle();
+    expect(decided()).toBe("undecided");
+    expect(consent()).not.toBeNull();
+    expect(document.activeElement).toBe(consent());
+    expect(phase(1)).toBe("consent");
+    expect(synth.spoken).toHaveLength(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await click(choice("allow"));
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(ONLINE_AR);
+  });
+
+  it("«أصوات الجهاز فقط» وصوتُ الجهاز حاضرٌ للّغة ⇒ يُقرأ به، بلا ملاحظة", async () => {
+    synth.voices = [];
+    render(view());
+    await settle();
+    await click(button(0));
+    await wait(TIMINGS.voicesWaitMs * 3);
+    await settle();
+    expect(consent()).not.toBeNull();
+    // الأصواتُ وصلت والسؤالُ مفتوح: لا شيءَ يبدأ بلا ضغطة
+    await act(async () => {
+      synth.loadVoices([ONLINE_AR, AR_SA]);
+    });
+    expect(synth.spoken).toHaveLength(0);
+    await click(choice("decline"));
+    await settle();
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(AR_SA);
+    expect(label(0)).toBe("إيقاف القراءة");
+    expect(document.querySelector("[data-read-aloud-note]")).toBeNull();
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+  });
+
+  /** ★ ★ الإلغاءُ ليس قرارًا */
+  it("ضغطةٌ ثانية على «استمع» تُلغي السؤال: لا عبارة، ولا قرار، والاسمُ «استمع» — والتالية تسأل ثانيةً", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    await click(button(0));
+    await settle();
+    expect(consent()).toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+    expect(decided()).toBe("undecided");
+    expect(label(0)).toBe("استمع");
+    expect(phase(0)).toBe("idle");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+  });
+
+  it("`Escape` في السؤال أو على الزرّ يُلغيه بلا قرار، ويعود التركيزُ إلى الزرّ", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    await act(async () => {
+      fireEvent.keyDown(choice("decline"), { key: "Escape" });
+    });
+    expect(consent()).toBeNull();
+    expect(decided()).toBe("undecided");
+    expect(synth.spoken).toHaveLength(0);
+    expect(document.activeElement).toBe(button(0));
+
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(button(0), { key: "Escape" });
+    });
+    expect(consent()).toBeNull();
+    expect(decided()).toBe("undecided");
+    expect(synth.spoken).toHaveLength(0);
+  });
+
+  it("«استمع» على ردٍّ آخر والسؤالُ مفتوح ⇒ السؤالُ ينتقل إليه وحدَه", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    await click(button(1));
+    await settle();
+    expect(document.querySelectorAll("[data-read-aloud-consent]")).toHaveLength(1);
+    expect(consent()!.parentElement).toBe(button(1).parentElement);
+    expect(phase(0)).toBe("idle");
+    expect(label(0)).toBe("استمع");
+    expect(phase(1)).toBe("consent");
+    expect(synth.spoken).toHaveLength(0);
+    await click(choice("allow"));
+    expect(synth.last.text).toBe(LAST_SPOKEN);
+  });
+
+  it("تبديلُ المحادثة و`pagehide` والسؤالُ مفتوح ⇒ يزول بلا قرارٍ ولا عبارة", async () => {
+    synth.voices = [ONLINE_AR];
+    const mounted = render(view({ viewKey: "a" }));
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(consent()).toBeNull();
+    expect(label(0)).toBe("استمع");
+
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    mounted.rerender(view({ viewKey: "other", conversationId: OTHER }));
+    await wait(TIMINGS.adoptGraceMs * 4);
+    expect(consent()).toBeNull();
+    expect(buttons().map((b) => b.getAttribute("data-read-aloud-state"))).toEqual(["idle", "idle"]);
+    expect(synth.spoken).toHaveLength(0);
+    expect(synth.cancels).toBe(0);
+    expect(decided()).toBe("undecided");
+  });
+
+  /**
+   * ★ ★ التركيز: إلى السؤال نفسِه — لا إلى زرٍّ من زرَّيه — ثم إلى الزرّ.
+   *
+   * لو ذهب إلى «أصوات الجهاز فقط» لصارت ضغطةُ `Enter` ثانيةٌ رفضًا لم يُقصد،
+   * ولو ذهب إلى «أوافق» لصارت موافقة. فيذهب إلى المجموعة المسمّاة بنصّ السؤال:
+   * يقرؤها القارئُ الآليّ، ولا يضغط `Enter` عليها شيئًا.
+   */
+  it("التركيزُ على الزرّ ⇒ ينتقل إلى السؤال نفسِه لا إلى زرِّ قرار؛ وبعد القرار يعود إلى الزرّ", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    const asked = consent()!;
+    expect(document.activeElement).toBe(asked);
+    expect(asked.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement?.tagName).toBe("DIV");
+    // والزرّان بعده في ترتيب الصفحة: الرفضُ ثم الموافقة
+    const order = [...asked.querySelectorAll("button")].map((b) => b.getAttribute("data-read-aloud-consent-action"));
+    expect(order).toEqual(["decline", "allow"]);
+    // `Enter` والمسافةُ على السؤال لا يقرّران شيئًا
+    await act(async () => {
+      fireEvent.keyDown(asked, { key: "Enter" });
+      fireEvent.keyUp(asked, { key: "Enter" });
+      fireEvent.keyDown(asked, { key: " " });
+      fireEvent.keyUp(asked, { key: " " });
+    });
+    expect(consent()).not.toBeNull();
+    expect(decided()).toBe("undecided");
+    expect(synth.spoken).toHaveLength(0);
+
+    choice("allow").focus();
+    await click(choice("allow"));
+    await settle();
+    expect(document.activeElement).toBe(button(0));
+    expect(label(0)).toBe("إيقاف القراءة");
+  });
+
+  /** ★ السؤالُ الذي فتحه المستخدمُ لا يختفي من تلقاء نفسه بإعادة تركيب المحادثة نفسِها */
+  it("إعادةُ تركيب المحادثة نفسِها والسؤالُ مفتوح ⇒ يبقى تحت الزرّ البديل والتركيزُ فيه، بلا قرارٍ ولا عبارة", async () => {
+    synth.voices = [ONLINE_AR];
+    const mounted = render(view({ viewKey: "a" }));
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    expect(document.activeElement).toBe(consent());
+
+    mounted.rerender(view({ viewKey: "b" }));
+    await settle();
+    expect(document.querySelectorAll("[data-read-aloud-consent]")).toHaveLength(1);
+    expect(consent()!.parentElement).toBe(button(0).parentElement);
+    expect(phase(0)).toBe("consent");
+    expect(document.activeElement).toBe(consent());
+    await wait(TIMINGS.adoptGraceMs * 4);
+    expect(consent()).not.toBeNull();
+    expect(synth.spoken).toHaveLength(0);
+    expect(synth.cancels).toBe(0);
+    expect(decided()).toBe("undecided");
+    await click(choice("allow"));
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.text).toBe(FIRST);
+  });
+
+  it("وإن لم يكن التركيزُ في السؤال لم يُنقل إليه بعد إعادة التركيب", async () => {
+    synth.voices = [ONLINE_AR];
+    const mounted = render(view({ viewKey: "a" }));
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(consent()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+    mounted.rerender(view({ viewKey: "b" }));
+    await settle();
+    expect(consent()).not.toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("التركيزُ على صندوق الكتابة لا يُنتزع: السؤالُ يُمرَّر إلى مجال الرؤية وحسب", async () => {
+    synth.voices = [];
+    render(view());
+    await settle();
+    await click(button(0));
+    // السؤالُ يتأخّر بانتظار قائمة الأصوات — والمستخدمُ عاد يكتب
+    const composer = screen.getByPlaceholderText(/رسالتك|message/i) as HTMLTextAreaElement;
+    composer.focus();
+    await wait(TIMINGS.voicesWaitMs * 3);
+    await settle();
+    const asked = consent()!;
+    expect(asked).not.toBeNull();
+    expect(document.activeElement).toBe(composer);
+    const scrolled = (Element.prototype.scrollIntoView as unknown as { mock: { contexts: unknown[] } }).mock.contexts;
+    expect(scrolled).toContain(asked);
+  });
+
+  /** ★ مفتاحٌ مضغوطٌ باستمرار لا يصير قرارًا */
+  it("تكرارُ المفتاح على زرَّي القرار لا يضغطهما", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    for (const name of ["decline", "allow"]) {
+      for (const key of ["Enter", " "]) {
+        // `false` ⇒ مُنع الافتراضيّ: فلا نقرةَ تتولّد من هذا المفتاح
+        expect(fireEvent.keyDown(choice(name), { key, repeat: true }), `${name} ${key}`).toBe(false);
+        expect(fireEvent.keyDown(choice(name), { key }), `${name} ${key}`).toBe(true);
+      }
+    }
+    expect(consent()).not.toBeNull();
+    expect(decided()).toBe("undecided");
+    expect(synth.spoken).toHaveLength(0);
+  });
+
+  /** ★ ★ الرجوعُ عن الموافقة */
+  it("«أصوات الجهاز فقط» تحت الملاحظة ⇒ تسكت القراءةُ فورًا، وما بعدها لا يُقرأ بصوت الشبكة", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    button(0).focus();
+    await click(button(0));
+    await settle();
+    await click(choice("allow"));
+    await settle();
+    expect(label(0)).toBe("إيقاف القراءة");
+    const withdraw = choice("withdraw");
+    expect(withdraw.textContent).toBe("أصوات الجهاز فقط");
+
+    // ضغطةُ لوحة المفاتيح تترك التركيزَ على زرّ السحب: منه يعود إلى الزرّ، لا إلى جسم الصفحة
+    withdraw.focus();
+    await click(withdraw);
+    await settle();
+    expect(synth.cancels).toBe(1);
+    expect(decided()).toBe("declined");
+    expect(document.querySelector("[data-read-aloud-note]")).toBeNull();
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    expect(label(0)).toBe("إعادة الاستماع");
+    expect(document.activeElement).toBe(button(0));
+
+    await click(button(0));
+    await wait(TIMINGS.cancelSettleMs * 4);
+    await settle();
+    expect(synth.spoken).toHaveLength(1);
+    expect(screen.getByRole("alert").getAttribute("data-read-aloud-error")).toBe("device_only_ar");
+  });
+
+  /**
+   * ★ سحبُ الموافقة بعد انتهاء القراءة — بلا تسليم ردٍّ آخر.
+   *
+   * زرُّ «أصوات الجهاز فقط» يبقى تحت الرد الذي قُرئ بصوتٍ ليس من أصوات الجهاز
+   * بعد انتهاء قراءته. فمن ندم لا يلزمه أن يُقرئ ردًّا آخر بذلك الصوت ليجده.
+   */
+  it("بعد انتهاء قراءةٍ بصوت الشبكة يبقى «أصوات الجهاز فقط» تحت ردّها: السحبُ بلا عبارةٍ جديدة", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    await click(choice("allow"));
+    await settle();
+    await act(async () => {
+      synth.end(synth.last);
+    });
+    expect(label(0)).toBe("إعادة الاستماع");
+    // الملاحظةُ تزول بانتهاء القراءة؛ وزرُّ السحب يبقى
+    expect(document.querySelector("[data-read-aloud-note]")).toBeNull();
+    const withdraw = choice("withdraw");
+    expect(withdraw.parentElement!.parentElement).toBe(button(0).parentElement);
+    withdraw.focus();
+    await click(withdraw);
+    await settle();
+    expect(decided()).toBe("declined");
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.cancels).toBe(0);
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    expect(document.activeElement).toBe(button(0));
+    expect(label(0)).toBe("إعادة الاستماع");
+    // وما بعده لا يُقرأ بصوت الشبكة
+    await click(button(0));
+    await settle();
+    expect(synth.spoken).toHaveLength(1);
+    expect(screen.getByRole("alert").getAttribute("data-read-aloud-error")).toBe("device_only_ar");
+  });
+
+  it("ولا يُعرض زرُّ السحب بعد قراءةٍ بصوت الجهاز، ولا تحت ردٍّ لم يعد صاحبَ الجلسة", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    await click(choice("allow"));
+    await settle();
+    await act(async () => {
+      synth.end(synth.last);
+    });
+    expect(choice("withdraw")).not.toBeNull();
+
+    // ردٌّ آخر يُقرأ بصوت الجهاز: الزرُّ يزول عن الأوّل، ولا يظهر تحت الثاني — لا أثناء قراءته ولا بعدها
+    synth.voices = [AR_SA];
+    await click(button(1));
+    await settle();
+    expect(label(1)).toBe("إيقاف القراءة");
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    await act(async () => {
+      synth.end(synth.last);
+    });
+    expect(label(1)).toBe("إعادة الاستماع");
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    expect(decided()).toBe("granted");
+  });
+
+  /** ★ حدٌّ تذكره صفحةُ الخصوصيّة: قراءةٌ قطعها عطل لا يبقى تحتها زرُّ السحب، والموافقةُ باقية */
+  it("قراءةٌ بصوتٍ كهذا قطعها عطلُ المحرّك ⇒ يزول زرُّ السحب، ولا يُسجَّل شيء", async () => {
+    synth.voices = [ONLINE_AR];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    await click(choice("allow"));
+    await settle();
+    expect(choice("withdraw")).not.toBeNull();
+    await act(async () => {
+      synth.fail(synth.last, "network");
+    });
+    expect(screen.getByRole("alert").getAttribute("data-read-aloud-error")).toBe("network");
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    expect(decided()).toBe("granted");
+    expect(synth.spoken).toHaveLength(1);
+  });
+
+  /** ★ «تغيير الاختيار» للرفض الذي منع القراءة وحدَه — لا لكلّ عطب */
+  it("عطبٌ ليس سببُه الاختيار (لا صوتَ للّغة أصلًا، عطبُ محرّك) ⇒ لا زرَّ قرارٍ تحته", async () => {
+    synth.voices = [EN_US];
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(screen.getByRole("alert").getAttribute("data-read-aloud-error")).toBe("no_voice_ar");
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+
+    synth.voices = [AR_SA];
+    await click(button(0));
+    await settle();
+    await act(async () => {
+      synth.fail(synth.last, "synthesis-failed");
+    });
+    expect(screen.getByRole("alert").getAttribute("data-read-aloud-error")).toBe("failed");
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+  });
+
+  it("صوتُ الجهاز حاضر ⇒ لا سؤالَ ولا ملاحظةَ ولا زرَّ قرار — كما كان", async () => {
+    render(view());
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(consent()).toBeNull();
+    expect(document.querySelector("[data-read-aloud-consent-action]")).toBeNull();
+    expect(synth.spoken).toHaveLength(1);
+    expect(synth.last.voice).toBe(AR_SA);
+    expect(decided()).toBe("undecided");
+  });
+
+  /** ★ الميزانُ العامّ: ما سُلّم قبل «أوافق» صوتُه مذكورٌ أنّه من أصوات الجهاز */
+  it("كلُّ عبارةٍ سُلّمت والقرارُ ليس «موافق» صوتُها من أصوات الجهاز", async () => {
+    synth.voices = [EN_US, ONLINE_AR];
+    render(view({ messages: [
+      { id: "u1", role: "user", content: "q" },
+      { id: "a1", role: "assistant", content: "This is an English reply." },
+      { id: "u2", role: "user", content: "س" },
+      { id: "a2", role: "assistant", content: FIRST },
+    ] }));
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(synth.spoken).toHaveLength(1);
+    await click(button(1));
+    await wait(TIMINGS.cancelSettleMs * 4);
+    await settle();
+    expect(consent()).not.toBeNull();
+    await click(choice("decline"));
+    await settle();
+    await click(button(0));
+    await settle();
+    expect(decided()).toBe("declined");
+    expect(synth.spoken.length).toBeGreaterThan(1);
+    for (const u of synth.spoken) expect(u.voice?.localService).toBe(true);
+  });
+});
+
 describe("v150 — ثوابتُ المصدر", () => {
   const ROOT = process.cwd();
   /**
@@ -1090,7 +1702,36 @@ describe("v150 — ثوابتُ المصدر", () => {
     expect(calls).toHaveLength(1);
     const at = calls[0]!.index;
     expect(src.lastIndexOf("onClick=", at)).toBeGreaterThan(src.lastIndexOf("useEffect(", at));
-    expect(src.slice(src.lastIndexOf("onClick=", at), at)).toMatch(/readingNow\(\)/);
+    expect(src.slice(src.lastIndexOf("onClick=", at), at)).toMatch(/engagedNow\(\)/);
+  });
+
+  /**
+   * ★ وما يُسجّل قرارًا أو يستأنف قراءةً غيرَ ذلك النداء ثلاثةٌ — كلٌّ منها في معالج نقر.
+   *
+   * الموافقةُ تستأنف الجلسةَ الواقفة، والرفضُ يستأنفها بأصوات الجهاز، و«تغيير
+   * الاختيار» يسأل من جديد. فلا تأثيرَ ولا مفتاحَ ولا تركيزَ يوافق عن المستخدم.
+   */
+  it("الموافقةُ والرفضُ وتغييرُ الاختيار نداءاتٌ من معالجات النقر وحدَها", () => {
+    const src = code(read("components", "browser-voice", "read-aloud-button.tsx"));
+    for (const [name, times] of [
+      ["allowNetworkVoice", 1],
+      ["declineNetworkVoice", 2],
+      ["reconsiderNetworkVoice", 1],
+    ] as const) {
+      const calls = [...src.matchAll(new RegExp(`\\b${name}\\(`, "g"))];
+      expect(calls, name).toHaveLength(times);
+      for (const call of calls) {
+        const at = call.index;
+        const handler = src.lastIndexOf("onClick=", at);
+        expect(handler, name).toBeGreaterThan(src.lastIndexOf("useEffect(", at));
+        // وبينه وبين `onClick=` لا معالجَ آخر: هو في جسم ذلك المعالج نفسِه
+        expect(src.slice(handler, at), name).not.toMatch(/onKeyDown=|onFocus=|onBlur=|useEffect\(/);
+      }
+    }
+    // والمُتحكِّمُ المشترك يُنشأ بلا خيارات: لا قرارَ ابتدائيًّا في المنتَج
+    const controller = code(read("lib", "browser-voice", "read-aloud.ts"));
+    expect(controller).toContain("shared = new ReadAloudController();");
+    expect(controller.match(/this\.consent = "granted"/g)).toHaveLength(1);
   });
 
   it("المحرّكُ يُسلَّم عبارةً من موضعٍ واحد في المُتحكِّم", () => {
@@ -1098,16 +1739,28 @@ describe("v150 — ثوابتُ المصدر", () => {
     expect(src.match(/synth\.speak\(/g)).toHaveLength(1);
   });
 
-  it("صفُّ المحادثة يرسم الزرَّ خلف الراية وحدَها، ويسلّمه النصَّ الخام", () => {
+  it("صفُّ المحادثة يرسم الزرَّ بقرار وضع الصوت وحدَه، ويسلّمه النصَّ الخام", () => {
     const src = read("components", "chat", "chat-view.tsx");
     expect(src.match(/<ReadAloudButton /g)).toHaveLength(1);
-    // خلف الراية وحدَها، بالنصّ الخام، وبنطاق المحادثة
+    // بقرار وضع الصوت (رايةُ المتصفّح مشتعلةٌ والصوتُ المحلّيّ مطفأ)، بالنصّ الخام، وبنطاق المحادثة
     expect(src.replace(/\s+/g, " ")).toContain(
-      "{browserVoiceEnabled ? ( <ReadAloudButton text={m.content} scope={convIdRef.current ?? conversationId} /> ) : null}",
+      "{readAloudAvailable ? ( <ReadAloudButton text={m.content} scope={convIdRef.current ?? conversationId} /> ) : null}",
     );
-    expect(src).toContain('className={browserVoiceEnabled ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}');
-    expect(src).toContain("const browserVoiceEnabled = isBrowserVoiceEnabled();");
+    expect(src).toContain('className={readAloudAvailable ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}');
+    expect(src).toContain("const readAloudAvailable = READ_ALOUD_AVAILABLE;");
+    expect(src).toContain('import { READ_ALOUD_AVAILABLE } from "@/lib/browser-voice/mode";');
     expect(code(src)).not.toMatch(/speechSynthesis|SpeechSynthesisUtterance/);
+    /**
+     * ★ وأسلاكُ الصوت المحلّيّ في هذا الملفّ كما كانت حرفًا بحرف.
+     *
+     * لا اختبارَ يقيس نطقَه التلقائيّ، فحفظُه بألّا يُمسّ: ثابتُه من قارئ رايته
+     * وحدَه، والنصُّ المنطوق من ذلك الثابت وحدَه — لا من قرار «استمع».
+     */
+    expect(src).toContain("const localVoiceEnabled = isLocalVoiceEnabled();");
+    expect(src.replace(/\s+/g, " ")).toContain(
+      'const voiceSpeakText = localVoiceEnabled ? ([...messages].reverse().find((m) => m.role === "assistant" && !m.streaming && m.content.trim())?.content ?? null) : null;',
+    );
+    expect(src.match(/voiceSpeakText=\{voiceSpeakText\}/g)).toHaveLength(2);
   });
 
   /** ★ لا تفريغَ ولا ميكروفونَ ولا شبكةَ ولا تخزينَ في هذه المرحلة */
@@ -1176,6 +1829,12 @@ describe("v150 — ثوابتُ المصدر", () => {
     const keys = [...src.matchAll(/^ {2}(readAloud\w+): \{/gm)].map((m) => m[1]!);
     expect(keys.sort()).toEqual([
       "readAloudBlocked",
+      "readAloudConsentAllow",
+      "readAloudConsentBody",
+      "readAloudConsentDecline",
+      "readAloudConsentReconsider",
+      "readAloudDeviceOnlyArabic",
+      "readAloudDeviceOnlyEnglish",
       "readAloudFailed",
       "readAloudListen",
       "readAloudNetwork",
@@ -1196,10 +1855,24 @@ describe("v150 — ثوابتُ المصدر", () => {
       expect(en!, key).not.toMatch(/send|regenerate/i);
       expect(ar!, key).not.toMatch(/إرسال|إعادة توليد/);
     }
+    /**
+     * ★ السؤالُ يقول ما يلزم لموافقةٍ عن علم — بالعربيّة والإنجليزيّة:
+     * إلى مَن قد يذهب النصّ (مزوّدُ الصوت في المتصفّح)، وإلى مَن لا يذهب
+     * (خوادمُ YSD)، وأنّه عبر الإنترنت، وكم يبقى الاختيار.
+     */
+    const body = /^ {2}readAloudConsentBody: \{\s*ar: "([^"]+)",\s*en: "([^"]+)",?\s*\},/m.exec(src)!;
+    expect(body[1]).toMatch(/مزوّد الصوت في متصفّحك/);
+    expect(body[1]).toMatch(/لا إلى خوادم YSD/);
+    expect(body[1]).toMatch(/عبر الإنترنت/);
+    expect(body[1]).toMatch(/إلى أن تُعيد تحميلها/);
+    expect(body[2]).toMatch(/your browser's voice provider/);
+    expect(body[2]).toMatch(/not to YSD servers/);
+    expect(body[2]).toMatch(/over the internet/);
+    expect(body[2]).toMatch(/until you reload/);
   });
 
   /** ★ البوّابةُ تُشغّل اختباراتِ القراءة خطوةً مسمّاة — لا اعتمادًا على أنّ `npm test` يشملها */
-  it("بوّابةُ الإنتاج تُشغّل ملفّاتِ هذه الميزة الخمسة خطوةً مسمّاة (أمرًا لا تعليقًا)", () => {
+  it("بوّابةُ الإنتاج تُشغّل ملفّاتِ هذه الميزة خطوةً مسمّاة (أمرًا لا تعليقًا)", () => {
     const workflow = read(".github", "workflows", "production-readiness.yml").replace(/\r\n/g, "\n");
     const marker = "- name: Browser Voice read-aloud tests";
     const start = workflow.indexOf(marker);
@@ -1208,9 +1881,11 @@ describe("v150 — ثوابتُ المصدر", () => {
     const step = workflow.slice(start, next === -1 ? workflow.length : next);
     const run = step.slice(step.indexOf("run:")).replace(/\s+/g, " ");
     expect(run).toContain(
-      "npx vitest run tests/v150-browser-voice-speech-text.test.ts tests/v150-browser-voice-read-aloud.test.ts tests/v150-browser-voice-ssr.test.ts tests/v150-browser-voice-ui.test.tsx tests/v150-browser-voice-off.test.tsx",
+      "npx vitest run tests/v150-browser-voice-speech-text.test.ts tests/v150-browser-voice-read-aloud.test.ts tests/v150-browser-voice-ssr.test.ts tests/v150-browser-voice-ui.test.tsx tests/v150-browser-voice-off.test.tsx tests/v151-voice-modes.test.tsx tests/v151-browser-voice-privacy.test.tsx",
     );
-    for (const file of run.match(/tests\/v150-[\w.-]+/g) ?? []) expect(existsSync(join(ROOT, file)), file).toBe(true);
+    const listed = run.match(/tests\/v15[01]-[\w.-]+/g) ?? [];
+    expect(listed).toHaveLength(7);
+    for (const file of listed) expect(existsSync(join(ROOT, file)), file).toBe(true);
     expect(step).not.toMatch(/^ {8}(continue-on-error|if):/m);
     // وخطوةُ الراية باقيةٌ باسمها، قبلها
     expect(workflow.indexOf("- name: Browser Voice flag tests")).toBeGreaterThan(-1);

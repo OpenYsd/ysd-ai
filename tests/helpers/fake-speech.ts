@@ -20,13 +20,23 @@ import { vi } from "vitest";
 export interface FakeVoice {
   name: string;
   lang: string;
-  localService: boolean;
+  /** غائبةٌ في صوتٍ لا يذكر المتصفّحُ مصدرَه — وذلك يُعامل كصوتٍ ليس من أصوات الجهاز */
+  localService?: boolean;
   default: boolean;
   voiceURI: string;
 }
 
-export function voice(name: string, lang: string, opts: { network?: boolean; default?: boolean } = {}): FakeVoice {
-  return { name, lang, localService: !opts.network, default: opts.default ?? false, voiceURI: name };
+/**
+ * @param opts.network صوتٌ يذكر المتصفّحُ أنّه عبر الشبكة (`localService: false`).
+ * @param opts.unreported صوتٌ لا يذكر المتصفّحُ عنه شيئًا (الخاصّيّةُ غائبة).
+ */
+export function voice(
+  name: string,
+  lang: string,
+  opts: { network?: boolean; default?: boolean; unreported?: boolean } = {},
+): FakeVoice {
+  const base = { name, lang, default: opts.default ?? false, voiceURI: name };
+  return opts.unreported ? base : { ...base, localService: !opts.network };
 }
 
 export const AR_SA = voice("Arabic Saudi", "ar-SA");

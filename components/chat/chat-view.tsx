@@ -50,7 +50,7 @@ import { detectImageIntent } from "@/lib/local-image/intent";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
-import { isBrowserVoiceEnabled } from "@/lib/browser-voice/flag";
+import { READ_ALOUD_AVAILABLE } from "@/lib/browser-voice/mode";
 import { ReadAloudButton } from "@/components/browser-voice/read-aloud-button";
 
 export interface ChatModel {
@@ -102,13 +102,15 @@ const localImageEnabled = isLocalImageEnabled();
  */
 const localVoiceEnabled = isLocalVoiceEnabled();
 /**
- * ★ رايةٌ ثالثة، مستقلّةٌ عن الاثنتين: القراءةُ بصوت المتصفّح.
+ * ★ القراءةُ بصوت المتصفّح — وقرارُها ليس رايتَها وحدَها.
  *
- * مطفأةً لا تُضيف إلى الصفحة عقدةً ولا مستمعًا ولا صنفًا: صفُّ أزرار
- * الرد يبقى حرفًا بحرف كما كان. ومشتعلةً تُضيف زرَّ «استمع» إلى الرد
- * المكتمل — ولا تمسّ الصوتَ المحلّيّ ولا ما يُمرَّر إليه.
+ * تُعرض حين تشتعل رايتُها **والصوتُ المحلّيّ مطفأ**: لا يعمل الصوتان في بناءٍ
+ * واحد، والمحلّيُّ يتقدّم (القرارُ في وحدة وضع الصوت، لا هنا). فحين لا تُعرض
+ * لا تُضيف إلى الصفحة عقدةً ولا مستمعًا ولا صنفًا: صفُّ أزرار الرد يبقى حرفًا
+ * بحرف كما كان. وحين تُعرض تُضيف زرَّ «استمع» إلى الرد المكتمل — ولا تمسّ
+ * الصوتَ المحلّيّ ولا ما يُمرَّر إليه في الحالين.
  */
-const browserVoiceEnabled = isBrowserVoiceEnabled();
+const readAloudAvailable = READ_ALOUD_AVAILABLE;
 
 export interface MsgSource {
   fileId: string;
@@ -1321,7 +1323,7 @@ export function ChatView({
                           </div>
                         )}
                         {!m.streaming && m.content && (
-                          <div className={browserVoiceEnabled ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}>
+                          <div className={readAloudAvailable ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}>
                             <MsgAction
                               icon={<Copy size={12} />}
                               label={t("copy")}
@@ -1343,18 +1345,19 @@ export function ChatView({
                               />
                             )}
                             {/*
-                              القراءةُ بصوت المتصفّح — خلف رايتها وحدَها.
+                              القراءةُ بصوت المتصفّح — حين تشتعل رايتُها والصوتُ
+                              المحلّيّ مطفأ.
 
                               يُسلَّم النصُّ الخام لا نصُّ الصفحة، ولا يُقرأ
                               شيءٌ إلا بضغطة: الردُّ المحفوظ والمُعادُ توليدُه
-                              يظهران صامتَين. والحالةُ والأعطالُ في المكوّن
-                              نفسِه، لا في هذا الملفّ.
+                              يظهران صامتَين. والحالةُ والأعطالُ وسؤالُ
+                              الموافقة في المكوّن نفسِه، لا في هذا الملفّ.
 
                               والنطاقُ معرّفُ المحادثة: المحادثةُ الجديدة يُعاد
                               تركيبُها بعد أوّل ردّ فتستمرّ قراءتُها، ومحادثةٌ
                               أخرى فيها النصُّ نفسُه لا ترثها.
                             */}
-                            {browserVoiceEnabled ? (
+                            {readAloudAvailable ? (
                               <ReadAloudButton text={m.content} scope={convIdRef.current ?? conversationId} />
                             ) : null}
                             {/*
