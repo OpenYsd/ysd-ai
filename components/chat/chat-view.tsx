@@ -50,6 +50,8 @@ import { detectImageIntent } from "@/lib/local-image/intent";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
+import { READ_ALOUD_AVAILABLE } from "@/lib/browser-voice/mode";
+import { ReadAloudButton } from "@/components/browser-voice/read-aloud-button";
 
 export interface ChatModel {
   id: string;
@@ -99,6 +101,16 @@ const localImageEnabled = isLocalImageEnabled();
  * يذهب إلى الحلقة المحلّية أصلًا.
  */
 const localVoiceEnabled = isLocalVoiceEnabled();
+/**
+ * ★ القراءةُ بصوت المتصفّح — وقرارُها ليس رايتَها وحدَها.
+ *
+ * تُعرض حين تشتعل رايتُها **والصوتُ المحلّيّ مطفأ**: لا يعمل الصوتان في بناءٍ
+ * واحد، والمحلّيُّ يتقدّم (القرارُ في وحدة وضع الصوت، لا هنا). فحين لا تُعرض
+ * لا تُضيف إلى الصفحة عقدةً ولا مستمعًا ولا صنفًا: صفُّ أزرار الرد يبقى حرفًا
+ * بحرف كما كان. وحين تُعرض تُضيف زرَّ «استمع» إلى الرد المكتمل — ولا تمسّ
+ * الصوتَ المحلّيّ ولا ما يُمرَّر إليه في الحالين.
+ */
+const readAloudAvailable = READ_ALOUD_AVAILABLE;
 
 export interface MsgSource {
   fileId: string;
@@ -1311,7 +1323,7 @@ export function ChatView({
                           </div>
                         )}
                         {!m.streaming && m.content && (
-                          <div className="flex gap-1 mt-2">
+                          <div className={readAloudAvailable ? "flex flex-wrap gap-1 mt-2" : "flex gap-1 mt-2"}>
                             <MsgAction
                               icon={<Copy size={12} />}
                               label={t("copy")}
@@ -1332,6 +1344,22 @@ export function ChatView({
                                 disabled={generating}
                               />
                             )}
+                            {/*
+                              القراءةُ بصوت المتصفّح — حين تشتعل رايتُها والصوتُ
+                              المحلّيّ مطفأ.
+
+                              يُسلَّم النصُّ الخام لا نصُّ الصفحة، ولا يُقرأ
+                              شيءٌ إلا بضغطة: الردُّ المحفوظ والمُعادُ توليدُه
+                              يظهران صامتَين. والحالةُ والأعطالُ وسؤالُ
+                              الموافقة في المكوّن نفسِه، لا في هذا الملفّ.
+
+                              والنطاقُ معرّفُ المحادثة: المحادثةُ الجديدة يُعاد
+                              تركيبُها بعد أوّل ردّ فتستمرّ قراءتُها، ومحادثةٌ
+                              أخرى فيها النصُّ نفسُه لا ترثها.
+                            */}
+                            {readAloudAvailable ? (
+                              <ReadAloudButton text={m.content} scope={convIdRef.current ?? conversationId} />
+                            ) : null}
                             {/*
                               ★ بلاغٌ يصل إنسانًا — لا إبهامٌ لا يُخزَّن.
 

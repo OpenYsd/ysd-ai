@@ -28,7 +28,10 @@ import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isBrowserVoiceEnabled } from "@/lib/browser-voice/flag";
 
 const V = "NEXT_PUBLIC_YSD_LOCAL_VOICE";
-/** رايةُ الصوت في المتصفّح (v149) — أيٌّ من الرايتين تفتح الميكروفونَ لـ`self` */
+/**
+ * رايةُ الصوت في المتصفّح (v149) — **لا تفتح الميكروفون**: «استمع» تقرأ ولا
+ * تسمع (`speechSynthesis` وحدَه). فالميكروفونُ للصوت المحلّيّ وحدَه، كما كان.
+ */
 const B = "NEXT_PUBLIC_YSD_BROWSER_VOICE";
 const OFF = {};
 const ON = { [V]: "1" };
@@ -61,11 +64,12 @@ describe("v135 — القيمتان بالحرف", () => {
     expect(on.replace("microphone=(self)", "microphone=()")).toBe(off);
   });
 
-  /** ★ رايةُ المتصفّح وحدَها تكفي — والنصُّ هو نفسُه، لا صيغةٌ ثالثة */
-  it("رايةُ المتصفّح وحدَها ⇒ `self` بالنصّ نفسِه", () => {
-    expect(buildPermissionsPolicy(BROWSER_ON)).toBe(VOICE_ON);
+  /** ★ رايةُ المتصفّح وحدَها لا تُغيّر حرفًا: الترويسةُ هي ترويسةُ الإنتاج */
+  it("رايةُ المتصفّح وحدَها ⇒ النصُّ المُصلَّب حرفًا بحرف", () => {
+    expect(buildPermissionsPolicy(BROWSER_ON)).toBe(HARDENED);
   });
 
+  /** والصوتُ المحلّيّ يفتحه كما كان — ورايةُ المتصفّح معه لا تزيد شيئًا */
   it("وكلتاهما ⇒ `self` مرّةً واحدة بالنصّ نفسِه", () => {
     expect(buildPermissionsPolicy(BOTH_ON)).toBe(VOICE_ON);
   });
@@ -153,24 +157,36 @@ describe("v135 — «1» الحرفيّة وحدَها تُشعل", () => {
 
   it("والغيابُ كذلك متطابق", () => {
     expect(isVoiceOn({})).toBe(isLocalVoiceEnabled({}));
-    expect(isVoiceOn({})).toBe(isBrowserVoiceEnabled({}));
   });
 
-  /** ★ وراية المتصفّح على الجدول نفسِه: الترويسةُ تطابق واجهتَها حرفًا بحرف */
+  /**
+   * ★ ورايةُ المتصفّح لا تبلغ الترويسة — ولا بـ«1».
+   *
+   * الواجهةُ تراها مشتعلةً بـ«1» (زرُّ «استمع»)، والترويسةُ لا تراها أصلًا:
+   * القراءةُ لا تحتاج الميكروفون، وفتحُه بلا مستعمِل توسيعٌ لسطح الهجوم.
+   */
   it.each(["1", "0", "", "false", "true", "yes", " 1", "1 ", "01"])(
-    "ودلالةُ «%s» في راية المتصفّح واحدةٌ في الترويسة والواجهة",
+    "«%s» في راية المتصفّح لا تفتح الميكروفون — أيًّا كان ما تراه الواجهة",
     (value) => {
-      expect(isVoiceOn({ [B]: value })).toBe(isBrowserVoiceEnabled({ [B]: value }));
+      expect(isVoiceOn({ [B]: value })).toBe(false);
+      expect(buildPermissionsPolicy({ [B]: value })).toBe(HARDENED);
+      // وما يقرّره الصوتُ المحلّيّ لا تُغيّره: «1» فيه تفتح، ومعها رايةُ المتصفّح أو بدونها
+      expect(buildPermissionsPolicy({ [V]: "1", [B]: value })).toBe(VOICE_ON);
     },
   );
 
-  /** ★ الاسمُ حرفيٌّ — وإلا لم يجد المُجمِّعُ شكلًا يستبدله */
+  it("حتى حين ترى الواجهةُ رايةَ المتصفّح مشتعلة", () => {
+    expect(isBrowserVoiceEnabled({ [B]: "1" })).toBe(true);
+    expect(buildPermissionsPolicy({ [B]: "1" })).toBe(buildPermissionsPolicy({}));
+  });
+
+  /** ★ الاسمُ حرفيٌّ — وإلا لم يجد المُجمِّعُ شكلًا يستبدله. ورايةُ المتصفّح لا تُقرأ هنا البتّة */
   it("والاسمُ مكتوبٌ حرفيًّا في المصدر", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const src = readFileSync(join(process.cwd(), "lib", "permissions-policy.mjs"), "utf8");
     expect(src).toContain("NEXT_PUBLIC_YSD_LOCAL_VOICE");
-    expect(src).toContain("NEXT_PUBLIC_YSD_BROWSER_VOICE");
+    expect(src).not.toContain("BROWSER_VOICE");
     expect(src).not.toMatch(/process\.env\[/);
   });
 });
@@ -224,8 +240,15 @@ describe("v135 — الترويسةُ تصل إلى كلّ مسار", () => {
     expect(out.value).toBe(VOICE_ON);
   });
 
-  it("ورايةُ المتصفّح وحدَها ⇒ الإعدادُ المُشغَّل يُصدر `self` بالنصّ نفسِه", () => {
+  /** ★ «استمع» لا تحتاج الميكروفون: رايتُها وحدَها تُبقي ترويسةَ الإنتاج حرفًا بحرف */
+  it("ورايةُ المتصفّح وحدَها ⇒ الإعدادُ المُشغَّل يُصدر النصَّ المُصلَّب", () => {
     const out = headersFrom({ [V]: undefined, [B]: "1" });
+    expect(out.source).toBe("/(.*)");
+    expect(out.value).toBe(HARDENED);
+  });
+
+  it("وكلتاهما ⇒ الإعدادُ المُشغَّل يُصدر `self` — بالصوت المحلّيّ", () => {
+    const out = headersFrom({ [V]: "1", [B]: "1" });
     expect(out.source).toBe("/(.*)");
     expect(out.value).toBe(VOICE_ON);
   });

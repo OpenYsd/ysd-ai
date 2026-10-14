@@ -1235,6 +1235,55 @@ const dict = {
   },
   previewSource: { ar: "المصدر · صفحة ٤", en: "Source · page 4" },
 
+  // القراءة بصوت المتصفّح — تظهر خلف راية الصوت في المتصفّح وحدها
+  readAloudListen: { ar: "استمع", en: "Listen" },
+  readAloudStop: { ar: "إيقاف القراءة", en: "Stop reading" },
+  readAloudReplay: { ar: "إعادة الاستماع", en: "Replay" },
+  readAloudUnsupported: {
+    ar: "متصفّحك لا يدعم قراءة النص بصوتٍ مسموع.",
+    en: "Your browser cannot read text aloud.",
+  },
+  readAloudNoArabicVoice: {
+    ar: "لا يتوفّر في متصفّحك صوتٌ عربيّ. أضف صوتًا عربيًّا من إعدادات النظام ثم أعد المحاولة.",
+    en: "No Arabic voice is available in your browser. Add an Arabic voice in your system settings, then try again.",
+  },
+  readAloudNoEnglishVoice: {
+    ar: "لا يتوفّر في متصفّحك صوتٌ إنجليزيّ. أضف صوتًا إنجليزيًّا من إعدادات النظام ثم أعد المحاولة.",
+    en: "No English voice is available in your browser. Add an English voice in your system settings, then try again.",
+  },
+  readAloudBlocked: {
+    ar: "منع المتصفّح تشغيل الصوت. اضغط الزرّ مرةً أخرى.",
+    en: "The browser blocked audio playback. Press the button again.",
+  },
+  readAloudNetwork: {
+    ar: "تعذّر الوصول إلى خدمة الصوت. تحقّق من اتصالك ثم أعد المحاولة.",
+    en: "The voice service could not be reached. Check your connection and try again.",
+  },
+  readAloudFailed: {
+    ar: "تعذّرت قراءة هذا الرد بصوتٍ مسموع. أعد المحاولة.",
+    en: "This reply could not be read aloud. Try again.",
+  },
+  readAloudNetworkNote: {
+    ar: "يُقرأ هذا الرد بصوتٍ لا يذكر متصفّحُك أنّه من أصوات الجهاز، وقد يُنقل نصُّه عبر الإنترنت إلى مزوّد الصوت في متصفّحك.",
+    en: "This reply is read with a voice your browser does not report as a device voice; its text may be transmitted over the internet to your browser's voice provider.",
+  },
+  // الموافقة قبل أيّ صوتٍ ليس من أصوات الجهاز — يُسأل المستخدم قبل أن يُسلَّم نصّ
+  readAloudConsentBody: {
+    ar: "لا يذكر متصفّحُك أنّ صوتًا يلزم لقراءة هذا الرد من أصوات الجهاز. إن وافقت فقد يُنقل نصُّ ما يُقرأ عبر الإنترنت إلى مزوّد الصوت في متصفّحك، لا إلى خوادم YSD. يسري اختيارُك على كلّ صوتٍ كهذا وكلّ ما يُقرأ في هذه الصفحة، في أيّ محادثةٍ تفتحها، إلى أن تُعيد تحميلها.",
+    en: "Your browser does not report a voice needed for this reply as a device voice. If you agree, the text being read may be transmitted over the internet to your browser's voice provider, not to YSD servers. Your choice applies to every such voice and to everything read aloud in this tab, in any conversation you open, until you reload it.",
+  },
+  readAloudConsentAllow: { ar: "أوافق", en: "I agree" },
+  readAloudConsentDecline: { ar: "أصوات الجهاز فقط", en: "Device voices only" },
+  readAloudConsentReconsider: { ar: "تغيير الاختيار", en: "Change this choice" },
+  readAloudDeviceOnlyArabic: {
+    ar: "اخترتَ أصواتَ الجهاز فقط، ولا يذكر متصفّحُك صوتًا عربيًّا بين أصوات الجهاز.",
+    en: "You chose device voices only, and your browser reports no Arabic voice among the device voices.",
+  },
+  readAloudDeviceOnlyEnglish: {
+    ar: "اخترتَ أصواتَ الجهاز فقط، ولا يذكر متصفّحُك صوتًا إنجليزيًّا بين أصوات الجهاز.",
+    en: "You chose device voices only, and your browser reports no English voice among the device voices.",
+  },
+
   suggestions: {
     ar: [
       { title: "ساعدني في البرمجة", desc: "اكتب، اشرح، أو صحّح كودًا" },

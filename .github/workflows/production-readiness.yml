@@ -101,7 +101,8 @@ jobs:
           echo "OK: NEXT_PUBLIC_YSD_LOCAL_VOICE is absent from the gate environment."
 
       # والرايةُ الثالثة — صوتُ المتصفّح — خطوةٌ مستقلّةٌ للسبب نفسِه.
-      # وهي في المرحلة 1 رايةٌ بلا ميزة؛ ومع ذلك تُحرَس من اليوم الأوّل.
+      # وخلفها منذ المرحلة 2 قراءةُ الرد بصوت المتصفّح؛ فغيابُها هنا هو ما
+      # يُبقي تلك الميزةَ خارج بناء الإنتاج.
       #
       # ★ `${VAR+x}` لا `${VAR:-}` — المطلوبُ **الغيابُ** لا «الإطفاء».
       #
@@ -222,7 +223,7 @@ jobs:
           npx vitest run
           tests/v135-permissions-policy.test.ts
 
-      # ── صوتُ المتصفّح (المرحلة 1): الرايةُ وتهيئتُها الأمنيّة وحدهما ──
+      # ── صوتُ المتصفّح: الرايةُ وتهيئتُها الأمنيّة ──
       #
       # يُثبت أنّ الرايةَ لا تشتعل إلا بـ`1` حرفيًّا، وأنّ الترويسات بغيابها
       # هي نفسُها حرفًا بحرف، وأنّ سياسةَ المحتوى لا تعرفها أصلًا.
@@ -230,6 +231,24 @@ jobs:
         run: >-
           npx vitest run
           tests/v149-browser-voice-flag.test.ts
+
+      # ── صوتُ المتصفّح (المرحلة 2): قراءةُ الرد بضغطة ──
+      #
+      # مطفأةً: صفُّ أزرار الرد حرفًا بحرف ولا لمسةَ لواجهة الصوت. ومشتعلةً:
+      # لا قراءةَ بلا ضغطة، وجلسةٌ واحدة، وأحداثُ الجلسة الملغاة لا تُطفئ
+      # التي تليها، والتنقّلُ وإعادةُ التوليد يُسكتان القراءة. ولا نصَّ يُسلَّم
+      # لصوتٍ ليس من أصوات الجهاز قبل موافقةٍ صريحة. ومع الصوت المحلّيّ تغيب
+      # «استمع» كلُّها، والإفصاحُ في صفحة الخصوصيّة يتبعها حضورًا وغيابًا.
+      - name: Browser Voice read-aloud tests
+        run: >-
+          npx vitest run
+          tests/v150-browser-voice-speech-text.test.ts
+          tests/v150-browser-voice-read-aloud.test.ts
+          tests/v150-browser-voice-ssr.test.ts
+          tests/v150-browser-voice-ui.test.tsx
+          tests/v150-browser-voice-off.test.tsx
+          tests/v151-voice-modes.test.tsx
+          tests/v151-browser-voice-privacy.test.tsx
 
       - name: Browser Assistant tests
         run: >-
@@ -265,10 +284,13 @@ jobs:
             echo "> This gate does not enable it anywhere, and Production must not set it —"
             echo "> see \`docs/local-voice-engine-contract.md\` (PRODUCTION ENABLEMENT BLOCKER)."
             echo ""
-            echo "**Browser Voice (Phase 1: flag only)**"
+            echo "**Browser Voice (flag + read-aloud behind it)**"
             echo "- \`NEXT_PUBLIC_YSD_BROWSER_VOICE\` absent from the gate environment and from every tracked env file"
-            echo "- flag and Permissions-Policy wiring only; no STT/TTS code reads it yet; CSP unaffected"
-            echo "- with the flag absent the production-default headers are byte-identical to before"
+            echo "- behind the flag: per-reply read-aloud with the browser's own speech synthesis, started only by a click; no speech-to-text, no microphone code, no call from YSD code to a server or model provider; CSP unaffected"
+            echo "- the browser's speech engine may itself use an online voice, in which case the reply text leaves the device: a voice the browser does not report as a device voice is used only after the user's explicit consent, asked before any text is handed over; see \`docs/browser-voice.md\` before enabling the flag anywhere"
+            echo "- Local Voice takes precedence: when its flag is on, read-aloud is absent (no control, no consent prompt, no privacy-page section) and Local Voice is unchanged"
+            echo "- with the flag absent: no read-aloud control is rendered, the browser speech API is never touched, and the production-default headers are byte-identical to before"
+            echo "- the read-aloud code may remain in the OFF bundle; the asserted invariant is unreachability, not absence"
             echo ""
             echo "> Browser Voice remains OFF unless \`NEXT_PUBLIC_YSD_BROWSER_VOICE\` is literal \`1\` at build time."
             echo "> This gate does not enable it anywhere, and Production must not set it."

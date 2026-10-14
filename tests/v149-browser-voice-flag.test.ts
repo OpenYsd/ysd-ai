@@ -6,8 +6,10 @@
  *
  *  - `NEXT_PUBLIC_YSD_BROWSER_VOICE` لا تشتعل إلا بـ`"1"` حرفيًّا، واسمُها
  *    مكتوبٌ حرفيًّا في المصدر (استبدالُ المُجمِّع).
- *  - سياسةُ الأذونات تفتح الميكروفونَ لـ`self` حين تشتعل **أيٌّ** من رايتَي
- *    الصوت — وتبقى بالحرف كما هي اليوم حين تُطفأ كلتاهما.
+ *  - سياسةُ الأذونات لا تعرف هذه الراية: الميكروفونُ لـ`self` للصوت المحلّيّ
+ *    وحدَه، وبهذه الراية وحدَها تبقى الترويسةُ بالحرف كما هي في الإنتاج.
+ *    (فتحتها المرحلةُ 1 لهذه الراية تمهيدًا للإملاء؛ وأُغلقت في PR #19:
+ *    القراءةُ بصوت المتصفّح لا تحتاج الميكروفون.)
  *  - سياسةُ المحتوى لا تتغيّر بهذه الراية أصلًا: لا حلقةَ محلّية ولا شيء.
  *  - `Dockerfile` يُعلن الرايةَ ولا يُثبّت لها قيمة.
  *  - البوّابةُ تؤكّد غيابَها في بيئة البناء وفي ملفّات `.env` المتتبَّعة،
@@ -76,23 +78,31 @@ describe("v149 — الرايةُ لا تشتعل إلا بـ«1» حرفيًّ�
   });
 });
 
-describe("v149 — سياسةُ الأذونات: أيٌّ من الرايتين تفتح الميكروفونَ لـself", () => {
+/**
+ * ★ الميكروفونُ للصوت المحلّيّ وحدَه.
+ *
+ * «استمع» تقرأ بـ`speechSynthesis` ولا تسمع: لا `getUserMedia` ولا
+ * `SpeechRecognition`. فرايتُها لا تفتح الميكروفون — وفتحُه بلا مستعمِل
+ * توسيعٌ لسطح الهجوم بلا مقابل. والجدولُ الأربعيّ كلُّه هنا:
+ */
+describe("v149 — سياسةُ الأذونات: رايةُ المتصفّح لا تفتح الميكروفون", () => {
   it("كلتاهما مطفأتان ⇒ النصُّ المُصلَّب حرفًا بحرف", () => {
     expect(buildPermissionsPolicy({})).toBe(HARDENED);
     expect(buildPermissionsPolicy({ [B]: undefined, [L]: undefined })).toBe(HARDENED);
   });
 
-  it("المتصفّحُ وحده ⇒ self", () => {
-    expect(buildPermissionsPolicy({ [B]: "1" })).toBe(VOICE_ON);
-    expect(isVoiceOn({ [B]: "1" })).toBe(true);
+  it("المتصفّحُ وحده ⇒ النصُّ المُصلَّب حرفًا بحرف (microphone=())", () => {
+    expect(buildPermissionsPolicy({ [B]: "1" })).toBe(HARDENED);
+    expect(isVoiceOn({ [B]: "1" })).toBe(false);
   });
 
   it("المحلّيّ وحده ⇒ self (كما كان)", () => {
     expect(buildPermissionsPolicy({ [L]: "1" })).toBe(VOICE_ON);
   });
 
-  it("وكلتاهما ⇒ self مرّةً واحدة، ولا شيء غيره", () => {
+  it("وكلتاهما ⇒ self مرّةً واحدة، ولا شيء غيره — بالصوت المحلّيّ", () => {
     expect(buildPermissionsPolicy({ [B]: "1", [L]: "1" })).toBe(VOICE_ON);
+    expect(buildPermissionsPolicy({ [B]: "1", [L]: "1" })).toBe(buildPermissionsPolicy({ [L]: "1" }));
   });
 
   it.each(NEAR_MISSES)("«%j» في راية المتصفّح تُبقي الميكروفونَ ممنوعًا", (value) => {
@@ -100,17 +110,19 @@ describe("v149 — سياسةُ الأذونات: أيٌّ من الرايتين
     expect(isVoiceOn({ [B]: value })).toBe(false);
   });
 
-  it("ودلالةُ الراية واحدةٌ في الترويسة والواجهة", () => {
+  /** الواجهةُ ترى الرايةَ بدلالتها (`"1"` وحدَها) — والترويسةُ لا تراها بأيّ قيمة */
+  it("والترويسةُ لا تتبع رايةَ المتصفّح بأيّ قيمةٍ تراها الواجهة", () => {
     for (const value of ["1", ...NEAR_MISSES]) {
-      expect(isVoiceOn({ [B]: value })).toBe(isBrowserVoiceEnabled({ [B]: value }));
+      expect(isVoiceOn({ [B]: value })).toBe(false);
+      expect(buildPermissionsPolicy({ [B]: value })).toBe(HARDENED);
+      expect(buildPermissionsPolicy({ [B]: value, [L]: "1" })).toBe(VOICE_ON);
     }
+    expect(isBrowserVoiceEnabled({ [B]: "1" })).toBe(true);
   });
 
-  it("والفرقُ بين الحالتين محصورٌ في الميكروفون وحدَه", () => {
-    const on = buildPermissionsPolicy({ [B]: "1" });
-    expect(on.replace("microphone=(self)", "microphone=()")).toBe(HARDENED);
-    expect(on).not.toContain("*");
-    expect(on).not.toMatch(/127\.0\.0\.1|localhost|https?:\/\//);
+  it("ورايةُ المتصفّح لا تُغيّر في الترويسة حرفًا", () => {
+    expect(buildPermissionsPolicy({ [B]: "1" })).toBe(buildPermissionsPolicy({}));
+    expect(buildPermissionsPolicy({ [B]: "1" })).not.toContain("(self)");
   });
 });
 
@@ -403,7 +415,16 @@ describe("v149 — الحارسُ يُنفَّذ: الغيابُ وحدَه يم
   });
 });
 
-describe("v149 — المرحلةُ 1 رايةٌ فقط: لا ميزةَ تُقرأ منها بعد", () => {
+/**
+ * ★ منذ المرحلة 2 صارت خلف الراية ميزة (القراءةُ بصوت المتصفّح) — والثابتُ باقٍ:
+ *
+ * اسمُ المتغيّر لا يُقرأ إلا في وحدة الراية. والميزةُ تسأل
+ * `isBrowserVoiceEnabled()`، فلا يتفرّق الاسمُ ولا يختلف موضعان في معنى
+ * «مشتعلة». وسلوكُ الميزة نفسُه مقيسٌ في `tests/v150-browser-voice-*`.
+ * (وسياسةُ الأذونات كانت تقرؤه منذ المرحلة 1؛ ولم تعد: الميكروفونُ للصوت
+ * المحلّيّ وحدَه.)
+ */
+describe("v149 — اسمُ المتغيّر لا يُقرأ إلا في وحدة الراية", () => {
   /** يمشي على الشيفرة المشحونة وحدَها — لا `node_modules` ولا `.next` ولا الاختبارات */
   function walk(dir: string, acc: string[] = []): string[] {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -415,7 +436,7 @@ describe("v149 — المرحلةُ 1 رايةٌ فقط: لا ميزةَ تُق�
     return acc;
   }
 
-  it("لا مكوّنَ ولا مسارَ يقرأ الرايةَ خارجَ وحدتها وسياسةِ الأذونات", () => {
+  it("لا مكوّنَ ولا مسارَ ولا ترويسةَ يقرأ الرايةَ خارجَ وحدتها", () => {
     const files = [
       ...walk(join(ROOT, "app")),
       ...walk(join(ROOT, "components")),
@@ -427,7 +448,7 @@ describe("v149 — المرحلةُ 1 رايةٌ فقط: لا ميزةَ تُق�
       .filter((f) => readFileSync(f, "utf8").includes("NEXT_PUBLIC_YSD_BROWSER_VOICE"))
       .map((f) => relative(ROOT, f).replace(/\\/g, "/"))
       .sort();
-    expect(readers).toEqual(["lib/browser-voice/flag.ts", "lib/permissions-policy.mjs"]);
+    expect(readers).toEqual(["lib/browser-voice/flag.ts"]);
   });
 
   /** ★ ورايةُ الصوت المحلّيّ لم تُمسّ: وحدتُها ومكوّناتُها لا تعرف الرايةَ الجديدة */
