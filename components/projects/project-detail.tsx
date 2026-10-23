@@ -237,7 +237,7 @@ export function ProjectDetail({
                 type="submit"
                 disabled={!name.trim() || saving}
                 className="px-4 py-2 rounded-xl text-[13px] font-medium text-white disabled:opacity-50 transition-all hover:brightness-110"
-                style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                style={{ background: "rgb(var(--c-primary))" }}
               >
                 {t("save")}
               </button>
@@ -254,7 +254,7 @@ export function ProjectDetail({
                 onClick={() => void newChatInProject()}
                 disabled={busy}
                 className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12.5px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-                style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                style={{ background: "rgb(var(--c-primary))" }}
               >
                 <Plus size={13} />
                 {t("chatInProject")}

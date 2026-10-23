@@ -104,7 +104,7 @@ export function ProjectFiles({
           onClick={() => inputRef.current?.click()}
           disabled={progress !== null}
           className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12.5px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-          style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+          style={{ background: "rgb(var(--c-primary))" }}
         >
           <Upload size={13} />
           {t("uploadToProject")}
@@ -130,7 +130,7 @@ export function ProjectFiles({
               className="h-full rounded-full transition-all"
               style={{
                 width: `${progress}%`,
-                background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
+                background: "rgb(var(--c-primary))",
               }}
             />
           </div>

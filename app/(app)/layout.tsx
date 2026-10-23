@@ -24,7 +24,7 @@ export default async function AppLayout({
    */
   if (!(await hasAcceptedCurrentTerms(supabase, userId))) redirect("/accept-terms");
 
-  const [{ data: profile }, { data: sub }, { data: conversations }] =
+  const [{ data: profile }, { data: sub }, { data: conversations }, { data: projects }] =
     await Promise.all([
       supabase.from("profiles").select("display_name").eq("id", userId).maybeSingle(),
       supabase.from("subscriptions").select("tier").eq("user_id", userId).maybeSingle(),
@@ -35,6 +35,14 @@ export default async function AppLayout({
         .is("deleted_at", null)
         .order("updated_at", { ascending: false })
         .limit(100),
+      // لوحة المشاريع والبحث السريع: الاسم والمعرّف فقط، من الجدول القائم
+      supabase
+        .from("projects")
+        .select("id, name")
+        .eq("user_id", userId)
+        .is("deleted_at", null)
+        .order("last_activity_at", { ascending: false })
+        .limit(50),
     ]);
 
   return (
@@ -42,6 +50,7 @@ export default async function AppLayout({
       userName={profile?.display_name ?? ""}
       tier={sub?.tier ?? "free"}
       conversations={conversations ?? []}
+      projects={projects ?? []}
       isAdmin={ctx.role === "admin" || ctx.role === "owner"}
     >
       {children}

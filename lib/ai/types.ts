@@ -127,6 +127,12 @@ export interface ModelInfo {
   displayNameEn: string;
   contextWindow: number;
   enabled: boolean;
+  /**
+   * أنواع المدخلات والمخرجات (اختيارية). يقرؤها lib/models/gateway.ts، وغيابها
+   * يعني نصًّا فقط — فلا يُنسب إلى نموذجٍ قدرةٌ لم يعلنها مزوّده.
+   */
+  inputModalities?: readonly ("text" | "image" | "audio" | "file")[];
+  outputModalities?: readonly ("text" | "image" | "audio" | "file")[];
 }
 
 /**

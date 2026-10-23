@@ -4,6 +4,7 @@ import { getAdminContext } from "@/lib/admin/guard";
 import { cookies } from "next/headers";
 import { I18nProvider, type Locale } from "@/lib/i18n";
 import { ThemeProvider, type Theme } from "@/components/theme";
+import { UI_BRIGHTNESS_COOKIE, parseUiBrightness } from "@/lib/ui-preferences";
 import { AdminNav } from "@/components/admin/admin-nav";
 
 /**
@@ -21,9 +22,10 @@ export default async function AdminLayout({
   const store = await cookies();
   const locale: Locale = store.get("ysd-locale")?.value === "en" ? "en" : "ar";
   const theme: Theme = store.get("ysd-theme")?.value === "light" ? "light" : "dark";
+  const brightness = parseUiBrightness(store.get(UI_BRIGHTNESS_COOKIE)?.value);
 
   return (
-    <ThemeProvider initialTheme={theme}>
+    <ThemeProvider initialTheme={theme} initialBrightness={brightness}>
       <I18nProvider initialLocale={locale}>
         <div className="min-h-dvh flex flex-col md:flex-row">
           <AdminNav isOwner={ctx.isOwner} />

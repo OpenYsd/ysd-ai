@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { I18nProvider, type Locale } from "@/lib/i18n";
 import { ThemeProvider, type Theme } from "@/components/theme";
+import { UI_BRIGHTNESS_COOKIE, parseUiBrightness, uiBrightnessCss } from "@/lib/ui-preferences";
 import { BRAND, BRAND_COLORS } from "@/lib/brand";
 import { LANDING_DESCRIPTION } from "@/lib/landing-copy";
 import { publicOrigin } from "@/lib/http/origin";
@@ -72,16 +73,18 @@ export default async function RootLayout({
   const store = await cookies();
   const locale: Locale = store.get("ysd-locale")?.value === "en" ? "en" : "ar";
   const theme: Theme = store.get("ysd-theme")?.value === "light" ? "light" : "dark";
+  const brightness = parseUiBrightness(store.get(UI_BRIGHTNESS_COOKIE)?.value);
 
   return (
     <html
       lang={locale}
       dir={locale === "ar" ? "rtl" : "ltr"}
       data-theme={theme}
+      style={{ "--ui-b": uiBrightnessCss(brightness) } as React.CSSProperties}
       suppressHydrationWarning
     >
       <body className="text-ink antialiased">
-        <ThemeProvider initialTheme={theme}>
+        <ThemeProvider initialTheme={theme} initialBrightness={brightness}>
           <I18nProvider initialLocale={locale}>{children}</I18nProvider>
         </ThemeProvider>
       </body>

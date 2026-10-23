@@ -98,7 +98,7 @@ export function AccountView({
                 type="submit"
                 disabled={saving || !name.trim()}
                 className="px-4 py-2 rounded-xl text-[13px] font-medium text-white disabled:opacity-50 transition-all hover:brightness-110"
-                style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                style={{ background: "rgb(var(--c-primary))" }}
               >
                 {t("save")}
               </button>
@@ -164,7 +164,7 @@ function UsageBar({
           className="h-full rounded-full transition-all"
           style={{
             width: `${pct}%`,
-            background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
+            background: "rgb(var(--c-primary))",
           }}
         />
       </div>

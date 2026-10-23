@@ -151,7 +151,7 @@ export function ChatComposer({
         dragging
           ? "border-primary/70"
           : centered
-            ? "border-primary/40 shadow-[0_0_50px_rgba(108,75,240,.12)]"
+            ? "border-primary/40"
             : "border-line focus-within:border-primary/50"
       }`}
     >
@@ -295,7 +295,7 @@ export function ChatComposer({
             disabled={!input.trim() || disabled || sendBlocked}
             title={sendBlocked ? t("waitForUploads") : undefined}
             className="flex h-9 items-center gap-1.5 rounded-xl px-4 text-[13px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-35"
-            style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+            style={{ background: "rgb(var(--c-primary))" }}
           >
             {sendLabel}
             <ArrowUp size={14} />

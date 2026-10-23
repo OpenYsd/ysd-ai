@@ -7,43 +7,50 @@
 :root {
   --font-body: "IBM Plex Sans Arabic";
   --font-display: "Noto Kufi Arabic";
+  /**
+   * سطوع الواجهة: 0 (الأخفت) … 1 (الأسطع). يضعه التخطيط الجذري على <html> من
+   * Cookie ysd-ui-brightness، ويغيّره منزلق الإعدادات مباشرةً.
+   * يحرّك الخلفيات وحدها؛ والنصوص ثابتة ومختارة لتبقى ≥ عتبات WCAG على امتداد
+   * المدى كله (tests/platform-theme.test.ts).
+   */
+  --ui-b: 0.5;
 }
 
-/* ===== هوية YSD AI — الوضع الداكن (الافتراضي) ===== */
+/* ===== هوية YSD — الوضع الداكن (الافتراضي): فحمي محايد، وتمييز أخضر مزرقّ هادئ ===== */
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --c-night: 13 9 24;
-  --c-surface: 21 15 40;
-  --c-raised: 26 19 48;
-  --c-line: 42 33 72;
-  --c-primary: 108 75 240;
-  --c-primary-deep: 78 46 212;
-  --c-primary-glow: 139 108 246;
-  --c-ink: 216 210 238;
-  --c-ink-strong: 242 238 255;
-  --c-ink-dim: 139 127 184;
-  --c-ink-faint: 110 95 160;
-  --bg-app: radial-gradient(1200px 700px at 85% -10%, #1e1440 0%, #0d0918 55%);
-  --scrollbar: #2e2450;
+  --c-night: calc(11 + 19 * var(--ui-b)) calc(12 + 19 * var(--ui-b)) calc(13 + 21 * var(--ui-b));
+  --c-surface: calc(17 + 21 * var(--ui-b)) calc(18 + 21 * var(--ui-b)) calc(20 + 23 * var(--ui-b));
+  --c-raised: calc(24 + 23 * var(--ui-b)) calc(25 + 23 * var(--ui-b)) calc(27 + 26 * var(--ui-b));
+  --c-line: calc(40 + 26 * var(--ui-b)) calc(41 + 27 * var(--ui-b)) calc(45 + 29 * var(--ui-b));
+  --c-primary: 15 118 110;
+  --c-primary-deep: 17 94 89;
+  --c-primary-glow: 94 196 182;
+  --c-ink: 218 219 222;
+  --c-ink-strong: 240 241 243;
+  --c-ink-dim: 168 170 176;
+  --c-ink-faint: 152 154 161;
+  --bg-app: radial-gradient(1200px 700px at 85% -10%, rgb(var(--c-raised)) 0%, rgb(var(--c-night)) 55%);
+  --scrollbar: rgb(var(--c-line));
 }
 
-/* ===== الوضع الفاتح ===== */
+/* ===== الوضع النهاري: هادئ، بلا أبيض صافٍ ===== */
 :root[data-theme="light"] {
   color-scheme: light;
-  --c-night: 250 249 254;
-  --c-surface: 243 240 252;
-  --c-raised: 255 255 255;
-  --c-line: 226 220 244;
-  --c-primary: 100 66 232;
-  --c-primary-deep: 78 46 212;
-  --c-primary-glow: 124 92 255;
-  --c-ink: 43 36 64;
-  --c-ink-strong: 23 16 46;
-  --c-ink-dim: 110 99 154;
-  --c-ink-faint: 151 141 190;
-  --bg-app: radial-gradient(1200px 700px at 85% -10%, #e9e2fb 0%, #faf9fe 55%);
-  --scrollbar: #d5ccef;
+  --c-night: calc(214 + 28 * var(--ui-b)) calc(215 + 28 * var(--ui-b)) calc(218 + 26 * var(--ui-b));
+  --c-surface: calc(206 + 28 * var(--ui-b)) calc(207 + 28 * var(--ui-b)) calc(211 + 26 * var(--ui-b));
+  --c-raised: calc(224 + 26 * var(--ui-b)) calc(225 + 25 * var(--ui-b)) calc(228 + 23 * var(--ui-b));
+  --c-line: calc(188 + 30 * var(--ui-b)) calc(190 + 30 * var(--ui-b)) calc(195 + 29 * var(--ui-b));
+  --c-primary: 15 118 110;
+  --c-primary-deep: 17 94 89;
+  --c-primary-glow: 12 97 91;
+  --c-ink: 38 41 47;
+  --c-ink-strong: 20 22 26;
+  --c-ink-dim: 70 74 82;
+  --c-ink-faint: 84 88 97;
+  --bg-app: radial-gradient(1200px 700px at 85% -10%, rgb(var(--c-surface)) 0%, rgb(var(--c-night)) 55%);
+  --scrollbar: rgb(var(--c-line));
 }
 
 body {
@@ -91,9 +98,64 @@ body {
   }
 }
 
+/*
+ * منزلقٌ هادئ (سطوع الواجهة): مسارٌ رفيع بلون الخطوط، والجزء المملوء بلون التمييز
+ * (--range-fill من المكوّن)، ومقبضٌ محايد. المسار الأصلي للمتصفح أبيض فاقع على الداكن.
+ * في RTL يبدأ الامتلاء من اليمين، كما يبدأ المنزلق نفسه.
+ */
+.ysd-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+  --range-dir: right;
+}
+[dir="rtl"] .ysd-range {
+  --range-dir: left;
+}
+.ysd-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to var(--range-dir),
+    rgb(var(--c-primary-glow)) var(--range-fill, 50%),
+    rgb(var(--c-line)) var(--range-fill, 50%)
+  );
+}
+.ysd-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 9999px;
+  background: rgb(var(--c-ink-strong));
+  border: 3px solid rgb(var(--c-surface));
+  box-shadow: 0 0 0 1px rgb(var(--c-line));
+}
+.ysd-range::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: rgb(var(--c-line));
+}
+.ysd-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 9999px;
+  background: rgb(var(--c-primary-glow));
+}
+.ysd-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: rgb(var(--c-ink-strong));
+  border: 3px solid rgb(var(--c-surface));
+  box-shadow: 0 0 0 1px rgb(var(--c-line));
+}
+
 textarea:focus-visible,
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid rgb(var(--c-primary-glow) / 0.35);
+  outline: 2px solid rgb(var(--c-primary-glow) / 0.8);
   outline-offset: 1px;
 }

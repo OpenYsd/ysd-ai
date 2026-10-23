@@ -9,7 +9,7 @@ export default function BetaPage() {
         <Link
           href="/register"
           className="w-full text-center rounded-xl py-3 text-sm font-medium text-white transition-all hover:brightness-110"
-          style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+          style={{ background: "rgb(var(--c-primary))" }}
         >
           الانضمام بكود دعوة
         </Link>

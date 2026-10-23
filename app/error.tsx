@@ -63,7 +63,7 @@ export default function AppError({
           className="w-full rounded-xl py-3 text-sm font-medium text-white transition-all
                      hover:brightness-110 focus-visible:outline-none
                      focus-visible:ring-2 focus-visible:ring-primary-glow"
-          style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+          style={{ background: "rgb(var(--c-primary))" }}
         >
           {failureText("retry", locale)}
         </button>

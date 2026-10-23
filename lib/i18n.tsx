@@ -26,6 +26,28 @@ const dict = {
   comingSoon: { ar: "قريبًا", en: "Soon" },
   logout: { ar: "تسجيل الخروج", en: "Sign out" },
   collapseSidebar: { ar: "طي الشريط الجانبي", en: "Collapse sidebar" },
+  // ── وحدات المنصّة (lib/platform/modules.ts) — أسماء قصيرة ──
+  moduleChat: { ar: "المحادثة", en: "Chat" },
+  moduleProjects: { ar: "المشاريع", en: "Projects" },
+  moduleLibrary: { ar: "المكتبة", en: "Library" },
+  moduleCode: { ar: "الشيفرة", en: "Code" },
+  moduleExtensions: { ar: "الإضافات", en: "Extensions" },
+  moduleAutomations: { ar: "الأتمتة", en: "Automations" },
+  moduleModels: { ar: "النماذج", en: "Models" },
+  mainNavigation: { ar: "التنقل الرئيسي", en: "Main navigation" },
+  adminPanel: { ar: "لوحة الإدارة", en: "Admin" },
+  quickSearch: { ar: "بحث سريع", en: "Quick search" },
+  userMenu: { ar: "قائمة الحساب", en: "Account menu" },
+  settingsSections: { ar: "أقسام الإعدادات", en: "Settings sections" },
+  themeMode: { ar: "الوضع", en: "Mode" },
+  quickSearchPlaceholder: { ar: "ابحث في المحادثات والمشاريع", en: "Search chats and projects" },
+  quickSearchEmpty: { ar: "لا نتائج", en: "No results" },
+  quickSearchPages: { ar: "الأقسام", en: "Sections" },
+  noProjectsShort: { ar: "لا مشاريع بعد", en: "No projects yet" },
+  settingsSearchPlaceholder: { ar: "ابحث في الإعدادات", en: "Search settings" },
+  settingsNoResults: { ar: "لا إعداد مطابق", en: "No matching setting" },
+  uiBrightness: { ar: "سطوع الواجهة", en: "Interface brightness" },
+  uiBrightnessHint: { ar: "يُحفظ على هذا الجهاز", en: "Saved on this device" },
   send: { ar: "إرسال", en: "Send" },
   stop: { ar: "إيقاف", en: "Stop" },
   copy: { ar: "نسخ", en: "Copy" },
@@ -1232,7 +1254,7 @@ const dict = {
   },
 } as const;
 
-type DictKey = keyof typeof dict;
+export type DictKey = keyof typeof dict;
 
 interface I18nContextValue {
   locale: Locale;

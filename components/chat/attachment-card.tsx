@@ -177,7 +177,7 @@ export function AttachmentCard({
           >
             <div
               className="h-full rounded-full transition-[width] duration-300"
-              style={{ width: `${a.progress ?? 0}%`, background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)" }}
+              style={{ width: `${a.progress ?? 0}%`, background: "rgb(var(--c-primary))" }}
             />
           </div>
         )}

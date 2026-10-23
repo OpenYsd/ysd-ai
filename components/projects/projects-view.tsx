@@ -99,7 +99,7 @@ export function ProjectsView({
         <button
           onClick={() => setShowCreate((v) => !v)}
           className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[13px] font-medium text-white transition-all hover:brightness-110"
-          style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+          style={{ background: "rgb(var(--c-primary))" }}
         >
           {showCreate ? <X size={14} /> : <Plus size={14} />}
           {t("newProject")}
@@ -169,7 +169,7 @@ export function ProjectsView({
                   type="submit"
                   disabled={!name.trim() || creating}
                   className="px-4 py-2 rounded-xl text-[13px] font-medium text-white disabled:opacity-50 transition-all hover:brightness-110"
-                  style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                  style={{ background: "rgb(var(--c-primary))" }}
                 >
                   {creating ? t("creating") : t("save")}
                 </button>

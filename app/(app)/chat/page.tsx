@@ -2,8 +2,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
-import { listModelOptions } from "@/lib/ai/registry";
-import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
+import { listModelsForUser } from "@/lib/models/gateway";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 
 export default async function NewChatPage() {
@@ -14,15 +13,10 @@ export default async function NewChatPage() {
   const userId = ctx.userId;
 
   /**
-   * القائمة تُوسم بخطة المستخدم على الخادم: ما يظهر يجب أن يطابق ما يقبله
-   * /api/chat، وإلا اختار المستخدم ما سيُرفض أو يُخفَّض.
+   * القائمة من بوابة النماذج، موسومةً بخطة المستخدم على الخادم: ما يظهر يجب أن
+   * يطابق ما يقبله /api/chat، وإلا اختار المستخدم ما سيُرفض أو يُخفَّض.
    */
-  const policy = await loadModelPolicy(supabase, userId);
-  const minTierById = new Map(policy.models.map((m) => [m.id, m.min_tier]));
-  const models: ChatModel[] = listModelOptions().map((o) => {
-    const minTier = minTierById.get(o.id) ?? "free";
-    return { ...o, minTier, locked: !tierAllows(policy.userTier, minTier) };
-  });
+  const models: ChatModel[] = await listModelsForUser(supabase, userId);
 
   const [{ data: prefs }, { data: profile }] = await Promise.all([
     supabase

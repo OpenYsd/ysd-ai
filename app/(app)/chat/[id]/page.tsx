@@ -3,8 +3,7 @@ import { headers } from "next/headers";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
-import { listModelOptions } from "@/lib/ai/registry";
-import { loadModelPolicy, tierAllows } from "@/lib/ai/model-policy";
+import { listModelsForUser } from "@/lib/models/gateway";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 import { loadConversationEvidence } from "@/lib/evidence/evidence-reader";
 import { evidenceSummaryFromMetadata } from "@/lib/evidence/client-citation";
@@ -77,12 +76,7 @@ export default async function ConversationPage({
    * القائمة تُوسم بخطة المستخدم على الخادم: ما يظهر يجب أن يطابق ما يقبله
    * /api/chat، وإلا اختار المستخدم ما سيُرفض أو يُخفَّض.
    */
-  const policy = await loadModelPolicy(supabase, userId);
-  const minTierById = new Map(policy.models.map((m) => [m.id, m.min_tier]));
-  const models: ChatModel[] = listModelOptions().map((o) => {
-    const minTier = minTierById.get(o.id) ?? "free";
-    return { ...o, minTier, locked: !tierAllows(policy.userTier, minTier) };
-  });
+  const models: ChatModel[] = await listModelsForUser(supabase, userId);
 
   const initialAttachments = (convFiles ?? []).map((f) => ({
     id: f.id,

@@ -42,7 +42,6 @@ import {
   CLIENT_MAX_VERSION,
   type EvidenceLayout,
 } from "@/lib/evidence/evidence-layout";
-import { LogoMark } from "@/components/logo";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { TrainingShareAction } from "./training-share-action";
 import { Markdown } from "./markdown";
@@ -50,6 +49,7 @@ import { detectImageIntent } from "@/lib/local-image/intent";
 import { isLocalVoiceEnabled } from "@/lib/local-voice/flag";
 import { isLocalImageEnabled } from "@/lib/local-image/flag";
 import { LocalImagePanel } from "@/components/local-image/local-image-panel";
+import { orderForPicker } from "@/lib/models/contracts";
 
 export interface ChatModel {
   id: string;
@@ -375,15 +375,8 @@ export function ChatView({
    * `available !== false` لا `available === true`: المزوّدات القائمة لا ترسل
    * الحقل أصلًا، واعتبار غيابه «غير متاح» كان سيُخفي نماذج عاملة.
    */
-  const orderedModels = useMemo(() => {
-    // المقفول أولًا خارج القائمة المتاحة: خطة المستخدم لا تشمله
-    const locked = models.filter((m) => m.locked === true);
-    const rest = models.filter((m) => m.locked !== true);
-    const available = rest.filter((m) => m.available !== false);
-    const unavailable = rest.filter((m) => m.available === false);
-    available.sort((a, b) => (a.id === modelId ? -1 : b.id === modelId ? 1 : 0));
-    return { available, unavailable, locked };
-  }, [models, modelId]);
+  // المقفول خارج القائمة المتاحة: خطة المستخدم لا تشمله — الترتيب من عقد بوابة النماذج
+  const orderedModels = useMemo(() => orderForPicker(models, modelId), [models, modelId]);
 
   /**
    * تغيير نموذج المحادثة (v0.8.0).
@@ -1137,15 +1130,13 @@ export function ChatView({
         /* ===== شاشة البداية ===== */
         <div className="flex-1 overflow-y-auto flex flex-col items-center justify-center px-5 py-10">
           <div className="w-full max-w-[640px] rise">
-            <div className="text-center mb-9">
-              <div className="inline-flex mb-5">
-                <LogoMark size={56} />
-              </div>
-              <h1 className="font-display text-[26px] font-bold text-ink-strong mb-2">
+            {/* تحيّةٌ قصيرة فوق شريط الكتابة — بلا شعارٍ كبير: الهويّة في اللوحة، والمساحة للسؤال */}
+            <div className="text-center mb-7">
+              <h1 className="font-display text-[26px] md:text-[30px] font-semibold text-ink-strong mb-1.5">
                 {greeting}
                 {greetingName ? ` يا ${greetingName}` : ""}
               </h1>
-              <p className="text-[14.5px] text-ink-dim">{t("welcomeSub")}</p>
+              <p className="text-[14px] text-ink-faint">{t("welcomeSub")}</p>
             </div>
 
             <ChatComposer
@@ -1171,16 +1162,17 @@ export function ChatView({
               centered
             />
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-6">
+            {/* اقتراحاتٌ صفوفًا خفيفة لا بطاقات — تُقرأ بنظرة ولا تزاحم شريط الكتابة */}
+            <div className="mt-5 space-y-0.5">
               {suggestions.map((s) => (
                 <button
                   key={s.title}
                   onClick={() => void send(s.title)}
                   disabled={noProvider}
-                  className="text-start rounded-xl border border-line/70 bg-surface/60 px-4 py-3.5 hover:border-primary/40 hover:bg-raised transition-all disabled:opacity-50"
+                  className="w-full flex items-baseline gap-2 text-start rounded-lg px-3 py-2.5 hover:bg-raised/70 transition-colors disabled:opacity-50"
                 >
-                  <div className="text-[13.5px] font-medium text-ink">{s.title}</div>
-                  <div className="text-[11.5px] text-ink-faint mt-0.5">{s.desc}</div>
+                  <span className="shrink-0 text-[13.5px] text-ink">{s.title}</span>
+                  <span className="min-w-0 truncate text-[12px] text-ink-faint">{s.desc}</span>
                 </button>
               ))}
             </div>
@@ -1194,7 +1186,7 @@ export function ChatView({
             onScroll={onScroll}
             className="flex-1 overflow-y-auto px-4 md:px-6 py-6"
           >
-            <div className="max-w-[760px] mx-auto space-y-6">
+            <div className="max-w-[860px] mx-auto space-y-6">
               {messages.map((m) => (
                 <div key={m.id} className="rise">
                   {m.role === "user" ? (
@@ -1217,7 +1209,7 @@ export function ChatView({
                           <button
                             onClick={() => void saveEdit(m.id)}
                             className="text-[12px] px-3 py-1.5 rounded-lg text-white transition-all hover:brightness-110"
-                            style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                            style={{ background: "rgb(var(--c-primary))" }}
                           >
                             {t("save")}
                           </button>
@@ -1226,8 +1218,8 @@ export function ChatView({
                     ) : (
                       <div className="group flex justify-start items-start gap-2">
                         <div
-                          className="max-w-[85%] rounded-2xl rounded-ss-md px-4 py-3 text-[14px] leading-[1.8] text-white whitespace-pre-wrap"
-                          style={{ background: "linear-gradient(135deg,#41307E,#2E2160)" }}
+                          className="max-w-[85%] rounded-2xl rounded-ss-md px-4 py-3 text-[14px] leading-[1.8] text-ink-strong border border-line/60 whitespace-pre-wrap"
+                          style={{ background: "rgb(var(--c-raised))" }}
                         >
                           {m.content}
                         </div>
@@ -1247,10 +1239,7 @@ export function ChatView({
                       </div>
                     )
                   ) : (
-                    <div className="flex gap-3">
-                      <div className="mt-0.5 shrink-0">
-                        <LogoMark size={28} />
-                      </div>
+                    <div className="flex">
                       <div className="min-w-0 flex-1">
                         {m.content ? (
                           <Markdown
@@ -1468,7 +1457,7 @@ export function ChatView({
           </div>
 
           <div className="px-4 md:px-6 pb-4 pt-1">
-            <div className="max-w-[760px] mx-auto">
+            <div className="max-w-[860px] mx-auto">
               <ChatComposer
                 input={input}
                 setInput={setInput}

@@ -114,7 +114,7 @@ function UsageBar({
   const remaining = Math.max(0, limit - used);
   const near = !unavailable && limit > 0 && pct >= 80 && pct < 100;
   const at = !unavailable && limit > 0 && used >= limit;
-  const color = at ? "#ef4444" : near ? "#f59e0b" : "#8B6CF6";
+  const color = at ? "#ef4444" : near ? "#f59e0b" : "rgb(var(--c-primary))";
 
   return (
     <div>

@@ -4,6 +4,8 @@ import { listModelOptions } from "@/lib/ai/registry";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { LocalAiSettings } from "@/components/local-image/local-ai-settings";
 import { LocalPairingPanel } from "@/components/local-pairing/pairing-panel";
+// مزوّد البحث في الهيكل (AppShell): حقله وقائمة الأقسام في اللوحة الجانبية
+import { SettingsSection } from "@/components/settings/settings-search";
 
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -19,25 +21,28 @@ export default async function SettingsPage() {
   const models = listModelOptions();
 
   return (
-    <>
-      <SettingsForm
-        models={models}
-        initialDefaultModelId={prefs?.default_model_id ?? null}
-      />
+    <SettingsForm
+      models={models}
+      initialDefaultModelId={prefs?.default_model_id ?? null}
+    >
       {/**
         * سطحُ الذكاء المحلّيّ — يُصيَّر لنفسه، ويغيب تمامًا بإطفاء الراية.
         *
         * ولا شرطَ هنا في الخادم: المكوّنُ يقرأ الرايةَ ويردّ `null`. فمصدرُ
         * القرار واحد، ولا يفترق ما يقرّره الخادمُ عمّا يقرّره المتصفّح.
         */}
-      <LocalAiSettings />
+      <SettingsSection id="localEngine">
+        <LocalAiSettings />
+      </SettingsSection>
       {/**
         * ★ والاقترانُ لوحةٌ مستقلّةٌ برايةٍ مستقلّة.
         *
         *   فقد يُشعل المستخدمُ الاقترانَ وحدَه دون توليد الصور، أو العكس.
         *   ودمجُهما في لوحةٍ واحدة يجعل إطفاءَ إحداهما يُخفي الأخرى.
         */}
-      <LocalPairingPanel />
-    </>
+      <SettingsSection id="pairing">
+        <LocalPairingPanel />
+      </SettingsSection>
+    </SettingsForm>
   );
 }

@@ -242,7 +242,7 @@ export function FilesView({
               className="h-full rounded-full"
               style={{
                 width: `${storagePct}%`,
-                background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
+                background: "rgb(var(--c-primary))",
               }}
             />
           </div>
@@ -322,7 +322,7 @@ export function FilesView({
                   className="h-full rounded-full transition-all"
                   style={{
                     width: `${u.progress}%`,
-                    background: "linear-gradient(90deg,#6C4BF0,#8B6CF6)",
+                    background: "rgb(var(--c-primary))",
                   }}
                 />
               </div>
@@ -545,7 +545,7 @@ function FileRow({
                 onClick={onPrepareRag}
                 disabled={busy}
                 className="flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-lg font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-                style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+                style={{ background: "rgb(var(--c-primary))" }}
               >
                 {busy ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
                 {file.status === "ready" ? t("ragPrepare") : t("ragRetry")}

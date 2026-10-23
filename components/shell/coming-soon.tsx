@@ -28,7 +28,7 @@ export function ComingSoon({ titleKey }: { titleKey: "projects" | "files" }) {
         <Link
           href="/chat"
           className="mt-6 px-4 py-2 rounded-xl text-[13px] font-medium text-white transition-all hover:brightness-110"
-          style={{ background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)" }}
+          style={{ background: "rgb(var(--c-primary))" }}
         >
           {t("backToChat")}
         </Link>

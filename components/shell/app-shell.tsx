@@ -1,38 +1,49 @@
 "use client";
 
 /**
- * الهيكل الرئيسي للتطبيق: شريط جانبي قابل للطي (RTL/LTR)
- * محادثات حقيقية من قاعدة البيانات + بحث + إعادة تسمية + حذف.
+ * الهيكل الموحّد للمنصّة:
+ *   - شريط أيقونات ضيّق للوحدات المتاحة فقط (lib/platform/modules.ts) — لكل أيقونة اسمٌ مسموع، ولا زرّ لوحدةٍ لم تُبنَ؛
+ *   - لوحة سياق شفّافة قليلًا وقابلة للطي، يتبع محتواها الوحدة:
+ *       المحادثة والمشاريع ← محادثة جديدة، ثم المحادثات والمشاريع؛
+ *       الإعدادات ← بحثها وأقسامها؛ المكتبة ← بلا لوحة (الصفحة بعرضها)؛
+ *   - قائمة الحساب من الصورة الرمزية أسفل الشريط: الحساب والاستهلاك والإدارة والخروج؛
+ *   - بحث سريع (Ctrl/⌘ + K أو أيقونة البحث) في الأقسام والمحادثات والمشاريع.
+ * الاتجاه بخصائص منطقية (start/end) فقط، فيصحّ في RTL وLTR معًا.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Check,
-  ChevronsLeft,
-  ChevronsRight,
-  FileText,
+  ChevronDown,
+  Folder,
   FolderKanban,
   Gauge,
-  Languages,
+  Library,
   LogOut,
   Menu,
-  Moon,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
-  Plus,
   Search,
   Settings,
   ShieldCheck,
-  Sun,
+  SquarePen,
   Trash2,
-  User,
+  UserRound,
   X,
+  type LucideIcon,
 } from "lucide-react";
-import { Logo, LogoMark } from "@/components/logo";
+import { LogoMark } from "@/components/logo";
 import { useI18n } from "@/lib/i18n";
-import { useTheme } from "@/components/theme";
+import { activeModuleId, railModules, type PlatformModuleId } from "@/lib/platform/modules";
+import { SettingsNav, SettingsSearchInput, SettingsSearchProvider } from "@/components/settings/settings-search";
 import { ShellProvider, useShell } from "./shell-context";
+import { QuickSearch } from "./quick-search";
 
 export interface ConversationItem {
   id: string;
@@ -40,41 +51,74 @@ export interface ConversationItem {
   updated_at: string;
 }
 
+export interface ProjectItem {
+  id: string;
+  name: string;
+}
+
 interface AppShellProps {
   userName: string;
   tier: string;
   conversations: ConversationItem[];
+  projects?: ProjectItem[];
   isAdmin?: boolean;
   children: React.ReactNode;
+}
+
+/** أيقونة كل وحدة متاحة — الوحدات المخطَّطة لا تُعرض فلا أيقونة لها هنا */
+const MODULE_ICONS: Partial<Record<PlatformModuleId, LucideIcon>> = {
+  chat: MessageSquare,
+  projects: FolderKanban,
+  library: Library,
+  settings: Settings,
+};
+
+/** محتوى اللوحة لكل وحدة — null: الصفحة بعرضها كاملًا */
+type PanelKind = "conversations" | "settings" | null;
+
+function panelFor(id: PlatformModuleId | null): PanelKind {
+  if (id === "settings") return "settings";
+  if (id === "library") return null;
+  return "conversations";
 }
 
 export function AppShell(props: AppShellProps) {
   return (
     <ShellProvider>
-      <ShellInner {...props} />
+      <SettingsSearchProvider>
+        <ShellInner {...props} />
+      </SettingsSearchProvider>
     </ShellProvider>
   );
 }
 
-function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShellProps) {
-  const { t, locale, setLocale, dir } = useI18n();
-  const { theme, setTheme } = useTheme();
+function ShellInner({ userName, tier, conversations, projects = [], isAdmin, children }: AppShellProps) {
+  const { t, dir } = useI18n();
   const { mobileOpen, setMobileOpen } = useShell();
   const router = useRouter();
   const pathname = usePathname();
 
-  const [collapsed, setCollapsed] = useState(false);
-  const [search, setSearch] = useState("");
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [groups, setGroups] = useState({ conversations: true, projects: true });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  const filtered = useMemo(
-    () =>
-      conversations.filter(
-        (c) => !search || c.title.toLowerCase().includes(search.toLowerCase()),
-      ),
-    [conversations, search],
-  );
+  const activeId = activeModuleId(pathname);
+  const panel = panelFor(activeId);
+  const closeMobile = () => setMobileOpen(false);
+
+  /** Ctrl/⌘ + K يفتح البحث السريع من أي صفحة */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const tierLabel =
     tier === "plus"
@@ -105,12 +149,8 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
   }
 
   /**
-   * تحميل مسبق عند المرور/التركيز فقط (v0.7.0 RC7).
-   *
-   * prefetch الافتراضي في Next يبدأ عند دخول الرابط إطار العرض — ومع شريط فيه
-   * عشرات المحادثات يعني ذلك عشرات حمولات RSC بلا داعٍ. الربط بنيّة المستخدم
-   * (مرور المؤشر أو تركيز لوحة المفاتيح) يعطي الفورية نفسها بطلب واحد،
-   * ويحفظ ما جُلب في ذاكرة الموجّه فلا يتكرر.
+   * تحميل مسبق عند المرور/التركيز فقط (v0.7.0 RC7): الربط بنيّة المستخدم يعطي
+   * الفورية بطلب واحد بدل عشرات حمولات RSC عند دخول القائمة إطار العرض.
    */
   const prefetched = useRef<Set<string>>(new Set());
   const prefetchConversation = useCallback(
@@ -122,309 +162,412 @@ function ShellInner({ userName, tier, conversations, isAdmin, children }: AppShe
     [router],
   );
 
-  const CollapseIcon = dir === "rtl" ? ChevronsRight : ChevronsLeft;
-  const ExpandIcon = dir === "rtl" ? ChevronsLeft : ChevronsRight;
+  const ClosePanelIcon = dir === "rtl" ? PanelRightClose : PanelLeftClose;
+  const OpenPanelIcon = dir === "rtl" ? PanelRightOpen : PanelLeftOpen;
 
   return (
     <div className="h-dvh w-full flex overflow-hidden">
       {/* غطاء الجوال */}
       {mobileOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-30 md:hidden"
-          onClick={() => setMobileOpen(false)}
-        />
+        <div className="fixed inset-0 bg-black/60 z-30 md:hidden" onClick={closeMobile} aria-hidden="true" />
       )}
 
-      {/* ===== الشريط الجانبي ===== */}
-      <aside
-        className={`z-40 flex flex-col border-e border-line/60 bg-surface/95 backdrop-blur transition-all duration-200
-          fixed inset-y-0 start-0 md:static
+      {/* ===== الشريط واللوحة: درج على الجوال، ثابتان على الشاشات الواسعة ===== */}
+      <div
+        className={`z-40 flex h-full fixed inset-y-0 start-0 md:static transition-transform duration-200
           ${mobileOpen ? "translate-x-0" : dir === "rtl" ? "translate-x-full md:translate-x-0" : "-translate-x-full md:translate-x-0"}`}
-        style={{ width: collapsed ? 68 : 288 }}
       >
-        <div className="p-4 flex items-center justify-between">
-          <Link href="/chat" onClick={() => setMobileOpen(false)}>
-            <Logo compact={collapsed} tagline={t("tagline")} />
-          </Link>
-          <button
-            onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-            aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-            aria-expanded={!collapsed}
-            className="hidden md:flex w-7 h-7 items-center justify-center rounded-lg text-ink-dim hover:bg-raised transition-colors"
-          >
-            {collapsed ? <ExpandIcon size={15} /> : <CollapseIcon size={15} />}
-          </button>
-          <button
-            onClick={() => setMobileOpen(false)}
-            aria-label={t("closeSidebar")}
-            className="md:hidden w-7 h-7 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* محادثة جديدة */}
-        <div className="px-3">
-          <Link
-            href="/chat"
-            onClick={() => setMobileOpen(false)}
-            className="w-full flex items-center justify-center gap-2.5 rounded-xl px-3 py-2.5 text-[13.5px] font-medium text-white transition-all hover:brightness-110"
-            style={{
-              background: "linear-gradient(135deg,#6C4BF0,#4E2ED4)",
-              boxShadow: "0 4px 16px rgba(108,75,240,.28)",
-            }}
-          >
-            <Plus size={16} />
-            {!collapsed && t("newChat")}
-          </Link>
-        </div>
-
-        {/* البحث */}
-        {!collapsed && (
-          <div className="px-3 mt-3">
-            <div className="flex items-center gap-2 rounded-xl bg-raised border border-line px-3 py-2">
-              <Search size={13} className="text-ink-faint shrink-0" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("searchPlaceholder")}
-                className="bg-transparent w-full text-[13px] text-ink placeholder-ink-faint focus:outline-none"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* المحادثات */}
-        <div className="flex-1 overflow-y-auto px-3 mt-4 space-y-0.5">
-          {!collapsed && (
-            <div className="px-1 pb-1.5 text-[11px] font-medium text-ink-faint">
-              {t("conversations")}
-            </div>
+        <nav
+          aria-label={t("mainNavigation")}
+          className="w-[52px] shrink-0 flex flex-col items-center gap-1.5 py-3 bg-night"
+        >
+          {panel && (
+            <button
+              type="button"
+              onClick={() => setPanelOpen((v) => !v)}
+              aria-label={panelOpen ? t("collapseSidebar") : t("expandSidebar")}
+              title={panelOpen ? t("collapseSidebar") : t("expandSidebar")}
+              aria-expanded={panelOpen}
+              aria-controls="shell-panel"
+              className="hidden md:flex w-9 h-9 mb-1 items-center justify-center rounded-lg text-ink-faint hover:bg-raised hover:text-ink transition-colors"
+            >
+              {panelOpen ? <ClosePanelIcon size={17} aria-hidden="true" /> : <OpenPanelIcon size={17} aria-hidden="true" />}
+            </button>
           )}
-          {filtered.length === 0 && !collapsed && (
-            <div className="px-1 py-3 text-[12.5px] text-ink-faint leading-relaxed whitespace-pre-line">
-              {t("noConversations")}
-            </div>
-          )}
-          {filtered.map((c) => {
-            const active = pathname === `/chat/${c.id}`;
-            if (editingId === c.id && !collapsed) {
-              return (
-                <form
-                  key={c.id}
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void saveRename(c.id);
-                  }}
-                  className="flex items-center gap-1 rounded-lg bg-raised border border-primary/50 px-2 py-1"
-                >
-                  <input
-                    autoFocus
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onKeyDown={(e) => e.key === "Escape" && setEditingId(null)}
-                    aria-label={t("conversationTitleLabel")}
-                    className="bg-transparent w-full text-[13px] text-ink-strong focus:outline-none py-1"
-                  />
-                  <button
-                    type="submit"
-                    aria-label={t("saveTitle")}
-                    className="p-1 text-primary-glow hover:brightness-125"
-                  >
-                    <Check size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(null)}
-                    aria-label={t("cancelRename")}
-                    className="p-1 text-ink-faint hover:text-ink"
-                  >
-                    <X size={14} />
-                  </button>
-                </form>
-              );
-            }
-            return (
-              <div
-                key={c.id}
-                className={`group flex items-center rounded-lg transition-colors ${
-                  active ? "bg-raised text-ink-strong" : "text-ink-dim hover:bg-raised/60"
-                }`}
-              >
-                <Link
-                  href={`/chat/${c.id}`}
-                  prefetch={false}
-                  onMouseEnter={() => prefetchConversation(c.id)}
-                  onFocus={() => prefetchConversation(c.id)}
-                  onTouchStart={() => prefetchConversation(c.id)}
-                  onClick={() => setMobileOpen(false)}
-                  className="flex-1 min-w-0 px-3 py-2 text-[13px] truncate"
-                  title={c.title}
-                >
-                  {collapsed ? "◦" : c.title}
-                </Link>
-                {!collapsed && (
-                  <div className="hidden group-hover:flex items-center pe-1.5 gap-0.5 shrink-0">
-                    <button
-                      onClick={() => {
-                        setEditingId(c.id);
-                        setEditValue(c.title);
-                      }}
-                      title={t("rename")}
-                      aria-label={t("rename")}
-                      className="p-1 rounded text-ink-faint hover:text-ink"
-                    >
-                      <Pencil size={12.5} />
-                    </button>
-                    <button
-                      onClick={() => void deleteConversation(c.id)}
-                      title={t("delete")}
-                      aria-label={t("delete")}
-                      className="p-1 rounded text-ink-faint hover:text-red-400"
-                    >
-                      <Trash2 size={12.5} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* الروابط السفلية */}
-        <div className="p-3 border-t border-line/60 space-y-0.5">
-          <NavItem
-            href="/projects"
-            icon={<FolderKanban size={15} />}
-            label={t("projects")}
-            collapsed={collapsed}
-            active={pathname.startsWith("/projects")}
-          />
-          <NavItem
-            href="/files"
-            icon={<FileText size={15} />}
-            label={t("files")}
-            collapsed={collapsed}
-            active={pathname.startsWith("/files")}
-          />
-          <NavItem
-            href="/account"
-            icon={<User size={15} />}
-            label={t("account")}
-            collapsed={collapsed}
-            active={pathname.startsWith("/account")}
-          />
-          <NavItem
-            href="/usage"
-            icon={<Gauge size={15} />}
-            label={t("usageTitle")}
-            collapsed={collapsed}
-            active={pathname.startsWith("/usage")}
-          />
-          <NavItem
-            href="/settings"
-            icon={<Settings size={15} />}
-            label={t("settings")}
-            collapsed={collapsed}
-            active={pathname.startsWith("/settings")}
-          />
-          {isAdmin && (
-            <NavItem
-              href="/admin"
-              icon={<ShieldCheck size={15} />}
-              label="لوحة الإدارة"
-              collapsed={collapsed}
-              active={pathname.startsWith("/admin")}
+          {railModules("primary").map((m) => (
+            <RailLink
+              key={m.id}
+              href={m.href}
+              icon={MODULE_ICONS[m.id] ?? MessageSquare}
+              label={t(m.labelKey)}
+              active={activeId === m.id}
+              onNavigate={closeMobile}
             />
-          )}
+          ))}
+          <div className="flex-1" />
+          {railModules("secondary").map((m) => (
+            <RailLink
+              key={m.id}
+              href={m.href}
+              icon={MODULE_ICONS[m.id] ?? Settings}
+              label={t(m.labelKey)}
+              active={activeId === m.id}
+              onNavigate={closeMobile}
+            />
+          ))}
+          <UserMenu userName={userName} tierLabel={tierLabel} isAdmin={isAdmin} onNavigate={closeMobile} />
+        </nav>
 
-          {/* المستخدم + أدوات سريعة */}
-          <div
-            className={`flex items-center gap-2.5 rounded-lg px-3 py-2 mt-1 ${collapsed ? "justify-center" : ""}`}
+        {/* ===== لوحة السياق ===== */}
+        {panel && (
+          <aside
+            id="shell-panel"
+            aria-label={panel === "settings" ? t("settings") : t("conversations")}
+            className={`${panelOpen ? "md:flex" : "md:hidden"} flex w-[264px] flex-col border-x border-line/50 bg-surface/80 backdrop-blur-xl`}
           >
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#7C5CFF] to-[#3D2AA8] flex items-center justify-center text-[12px] font-bold text-white shrink-0">
-              {userName.slice(0, 1) || "؟"}
+            <div className="h-14 shrink-0 px-3 flex items-center gap-1">
+              <h2 className="flex-1 min-w-0 truncate px-1.5 text-[15px] font-semibold text-ink-strong">
+                {panel === "settings" ? t("settings") : t("appName")}
+              </h2>
+              {panel === "conversations" && (
+                <button
+                  type="button"
+                  onClick={() => setSearchOpen(true)}
+                  aria-label={t("quickSearch")}
+                  title={`${t("quickSearch")} (Ctrl+K)`}
+                  aria-keyshortcuts="Control+K Meta+K"
+                  className="w-8 h-8 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised hover:text-ink transition-colors"
+                >
+                  <Search size={16} aria-hidden="true" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={closeMobile}
+                aria-label={t("closeSidebar")}
+                className="md:hidden w-8 h-8 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised"
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
             </div>
-            {!collapsed && (
-              <>
-                <div className="leading-tight flex-1 min-w-0">
-                  <div className="text-[13px] text-ink truncate">{userName}</div>
-                  <div className="text-[10.5px] text-ink-faint">{tierLabel}</div>
+
+            {panel === "settings" ? (
+              <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-3">
+                <div className="px-1">
+                  <SettingsSearchInput />
                 </div>
-                <button
-                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                  title={theme === "dark" ? t("themeLight") : t("themeDark")}
-                  aria-label={t("switchTheme")}
-                  className="p-1.5 rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors"
+                <SettingsNav onNavigate={closeMobile} />
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto px-2 pb-3">
+                <Link
+                  href="/chat"
+                  onClick={closeMobile}
+                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-ink hover:bg-raised/70 transition-colors"
                 >
-                  {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-                </button>
-                <button
-                  onClick={() => setLocale(locale === "ar" ? "en" : "ar")}
-                  title={locale === "ar" ? "English" : "العربية"}
-                  aria-label={t("switchLanguage")}
-                  className="p-1.5 rounded-lg text-ink-faint hover:text-ink hover:bg-raised transition-colors"
+                  <SquarePen size={15} aria-hidden="true" className="text-ink-dim shrink-0" />
+                  {t("newChat")}
+                </Link>
+
+                <PanelGroup
+                  id="shell-conversations"
+                  title={t("conversations")}
+                  open={groups.conversations}
+                  onToggle={() => setGroups((g) => ({ ...g, conversations: !g.conversations }))}
                 >
-                  <Languages size={14} />
-                </button>
-                <form action="/auth/signout" method="post">
-                  <button
-                    type="submit"
-                    title={t("logout")}
-                    aria-label={t("logout")}
-                    className="p-1.5 rounded-lg text-ink-faint hover:text-red-400 hover:bg-raised transition-colors"
-                  >
-                    <LogOut size={14} />
-                  </button>
-                </form>
-              </>
+                  {conversations.length === 0 && (
+                    <div className="px-2.5 py-2 text-[12.5px] text-ink-faint leading-relaxed whitespace-pre-line">
+                      {t("noConversations")}
+                    </div>
+                  )}
+                  {conversations.map((c) => {
+                    const active = pathname === `/chat/${c.id}`;
+                    if (editingId === c.id) {
+                      return (
+                        <form
+                          key={c.id}
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void saveRename(c.id);
+                          }}
+                          className="flex items-center gap-1 rounded-lg bg-raised border border-primary/50 px-2 py-1"
+                        >
+                          <input
+                            autoFocus
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => e.key === "Escape" && setEditingId(null)}
+                            aria-label={t("conversationTitleLabel")}
+                            className="bg-transparent w-full text-[13px] text-ink-strong focus:outline-none py-1"
+                          />
+                          <button type="submit" aria-label={t("saveTitle")} className="p-1 text-primary-glow hover:brightness-125">
+                            <Check size={14} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingId(null)}
+                            aria-label={t("cancelRename")}
+                            className="p-1 text-ink-faint hover:text-ink"
+                          >
+                            <X size={14} aria-hidden="true" />
+                          </button>
+                        </form>
+                      );
+                    }
+                    return (
+                      <div
+                        key={c.id}
+                        className={`group flex items-center rounded-lg transition-colors ${
+                          active ? "bg-raised text-ink-strong" : "text-ink hover:bg-raised/60"
+                        }`}
+                      >
+                        <Link
+                          href={`/chat/${c.id}`}
+                          prefetch={false}
+                          onMouseEnter={() => prefetchConversation(c.id)}
+                          onFocus={() => prefetchConversation(c.id)}
+                          onTouchStart={() => prefetchConversation(c.id)}
+                          onClick={closeMobile}
+                          aria-current={active ? "page" : undefined}
+                          className="flex-1 min-w-0 px-2.5 py-1.5 text-[13.5px] truncate"
+                          title={c.title}
+                        >
+                          {c.title}
+                        </Link>
+                        <div className="hidden group-hover:flex group-focus-within:flex items-center pe-1 gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(c.id);
+                              setEditValue(c.title);
+                            }}
+                            aria-label={t("rename")}
+                            className="p-1 rounded text-ink-faint hover:text-ink"
+                          >
+                            <Pencil size={12.5} aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteConversation(c.id)}
+                            aria-label={t("delete")}
+                            className="p-1 rounded text-ink-faint hover:text-red-400"
+                          >
+                            <Trash2 size={12.5} aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </PanelGroup>
+
+                <PanelGroup
+                  id="shell-projects"
+                  title={t("projects")}
+                  open={groups.projects}
+                  onToggle={() => setGroups((g) => ({ ...g, projects: !g.projects }))}
+                >
+                  {projects.length === 0 && (
+                    <div className="px-2.5 py-2 text-[12.5px] text-ink-faint">{t("noProjectsShort")}</div>
+                  )}
+                  {projects.map((p) => {
+                    const active = pathname === `/projects/${p.id}`;
+                    return (
+                      <Link
+                        key={p.id}
+                        href={`/projects/${p.id}`}
+                        onClick={closeMobile}
+                        aria-current={active ? "page" : undefined}
+                        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13.5px] transition-colors ${
+                          active ? "bg-raised text-ink-strong" : "text-ink hover:bg-raised/60"
+                        }`}
+                        title={p.name}
+                      >
+                        <Folder size={14} aria-hidden="true" className="text-ink-dim shrink-0" />
+                        <span className="truncate">{p.name}</span>
+                      </Link>
+                    );
+                  })}
+                </PanelGroup>
+              </div>
             )}
-          </div>
-        </div>
-      </aside>
+          </aside>
+        )}
+      </div>
 
       {/* ===== المحتوى ===== */}
       <main className="flex-1 flex flex-col min-w-0">{children}</main>
+
+      <QuickSearch
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        conversations={conversations}
+        projects={projects}
+      />
     </div>
   );
 }
 
-function NavItem({
+function RailLink({
   href,
-  icon,
+  icon: Icon,
   label,
-  badge,
-  collapsed,
   active,
+  onNavigate,
 }: {
   href: string;
-  icon: React.ReactNode;
+  icon: LucideIcon;
   label: string;
-  badge?: string;
-  collapsed: boolean;
   active: boolean;
+  onNavigate: () => void;
 }) {
   return (
     <Link
       href={href}
-      className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] transition-colors ${
-        active ? "bg-raised text-ink-strong" : "text-ink-dim hover:bg-raised/60"
-      } ${collapsed ? "justify-center" : ""}`}
+      onClick={onNavigate}
+      aria-label={label}
       title={label}
+      aria-current={active ? "page" : undefined}
+      className={`w-9 h-9 flex items-center justify-center rounded-lg transition-colors ${
+        active ? "bg-raised text-ink-strong" : "text-ink-faint hover:bg-raised/70 hover:text-ink"
+      }`}
     >
-      <span className="shrink-0">{icon}</span>
-      {!collapsed && (
-        <>
-          <span className="flex-1">{label}</span>
-          {badge && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-raised text-ink-faint border border-line/60">
-              {badge}
-            </span>
-          )}
-        </>
-      )}
+      <Icon size={18} aria-hidden="true" />
     </Link>
+  );
+}
+
+/**
+ * قائمة الحساب: زرٌّ يكشف لوحةً صغيرة (نمط الإفصاح لا role="menu" — التنقّل فيها بـTab
+ * كأي روابط). تُغلق بـEsc أو بالنقر خارجها أو بالانتقال.
+ */
+function UserMenu({
+  userName,
+  tierLabel,
+  isAdmin,
+  onNavigate,
+}: {
+  userName: string;
+  tierLabel: string;
+  isAdmin?: boolean;
+  onNavigate: () => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const go = () => {
+    setOpen(false);
+    onNavigate();
+  };
+
+  const items: { href: string; icon: LucideIcon; label: string }[] = [
+    { href: "/account", icon: UserRound, label: t("account") },
+    { href: "/usage", icon: Gauge, label: t("usageTitle") },
+    ...(isAdmin ? [{ href: "/admin", icon: ShieldCheck, label: t("adminPanel") }] : []),
+  ];
+
+  return (
+    <div ref={rootRef} className="relative mt-1">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={t("userMenu")}
+        aria-expanded={open}
+        aria-controls="shell-user-menu"
+        className="w-8 h-8 rounded-full bg-raised border border-line flex items-center justify-center text-[12px] font-semibold text-ink-strong hover:border-ink-faint transition-colors"
+      >
+        {userName.slice(0, 1) || "؟"}
+      </button>
+      {open && (
+        <div
+          id="shell-user-menu"
+          className="absolute bottom-0 start-full ms-2 z-50 w-60 rounded-xl border border-line bg-surface/95 backdrop-blur-xl shadow-2xl p-1.5"
+        >
+          <div className="px-2.5 py-2 mb-1 border-b border-line/60">
+            <div className="text-[13px] text-ink-strong truncate">{userName}</div>
+            <div className="text-[11px] text-ink-faint">{tierLabel}</div>
+          </div>
+          {items.map(({ href, icon: Icon, label }) => (
+            <Link
+              key={href}
+              href={href}
+              onClick={go}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] text-ink hover:bg-raised transition-colors"
+            >
+              <Icon size={15} aria-hidden="true" className="text-ink-dim shrink-0" />
+              {label}
+            </Link>
+          ))}
+          <div className="my-1 border-t border-line/60" />
+          <form action="/auth/signout" method="post">
+            <button
+              type="submit"
+              className="w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-start text-[13px] text-ink hover:bg-raised hover:text-red-400 transition-colors"
+            >
+              <LogOut size={15} aria-hidden="true" className="shrink-0" />
+              {t("logout")}
+            </button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PanelGroup({
+  id,
+  title,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mt-4">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-controls={id}
+        className="group w-full flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium text-ink-faint hover:text-ink-dim"
+      >
+        <span>{title}</span>
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          className={`opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition ${open ? "" : "-rotate-90 rtl:rotate-90"}`}
+        />
+      </button>
+      <div id={id} hidden={!open} className="mt-0.5 space-y-px">
+        {children}
+      </div>
+    </section>
   );
 }
 
