@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { linkFileSchema } from "@/lib/validation/files";
+import { updateFileSchema } from "@/lib/validation/files";
 import { FILES_BUCKET, PUBLIC_FILE_FIELDS } from "@/lib/files/service";
+import { validateRename } from "@/lib/files/library";
 import { getLatestJobForFile } from "@/lib/rag/jobs";
 
 export const runtime = "nodejs";
@@ -35,7 +36,10 @@ export async function GET(
   return json({ file: data, job }, 200);
 }
 
-/** ربط/فك ربط الملف بمشروع أو محادثة — مع تحقق الملكية */
+/**
+ * ربط/فك ربط الملف بمشروع أو محادثة — مع تحقق الملكية — وإعادة تسمية الاسم المعروض.
+ * إعادة التسمية لا تمسّ مسار التخزين (المسار من معرّفٍ واسمٍ آمن ثابتين).
+ */
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -47,11 +51,29 @@ export async function PATCH(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return json({ error: "غير مصرح | Unauthorized" }, 401);
 
-  const parsed = linkFileSchema.safeParse(await req.json().catch(() => null));
+  const parsed = updateFileSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return json({ error: "بيانات غير صحيحة | Invalid fields" }, 400);
-  const { projectId, conversationId } = parsed.data;
+  const { projectId, conversationId, name } = parsed.data;
 
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+
+  if (name !== undefined) {
+    const { data: current } = await supabase
+      .from("files").select("original_name").eq("id", id)
+      .eq("user_id", user.id).is("deleted_at", null).maybeSingle();
+    if (!current) return json({ error: "الملف غير موجود | File not found" }, 404);
+    const renamed = validateRename(current.original_name as string, name);
+    if (!renamed.ok) {
+      if (renamed.reason === "unchanged") return json({ ok: true, name: current.original_name }, 200);
+      return json(
+        renamed.reason === "extension"
+          ? { error: "لا يمكن تغيير امتداد الملف | The file extension can't change" }
+          : { error: "اسم غير صالح | Invalid name" },
+        400,
+      );
+    }
+    update.original_name = renamed.name;
+  }
 
   if (projectId !== undefined) {
     if (projectId !== null) {
@@ -78,10 +100,10 @@ export async function PATCH(
     .eq("id", id)
     .eq("user_id", user.id)
     .is("deleted_at", null)
-    .select("id")
+    .select("id, original_name")
     .single();
   if (error || !data) return json({ error: "الملف غير موجود | File not found" }, 404);
-  return json({ ok: true }, 200);
+  return json({ ok: true, name: data.original_name }, 200);
 }
 
 /** حذف ناعم في قاعدة البيانات + إزالة آمنة من التخزين */

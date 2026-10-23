@@ -159,9 +159,10 @@ export function ProjectDetail({
         <Link
           href="/projects"
           title={t("backToProjects")}
+          aria-label={t("backToProjects")}
           className="w-8 h-8 flex items-center justify-center rounded-lg text-ink-dim hover:bg-raised transition-colors"
         >
-          <BackIcon size={16} style={{ transform: dir === "ltr" ? "scaleX(-1)" : undefined }} />
+          <BackIcon size={16} aria-hidden="true" style={{ transform: dir === "ltr" ? "scaleX(-1)" : undefined }} />
         </Link>
         <h1 className="text-[15px] font-semibold text-ink-strong truncate">{project.name}</h1>
         {saved && <span className="text-[12px] text-emerald-400">{t("saved")}</span>}
@@ -245,18 +246,18 @@ export function ProjectDetail({
           </form>
 
           {/* محادثات المشروع */}
-          <section className="rounded-2xl border border-line bg-surface/60 p-5 space-y-3">
+          <section aria-labelledby="project-conversations-title" className="space-y-2.5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <h2 className="text-[13px] font-medium text-ink-strong">
-                {t("conversations")} ({linkedConversations.length})
+              <h2 id="project-conversations-title" className="text-[14px] font-semibold text-ink-strong">
+                {t("conversations")} <span className="text-ink-faint font-normal">({linkedConversations.length})</span>
               </h2>
               <button
+                type="button"
                 onClick={() => void newChatInProject()}
                 disabled={busy}
-                className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[12.5px] font-medium text-white transition-all hover:brightness-110 disabled:opacity-50"
-                style={{ background: "rgb(var(--c-primary))" }}
+                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink hover:bg-raised transition-colors disabled:opacity-50"
               >
-                <Plus size={13} />
+                <Plus size={14} aria-hidden="true" />
                 {t("chatInProject")}
               </button>
             </div>
@@ -288,39 +289,37 @@ export function ProjectDetail({
             )}
 
             {linkedConversations.length === 0 ? (
-              <p className="text-[12.5px] text-ink-faint py-3 text-center">
-                {t("noProjectConversations")}
-              </p>
+              <p className="text-[12.5px] text-ink-faint py-1">{t("noProjectConversations")}</p>
             ) : (
-              <div className="space-y-0.5">
+              <ul className="rounded-xl border border-line/60 bg-surface/40 divide-y divide-line/50">
                 {linkedConversations.map((c) => (
-                  <div
-                    key={c.id}
-                    className="group flex items-center rounded-lg hover:bg-raised/60 transition-colors"
-                  >
+                  <li key={c.id} className="group flex items-center hover:bg-raised/40 transition-colors">
                     <Link
                       href={`/chat/${c.id}`}
                       className="flex-1 min-w-0 flex items-center gap-2.5 px-3 py-2.5"
                     >
-                      <MessageSquare size={13} className="text-ink-faint shrink-0" />
-                      <span className="text-[13px] text-ink truncate">{c.title}</span>
+                      <MessageSquare size={13} aria-hidden="true" className="text-ink-faint shrink-0" />
+                      <span className="min-w-0 text-[13px] text-ink truncate"><bdi>{c.title}</bdi></span>
                       {c.updated_at && (
                         <span className="text-[11px] text-ink-faint shrink-0 ms-auto">
                           {formatRelative(c.updated_at, locale)}
                         </span>
                       )}
                     </Link>
+                    {/* مرئيّ دائمًا على الجوال وبالتركيز — المرور وحده لا يصل إليه اللمس ولا لوحة المفاتيح */}
                     <button
+                      type="button"
                       onClick={() => void unlinkConversation(c.id)}
                       disabled={busy}
                       title={t("unlink")}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 me-1.5 rounded text-ink-faint hover:text-red-400 transition-all disabled:opacity-50"
+                      aria-label={`${t("unlink")}: ${c.title}`}
+                      className="sm:opacity-0 sm:group-hover:opacity-100 focus-visible:opacity-100 p-1.5 me-1.5 rounded text-ink-faint hover:text-ink transition-all disabled:opacity-50"
                     >
-                      <Unlink size={12.5} />
+                      <Unlink size={12.5} aria-hidden="true" />
                     </button>
-                  </div>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
           </section>
 

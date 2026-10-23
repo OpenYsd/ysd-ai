@@ -1,13 +1,17 @@
 "use client";
 
-/** قائمة المشاريع: بحث، فرز، إنشاء، بيانات حقيقية من قاعدة البيانات */
+/**
+ * قائمة المشاريع: بحث (يطابق العربية بلا تشكيل ولا اختلاف الألف)، فرز، إنشاء —
+ * بيانات حقيقية من قاعدة البيانات، صفوفٌ في سطحٍ واحد لا بطاقة لكل مشروع.
+ */
 
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FileText, FolderKanban, MessageSquare, Plus, Search, X } from "lucide-react";
+import { FileText, Folder, MessageSquare, Plus, Search, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatRelative } from "@/lib/time";
+import { normalizeForSearch } from "@/lib/platform/search";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 
 export interface ProjectListItem {
@@ -47,20 +51,21 @@ export function ProjectsView({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const query = useDeferredValue(search);
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = normalizeForSearch(query);
     const list = projects.filter(
       (p) =>
         !q ||
-        p.name.toLowerCase().includes(q) ||
-        (p.description ?? "").toLowerCase().includes(q),
+        normalizeForSearch(p.name).includes(q) ||
+        normalizeForSearch(p.description ?? "").includes(q),
     );
     return [...list].sort((a, b) =>
       sort === "name"
         ? a.name.localeCompare(b.name, locale === "ar" ? "ar" : "en")
         : b.lastActivityAt.localeCompare(a.lastActivityAt),
     );
-  }, [projects, search, sort, locale]);
+  }, [projects, query, sort, locale]);
 
   async function createProject(e: React.FormEvent) {
     e.preventDefault();
@@ -96,14 +101,18 @@ export function ProjectsView({
         <MobileMenuButton />
         <h1 className="text-[15px] font-semibold text-ink-strong">{t("projects")}</h1>
         <div className="flex-1" />
-        <button
-          onClick={() => setShowCreate((v) => !v)}
-          className="flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-[13px] font-medium text-white transition-all hover:brightness-110"
-          style={{ background: "rgb(var(--c-primary))" }}
-        >
-          {showCreate ? <X size={14} /> : <Plus size={14} />}
-          {t("newProject")}
-        </button>
+        {/* بلا مشاريع: زرّ الإنشاء في حالة الفراغ وحده — لا زرّان لفعلٍ واحد */}
+        {(projects.length > 0 || showCreate) && (
+          <button
+            type="button"
+            onClick={() => setShowCreate((v) => !v)}
+            aria-expanded={showCreate}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium text-white bg-primary hover:bg-primary-deep transition-colors"
+          >
+            {showCreate ? <X size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+            {t("newProject")}
+          </button>
+        )}
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-5">
@@ -177,81 +186,93 @@ export function ProjectsView({
             </form>
           )}
 
-          {/* البحث والفرز */}
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="flex items-center gap-2 rounded-xl bg-raised border border-line px-3 py-2 flex-1">
-              <Search size={13} className="text-ink-faint shrink-0" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("searchProjects")}
-                className="bg-transparent w-full text-[13px] text-ink placeholder-ink-faint focus:outline-none"
-              />
+          {/* البحث والفرز — يظهران حين توجد مشاريع يُبحث فيها */}
+          {projects.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="flex-1 min-w-0 flex items-center gap-2 rounded-lg bg-raised/70 border border-line/70 px-3 py-2 focus-within:border-primary">
+                <Search size={14} aria-hidden="true" className="text-ink-faint shrink-0" />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t("searchProjects")}
+                  aria-label={t("searchProjects")}
+                  className="bg-transparent w-full min-w-0 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
+                />
+              </label>
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as "recent" | "name")}
+                aria-label={t("sortBy")}
+                className="rounded-lg bg-raised/70 border border-line/70 px-2.5 py-1.5 text-[12.5px] text-ink focus:outline-none focus:border-primary"
+              >
+                <option value="recent">{t("sortRecent")}</option>
+                <option value="name">{t("sortName")}</option>
+              </select>
             </div>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as "recent" | "name")}
-              className="rounded-xl bg-raised border border-line px-3 py-2 text-[13px] text-ink focus:outline-none focus:border-primary"
-            >
-              <option value="recent">{t("sortRecent")}</option>
-              <option value="name">{t("sortName")}</option>
-            </select>
-          </div>
+          )}
 
           {/* حالات الخطأ والفراغ */}
           {loadFailed && (
-            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-[13px] text-red-300">
-              {t("loadError")}
+            <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-300">
+              <span>{t("loadError")}</span>
+              <button type="button" onClick={() => router.refresh()} className="shrink-0 underline underline-offset-2">
+                {t("retry")}
+              </button>
             </div>
           )}
           {!loadFailed && filtered.length === 0 && (
-            <div className="text-center py-16">
-              <FolderKanban size={40} className="mx-auto mb-4 text-ink-faint opacity-60" />
-              <p className="text-[13.5px] text-ink-dim whitespace-pre-line leading-relaxed">
-                {search ? "—" : t("noProjects")}
-              </p>
+            <div className="text-center py-14">
+              <p className="text-[14px] text-ink-dim">{projects.length === 0 ? t("noProjectsShort") : t("projectsNoMatch")}</p>
+              {projects.length === 0 && !showCreate && (
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] text-ink hover:bg-raised transition-colors"
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  {t("newProject")}
+                </button>
+              )}
             </div>
           )}
 
-          {/* البطاقات */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {filtered.map((p) => (
-              <Link
-                key={p.id}
-                href={`/projects/${p.id}`}
-                className="rise rounded-2xl border border-line/70 bg-surface/60 p-4 hover:border-primary/40 hover:bg-raised/60 transition-all block"
-              >
-                <div className="flex items-start gap-2.5">
-                  <span className="mt-0.5 text-primary-glow shrink-0">
-                    <FolderKanban size={17} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[14px] font-medium text-ink-strong truncate">
-                      {p.name}
-                    </div>
-                    {p.description && (
-                      <div className="text-[12px] text-ink-dim mt-0.5 line-clamp-2 leading-relaxed">
-                        {p.description}
-                      </div>
-                    )}
-                    <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2.5 text-[11.5px] text-ink-faint">
-                      <span className="flex items-center gap-1">
-                        <MessageSquare size={11} />
-                        {p.conversationsCount} {t("conversationsCount")}
+          {/* القائمة: سطحٌ واحد بصفوف */}
+          {filtered.length > 0 && (
+            <ul className="rounded-2xl border border-line/60 bg-surface/40 divide-y divide-line/50">
+              {filtered.map((p) => (
+                <li key={p.id}>
+                  <Link
+                    href={`/projects/${p.id}`}
+                    className="flex items-start gap-3 px-3 sm:px-4 py-3 hover:bg-raised/40 transition-colors"
+                  >
+                    <Folder size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-ink-dim" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13.5px] font-medium text-ink-strong">
+                        <bdi>{p.name}</bdi>
                       </span>
-                      <span className="flex items-center gap-1">
-                        <FileText size={11} />
-                        {p.filesCount} {t("filesCount")}
+                      {p.description && (
+                        <span className="block truncate text-[12px] text-ink-dim">
+                          <bdi>{p.description}</bdi>
+                        </span>
+                      )}
+                      <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11.5px] text-ink-faint">
+                        <span className="inline-flex items-center gap-1">
+                          <MessageSquare size={11} aria-hidden="true" />
+                          {p.conversationsCount} {t("conversationsCount")}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <FileText size={11} aria-hidden="true" />
+                          {p.filesCount} {t("filesCount")}
+                        </span>
+                        <span>{formatRelative(p.lastActivityAt, locale)}</span>
                       </span>
-                      <span>
-                        {t("lastActivity")}: {formatRelative(p.lastActivityAt, locale)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </>

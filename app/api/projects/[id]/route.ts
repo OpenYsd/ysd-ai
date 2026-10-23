@@ -84,7 +84,7 @@ export async function PATCH(
   return json({ ok: true }, 200);
 }
 
-/** حذف مشروع (حذف ناعم) مع فك ربط محادثاته */
+/** حذف مشروع (حذف ناعم) مع فك ربط محادثاته وملفاته — المحادثات والملفات نفسها تبقى */
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -109,6 +109,16 @@ export async function DELETE(
   // فك ربط المحادثات — تبقى المحادثات نفسها موجودة
   await supabase
     .from("conversations")
+    .update({ project_id: null })
+    .eq("project_id", id)
+    .eq("user_id", user.id);
+
+  /**
+   * وفك ربط الملفات: الحذف ناعم، فلا يُطلق `on delete set null`، وبدونه يبقى الملف
+   * مشيرًا إلى مشروعٍ محذوف لا يظهر في أي قائمة. الملف نفسه لا يُحذف ولا يُمسّ تخزينه.
+   */
+  await supabase
+    .from("files")
     .update({ project_id: null })
     .eq("project_id", id)
     .eq("user_id", user.id);
