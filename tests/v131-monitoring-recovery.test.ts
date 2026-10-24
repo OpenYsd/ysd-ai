@@ -520,13 +520,16 @@ describe("★ (٥) الحدود القائمة", () => {
     /**
      * المراقبةُ والتعافي لا يحتاجان مخطّطًا — و0047 مُطبَّقٌ رسميًّا.
      * (فرع تجربة F2LLM: يُضيف الترحيلَ الوحيد 0048 — إضافيًّا محضًا، وله حارسُه في v139-f2llm-migration.)
+     * (إصلاح I18: ترحيلٌ بطابعٍ زمنيّ — اصطلاح خطّ release/production — لا يمسّ الترقيم القديم،
+     *  وله حارسُه في i18-project-ownership-rls.)
      */
     const { readdirSync } = require("node:fs") as typeof import("node:fs");
-    const nums = readdirSync("supabase/migrations")
+    const versions = readdirSync("supabase/migrations")
       .filter((f) => f.endsWith(".sql"))
-      .map((f) => Number(f.slice(0, 4)));
-    expect(nums).toContain(47);
-    expect(Math.max(...nums)).toBe(48);
-    expect(new Set(nums).size).toBe(nums.length);
+      .map((f) => f.slice(0, f.indexOf("_")));
+    const legacyNums = versions.filter((v) => v.length === 4).map(Number);
+    expect(legacyNums).toContain(47);
+    expect(Math.max(...legacyNums)).toBe(48);
+    expect(new Set(versions).size).toBe(versions.length);
   });
 });
