@@ -10,9 +10,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FileText, Folder, MessageSquare, Plus, Search, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { formatRelative } from "@/lib/time";
 import { normalizeForSearch } from "@/lib/platform/search";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { RelativeTime } from "@/components/relative-time";
 
 export interface ProjectListItem {
   id: string;
@@ -265,7 +265,7 @@ export function ProjectsView({
                           <FileText size={11} aria-hidden="true" />
                           {p.filesCount} {t("filesCount")}
                         </span>
-                        <span>{formatRelative(p.lastActivityAt, locale)}</span>
+                        <RelativeTime iso={p.lastActivityAt} />
                       </span>
                     </span>
                   </Link>

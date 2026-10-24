@@ -17,8 +17,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, MessageSquarePlus, Pencil, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { formatRelative } from "@/lib/time";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { RelativeTime } from "@/components/relative-time";
 import {
   fileExtension,
   fileKind,
@@ -670,7 +670,7 @@ function FileRow({
               {ext && " · "}
               <span dir="ltr">{formatBytes(file.size_bytes, locale)}</span>
               {" · "}
-              {formatRelative(file.created_at, locale)}
+              <RelativeTime iso={file.created_at} />
               {/* على الشاشات الضيقة: الحالة في سطر التفاصيل كي لا تزاحم الاسم */}
               <span className={`sm:hidden ${statusBadge.cls}`}> · {statusBadge.label}</span>
             </span>

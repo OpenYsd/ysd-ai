@@ -17,8 +17,8 @@ import {
   Unlink,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { formatRelative } from "@/lib/time";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { RelativeTime } from "@/components/relative-time";
 import { ProjectFiles } from "@/components/files/project-files";
 import type { UploadedFileRow } from "@/components/files/upload";
 
@@ -168,7 +168,7 @@ export function ProjectDetail({
         {saved && <span className="text-[12px] text-emerald-400">{t("saved")}</span>}
         <div className="flex-1" />
         <span className="hidden sm:block text-[12px] text-ink-faint">
-          {t("lastActivity")}: {formatRelative(project.lastActivityAt, locale)}
+          {t("lastActivity")}: <RelativeTime iso={project.lastActivityAt} />
         </span>
       </header>
 
@@ -301,9 +301,7 @@ export function ProjectDetail({
                       <MessageSquare size={13} aria-hidden="true" className="text-ink-faint shrink-0" />
                       <span className="min-w-0 text-[13px] text-ink truncate"><bdi>{c.title}</bdi></span>
                       {c.updated_at && (
-                        <span className="text-[11px] text-ink-faint shrink-0 ms-auto">
-                          {formatRelative(c.updated_at, locale)}
-                        </span>
+                        <RelativeTime iso={c.updated_at} className="text-[11px] text-ink-faint shrink-0 ms-auto" />
                       )}
                     </Link>
                     {/* مرئيّ دائمًا على الجوال وبالتركيز — المرور وحده لا يصل إليه اللمس ولا لوحة المفاتيح */}
