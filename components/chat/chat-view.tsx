@@ -24,6 +24,7 @@ import { ChatComposer } from "@/components/chat/chat-composer";
 import { useComposerAttachments } from "@/components/chat/use-composer-attachments";
 import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
+import { useHydrated } from "@/lib/use-hydrated";
 import {
   type ChatErrorCode,
   CHAT_ERROR_KEY,
@@ -895,8 +896,18 @@ export function ChatView({
     }
   }, []);
 
-  const hour = new Date().getHours();
-  const greeting = hour >= 5 && hour < 17 ? t("greetingMorning") : t("greetingEvening");
+  /**
+   * ★ التحيّة بساعة المتصفح — بعد الإماهة فقط.
+   *
+   * الخادم يعرض بتوقيته (UTC على Railway) والمتصفح بتوقيت صاحبه، فحسابُها أثناء
+   * العرض كان يكتب «صباح الخير» على الخادم و«مساء الخير» في المتصفح كلّما وقعت
+   * الساعتان على جانبين مختلفين من 05:00 أو 17:00 ⇒ React #418. فالخادم وتمريرة
+   * الإماهة لا يحسبانها (null)، والعنوان يحجز مكانه حتى تظهر.
+   */
+  const hydrated = useHydrated();
+  const hour = hydrated ? new Date().getHours() : null;
+  const greeting =
+    hour === null ? null : hour >= 5 && hour < 17 ? t("greetingMorning") : t("greetingEvening");
   /**
    * ★ نصُّ الحالة — يُنطق مرّةً عند كل انتقال، لا مع كل جزءٍ يصل.
    *
@@ -1133,8 +1144,11 @@ export function ChatView({
             {/* تحيّةٌ قصيرة فوق شريط الكتابة — بلا شعارٍ كبير: الهويّة في اللوحة، والمساحة للسؤال */}
             <div className="text-center mb-7">
               <h1 className="font-display text-[26px] md:text-[30px] font-semibold text-ink-strong mb-1.5">
-                {greeting}
-                {greetingName ? ` يا ${greetingName}` : ""}
+                {/* قبل الإماهة: نصٌّ ثابت مخفيّ يحجز سطر العنوان فلا يقفز ما تحته */}
+                <span className={greeting === null ? "invisible" : undefined}>
+                  {greeting ?? t("greetingMorning")}
+                  {greetingName ? ` يا ${greetingName}` : ""}
+                </span>
               </h1>
               <p className="text-[14px] text-ink-faint">{t("welcomeSub")}</p>
             </div>

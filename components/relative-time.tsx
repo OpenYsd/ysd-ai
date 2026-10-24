@@ -12,16 +12,9 @@
  * التطبيق بعد ذلك يعرضه مباشرةً، لأن العرض حينئذٍ ليس إماهة.
  */
 
-import { useSyncExternalStore } from "react";
 import { useI18n } from "@/lib/i18n";
 import { formatRelative } from "@/lib/time";
-
-const subscribe = () => () => {};
-
-/** false على الخادم وفي تمريرة الإماهة، وtrue بعدها — بلقطة الخادم التي يستعملها React للإماهة */
-function useHydrated(): boolean {
-  return useSyncExternalStore(subscribe, () => true, () => false);
-}
+import { useHydrated } from "@/lib/use-hydrated";
 
 export function RelativeTime({ iso, className }: { iso: string; className?: string }) {
   const { locale } = useI18n();
