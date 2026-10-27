@@ -66,8 +66,9 @@ describe("شريط الأيقونات", () => {
     expect(rail.getByRole("link", { name: "المحادثة" }).getAttribute("href")).toBe("/chat");
     expect(rail.getByRole("link", { name: "المشاريع" }).getAttribute("href")).toBe("/projects");
     expect(rail.getByRole("link", { name: "المكتبة" }).getAttribute("href")).toBe("/files");
+    expect(rail.getByRole("link", { name: "الإضافات" }).getAttribute("href")).toBe("/extensions");
     expect(rail.getByRole("link", { name: "الإعدادات" }).getAttribute("href")).toBe("/settings");
-    for (const label of ["الشيفرة", "الإضافات", "الأتمتة", "النماذج", "العمل"]) {
+    for (const label of ["الشيفرة", "الأتمتة", "النماذج", "العمل"]) {
       expect(rail.queryByRole("link", { name: label }), label).toBeNull();
     }
     // أيقونات فقط: لا تسميات مرئية تزاحم الشريط
@@ -181,6 +182,17 @@ describe("اللوحة تتبع الوحدة", () => {
     expect(within(nav()).queryByRole("button", { name: "طي الشريط الجانبي" })).toBeNull();
     expect(within(nav()).getByRole("link", { name: "المكتبة" }).getAttribute("aria-current")).toBe("page");
   });
+
+  it("الإضافات: فهرسٌ بعرض الصفحة كالمكتبة — لا لوحة، والوحدة النشطة معلَنة في الفهرس وصفحة المهارة", () => {
+    for (const p of ["/extensions", "/extensions/arabic-proofreader"]) {
+      pathname = p;
+      renderShell();
+      expect(panel(), p).toBeNull();
+      expect(within(nav()).queryByRole("button", { name: "طي الشريط الجانبي" }), p).toBeNull();
+      expect(within(nav()).getByRole("link", { name: "الإضافات" }).getAttribute("aria-current"), p).toBe("page");
+      cleanup();
+    }
+  });
 });
 
 describe("البحث السريع", () => {
@@ -238,7 +250,7 @@ describe("الإتاحة والاتجاه", () => {
   it("الإنجليزية: نفس البنية بأسماء إنجليزية", () => {
     renderShell({ locale: "en" });
     const n = within(screen.getByRole("navigation", { name: "Main navigation" }));
-    for (const label of ["Chat", "Projects", "Library", "Settings"]) expect(n.getByRole("link", { name: label })).toBeTruthy();
+    for (const label of ["Chat", "Projects", "Library", "Extensions", "Settings"]) expect(n.getByRole("link", { name: label })).toBeTruthy();
     expect(n.getByRole("button", { name: "Account menu" })).toBeTruthy();
   });
 

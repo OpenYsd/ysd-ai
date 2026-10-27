@@ -182,6 +182,8 @@ describe("الهوية: خلفيات محايدة وتمييز غير بنفسج
       "components/files/project-files.tsx",
       "components/projects/projects-view.tsx",
       "components/projects/project-detail.tsx",
+      "components/extensions/extensions-view.tsx",
+      "components/extensions/skill-detail.tsx",
       "components/account/account-view.tsx",
       "components/usage/usage-view.tsx",
       "components/settings/settings-form.tsx",

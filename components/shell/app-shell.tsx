@@ -29,6 +29,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pencil,
+  Puzzle,
   Search,
   Settings,
   ShieldCheck,
@@ -70,6 +71,7 @@ const MODULE_ICONS: Partial<Record<PlatformModuleId, LucideIcon>> = {
   chat: MessageSquare,
   projects: FolderKanban,
   library: Library,
+  extensions: Puzzle,
   settings: Settings,
 };
 
@@ -78,7 +80,8 @@ type PanelKind = "conversations" | "settings" | null;
 
 function panelFor(id: PlatformModuleId | null): PanelKind {
   if (id === "settings") return "settings";
-  if (id === "library") return null;
+  // المكتبة والإضافات: فهارس بعرض الصفحة — لا لوحة محادثات تزاحمها
+  if (id === "library" || id === "extensions") return null;
   return "conversations";
 }
 

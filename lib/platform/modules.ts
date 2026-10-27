@@ -56,7 +56,8 @@ export const PLATFORM_MODULES: readonly PlatformModule[] = [
   // Library = الملفات المرفوعة وفهرسها (RAG)
   { id: "library", labelKey: "moduleLibrary", status: "available", href: "/files", routes: ["/files"], placement: "primary" },
   { id: "code", labelKey: "moduleCode", status: "planned", href: null, routes: [], placement: "primary" },
-  { id: "extensions", labelKey: "moduleExtensions", status: "planned", href: null, routes: [], placement: "primary" },
+  // Extensions = فهرس المهارات المدمجة (lib/skills) — تصفّحٌ وقراءة؛ لا تثبيت ولا تنفيذ بعد
+  { id: "extensions", labelKey: "moduleExtensions", status: "available", href: "/extensions", routes: ["/extensions"], placement: "primary" },
   { id: "automations", labelKey: "moduleAutomations", status: "planned", href: null, routes: [], placement: "primary" },
   // Models: بوابة النماذج موجودة خادميًّا (lib/models) ولا صفحة مستخدم لها بعد
   { id: "models", labelKey: "moduleModels", status: "planned", href: null, routes: [], placement: "none" },

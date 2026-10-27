@@ -97,6 +97,7 @@ const PUBLIC_SURFACES = [
   "components/account",
   "components/usage",
   "components/projects",
+  "components/extensions",
   "app/(auth)",
   "app/error.tsx",
   "app/global-error.tsx",

@@ -10,7 +10,7 @@
 | Settings | متاحة | `/settings` | `components/settings/*`، `lib/ui-preferences.ts` | الثيم والسطوع (`components/theme.tsx`) |
 | Models | خادمية فقط | — | `lib/models/*` فوق `lib/ai/*` | `ModelDescriptor`، `PickerModel`، `orderForPicker` |
 | Code | مخطَّطة | — | — | — |
-| Extensions | مخطَّطة | — | — | — |
+| Extensions | متاحة (فهرس المهارات المدمجة) | `/extensions`, `/extensions/[id]` | `components/extensions/*`، `lib/skills/*` | بيان المهارة وسياسة الصلاحيات (`lib/skills/manifest.ts`، `lib/skills/permissions.ts`) — انظر `extensions-skills.md` |
 | Automations | مخطَّطة | — | — | — |
 
 ## القواعد

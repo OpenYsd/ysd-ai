@@ -60,6 +60,7 @@ export const PROTECTED_PREFIXES: readonly string[] = [
   "/accept-terms",
   "/reset-password",
   "/browser",
+  "/extensions",
 ];
 
 /**

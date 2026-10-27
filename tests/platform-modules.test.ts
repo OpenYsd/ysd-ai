@@ -38,16 +38,23 @@ describe("سجلّ الوحدات", () => {
     }
   });
 
-  it("المخطَّط اليوم: الشيفرة والإضافات والأتمتة وصفحة النماذج — لا تُعرض", () => {
+  it("المخطَّط اليوم: الشيفرة والأتمتة وصفحة النماذج — لا تُعرض", () => {
     const planned = PLATFORM_MODULES.filter((m) => m.status === "planned").map((m) => m.id).sort();
-    expect(planned).toEqual(["automations", "code", "extensions", "models"]);
+    expect(planned).toEqual(["automations", "code", "models"]);
     const shown = [...railModules("primary"), ...railModules("secondary"), ...availableModules()].map((m) => m.id);
     for (const id of planned) expect(shown, id).not.toContain(id);
   });
 
-  it("شريط الأيقونات: المحادثة والمشاريع والمكتبة أعلاه، والإعدادات أسفله", () => {
-    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library"]);
+  it("شريط الأيقونات: المحادثة والمشاريع والمكتبة والإضافات أعلاه، والإعدادات أسفله", () => {
+    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library", "extensions"]);
     expect(railModules("secondary").map((m) => m.id)).toEqual(["settings"]);
+  });
+
+  it("الإضافات (المرحلة 3A): متاحة على /extensions بصفحةٍ فعلية — فهرس المهارات المدمجة", () => {
+    const ext = PLATFORM_MODULES.find((m) => m.id === "extensions");
+    expect(ext).toMatchObject({ status: "available", href: "/extensions", routes: ["/extensions"], placement: "primary" });
+    expect(existsSync("app/(app)/extensions/page.tsx")).toBe(true);
+    expect(existsSync("app/(app)/extensions/[id]/page.tsx")).toBe(true);
   });
 
   it("الوحدة النشطة من المسار — والمسار المشابه لا يُحسب", () => {
@@ -56,6 +63,9 @@ describe("سجلّ الوحدات", () => {
     expect(activeModuleId("/projects")).toBe("projects");
     expect(activeModuleId("/projects/abc")).toBe("projects");
     expect(activeModuleId("/files")).toBe("library");
+    expect(activeModuleId("/extensions")).toBe("extensions");
+    expect(activeModuleId("/extensions/arabic-proofreader")).toBe("extensions");
+    expect(activeModuleId("/extensionsx")).toBeNull();
     expect(activeModuleId("/settings")).toBe("settings");
     expect(activeModuleId("/account")).toBeNull();
     expect(activeModuleId("/chatter")).toBeNull();
@@ -86,7 +96,7 @@ describe("سجلّ الوحدات", () => {
     for (const m of availableModules()) {
       expect(shell, m.id).toMatch(new RegExp(`\\n  ${m.id}: [A-Z][A-Za-z]+,`));
     }
-    // لا روابط مكتوبة يدويًّا لوحدات مخطَّطة
+    // لا روابط مكتوبة يدويًّا لوحدات مخطَّطة — ولا للمتاحة: التنقل من السجلّ وحده
     expect(shell).not.toMatch(/href="\/(code|extensions|automations|models)\b/);
   });
 });

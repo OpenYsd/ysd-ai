@@ -131,6 +131,8 @@ const CORE_SURFACES = [
   "components/chat/markdown.tsx",
   "components/chat/citation-button.tsx",
   "components/chat/evidence-source-panel.tsx",
+  "components/extensions/extensions-view.tsx",
+  "components/extensions/skill-detail.tsx",
 ];
 
 describe("★ (١) كل زرٍّ له اسمٌ مسموع", () => {
