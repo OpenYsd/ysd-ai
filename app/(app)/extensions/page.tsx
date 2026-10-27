@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { builtInSkillRegistry } from "@/lib/skills/registry";
+import { favoritesScopeFor } from "@/lib/skills/favorites-scope";
 import { ExtensionsView } from "@/components/extensions/extensions-view";
 
 export default async function ExtensionsPage() {
@@ -11,6 +12,7 @@ export default async function ExtensionsPage() {
   const ctx = await getRequestContext(await headers(), supabase);
   if (!ctx) redirect("/login");
 
-  // الفهرس ثابتٌ من السجلّ المدمج: لا استعلام ولا جدول — المهارات بياناتٌ لا سجلّات مستخدم
-  return <ExtensionsView skills={builtInSkillRegistry().list()} />;
+  // الفهرس ثابتٌ من السجلّ المدمج: لا استعلام ولا جدول — المهارات بياناتٌ لا سجلّات مستخدم.
+  // والمفضّلة في متصفح المستخدم بنطاقٍ مشتقّ من هويّته الموثَّقة هنا، لا من أي شيءٍ في الطلب
+  return <ExtensionsView skills={builtInSkillRegistry().list()} favoritesScope={favoritesScopeFor(ctx.userId)} />;
 }

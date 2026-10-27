@@ -371,7 +371,13 @@ describe("HTML الخادم والإماهة", () => {
 });
 
 describe("حرّاس الشيفرة", () => {
-  const FILES = ["components/extensions/extensions-view.tsx", "components/extensions/skill-detail.tsx"];
+  const FILES = [
+    "components/extensions/extensions-view.tsx",
+    "components/extensions/skill-detail.tsx",
+    // المرحلة 3C: زرّ التفضيل وخطّافه تحت الحرّاس نفسها
+    "components/extensions/favorite-toggle.tsx",
+    "components/extensions/use-skill-favorites.ts",
+  ];
   const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
   // التعليقات عربيةٌ تشرح السبب وقد تذكر ما يُمنع؛ فالفحوص التقنية على الشيفرة وحدها
   const stripComments = (src: string) =>

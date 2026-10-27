@@ -134,6 +134,7 @@ const CORE_SURFACES = [
   "components/chat/skill-draft-notice.tsx",
   "components/extensions/extensions-view.tsx",
   "components/extensions/skill-detail.tsx",
+  "components/extensions/favorite-toggle.tsx",
 ];
 
 describe("★ (١) كل زرٍّ له اسمٌ مسموع", () => {

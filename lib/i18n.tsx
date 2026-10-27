@@ -1341,6 +1341,19 @@ const dict = {
   skillDraftChoice: { ar: "اختيار مكان تعليمات المهارة", en: "Choose where the skill instructions go" },
   skillDraftReplace: { ar: "استبدال المسودة", en: "Replace draft" },
   skillDraftAppend: { ar: "إضافتها بعد المسودة", en: "Add after draft" },
+  // ── مفضّلة المهارات (المرحلة 3C) — علامةٌ في المتصفح لكل حساب، لا تنفيذ ──
+  favoritesFilter: { ar: "المفضّلة", en: "Favorites" },
+  favoriteSkill: { ar: "مفضّلة", en: "Favorite" },
+  addToFavorites: { ar: "إضافة إلى المفضّلة", en: "Add to favorites" },
+  removeFromFavorites: { ar: "إزالة من المفضّلة", en: "Remove from favorites" },
+  favoritesEmpty: {
+    ar: "لا مهارات مفضّلة بعد. اضغط النجمة على أي مهارة لتجدها هنا.",
+    en: "No favorite skills yet. Press the star on any skill to find it here.",
+  },
+  favoritesNotSaved: {
+    ar: "تعذّر حفظ المفضّلة في هذا المتصفح — تبقى حتى تُغلق التبويب أو تُعيد تحميله.",
+    en: "Favorites couldn't be saved in this browser — they last until you close or reload this tab.",
+  },
   skillChatUnknown: {
     ar: "تعذّر فتح المهارة في المحادثة: لا توجد مهارة بهذا المعرّف.",
     en: "Couldn't open the skill in chat: no skill has this ID.",

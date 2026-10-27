@@ -19,15 +19,32 @@ import { skillChatHref } from "@/lib/skills/chat-draft";
 import type { SkillManifest } from "@/lib/skills/manifest";
 import { evaluateSkill } from "@/lib/skills/permissions";
 import { CATEGORY_ICON, CATEGORY_LABEL_KEY, capabilityLabel } from "./extensions-view";
+import { FavoriteToggle } from "./favorite-toggle";
+import { useSkillFavorites } from "./use-skill-favorites";
 
 type CopyState = "idle" | "copied" | "failed";
 
 /** مدّة بقاء «نُسخت» — تعذّر النسخ يبقى حتى المحاولة التالية لأن رسالته إرشادٌ لا إشعار */
 const COPIED_RESET_MS = 2500;
+const NO_IDS: readonly string[] = [];
 
-export function SkillDetail({ skill }: { skill: SkillManifest }) {
+export function SkillDetail({
+  skill,
+  favoritesScope,
+  catalogIds,
+}: {
+  skill: SkillManifest;
+  /** نطاق مفضّلة المستخدم من الخادم (المرحلة 3C) — غيابه يعني لا زرّ تفضيل */
+  favoritesScope?: string | null;
+  /**
+   * معرّفات الفهرس المدمج كلّه — لا هذه المهارة وحدها: التبديل يكتب القائمة كاملة، ولو عرف
+   * المعرّفَ الواحد لمحا بقيّة المفضّلة.
+   */
+  catalogIds?: readonly string[];
+}) {
   const { t, locale, dir } = useI18n();
   const [copyState, setCopyState] = useState<CopyState>("idle");
+  const favorites = useSkillFavorites(catalogIds?.includes(skill.id) ? favoritesScope : null, catalogIds ?? NO_IDS);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // مؤقّت إعادة الحالة يُلغى عند الخروج كي لا يُحدَّث مكوّنٌ زال
@@ -95,17 +112,32 @@ export function SkillDetail({ skill }: { skill: SkillManifest }) {
             <p className="text-[13px] leading-relaxed text-ink-dim">{skill.description[locale]}</p>
 
             {/* المعرّف وحده في الرابط — والخادم يحلّه على السجلّ؛ لا جلبَ مسبق لصفحةٍ لم تُطلب */}
-            {report.executable && (
+            {(report.executable || favorites.available) && (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1">
-                <Link
-                  href={skillChatHref(skill.id)}
-                  prefetch={false}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium text-white bg-primary hover:bg-primary-deep transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                >
-                  <MessageSquarePlus size={15} aria-hidden="true" />
-                  {t("useInChat")}
-                </Link>
-                <p className="text-[12px] text-ink-faint">{t("useSkillInChatHint")}</p>
+                {report.executable && (
+                  <Link
+                    href={skillChatHref(skill.id)}
+                    prefetch={false}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium text-white bg-primary hover:bg-primary-deep transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  >
+                    <MessageSquarePlus size={15} aria-hidden="true" />
+                    {t("useInChat")}
+                  </Link>
+                )}
+                {/* المفضّلة للمعطّلة أيضًا — للرجوع إليها؛ صلاحياتها تبقى معطّلة كما هي أدناه */}
+                {favorites.available && (
+                  <FavoriteToggle
+                    variant="labeled"
+                    pressed={favorites.isFavorite(skill.id)}
+                    onToggle={() => favorites.toggle(skill.id)}
+                  />
+                )}
+                {report.executable && <p className="text-[12px] text-ink-faint">{t("useSkillInChatHint")}</p>}
+                {favorites.notSaved && (
+                  <p role="status" className="text-[11.5px] text-ink-faint">
+                    {t("favoritesNotSaved")}
+                  </p>
+                )}
               </div>
             )}
           </div>

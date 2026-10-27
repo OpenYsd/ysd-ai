@@ -19,11 +19,14 @@ import {
   ListChecks,
   PenLine,
   Search,
+  Star,
   type LucideIcon,
 } from "lucide-react";
 import { useI18n, type DictKey } from "@/lib/i18n";
 import { normalizeForSearch } from "@/lib/platform/search";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { FavoriteToggle } from "./favorite-toggle";
+import { useSkillFavorites } from "./use-skill-favorites";
 import { SKILL_CATEGORIES, type SkillCategory, type SkillManifest } from "@/lib/skills/manifest";
 import { evaluateSkill, type CapabilitySpec, type PermissionDecision } from "@/lib/skills/permissions";
 
@@ -62,12 +65,24 @@ const chipCls = (active: boolean) =>
     active ? "bg-raised text-ink-strong" : "text-ink-dim hover:text-ink hover:bg-raised/60"
   }`;
 
-export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] }) {
+export function ExtensionsView({
+  skills,
+  favoritesScope,
+}: {
+  skills: readonly SkillManifest[];
+  /** نطاق مفضّلة المستخدم من الخادم (المرحلة 3C) — غيابه يعني لا مفضّلة ولا أزرار لها */
+  favoritesScope?: string | null;
+}) {
   const { t } = useI18n();
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<SkillCategory | "all">("all");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const query = useDeferredValue(search);
+  // المعروف وحده يُقرأ من المفضّلة: معرّفٌ لمهارةٍ أُزيلت من الفهرس يُتجاهل
+  const knownIds = useMemo(() => skills.map((s) => s.id), [skills]);
+  const favorites = useSkillFavorites(favoritesScope, knownIds);
+  const { isFavorite } = favorites;
 
   // رقاقةٌ للتصنيفات التي لها مهارات فعلًا، بترتيب القائمة المغلقة — لا رقاقة لتصنيفٍ فارغ
   const categories = useMemo(
@@ -78,6 +93,7 @@ export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] })
   const filtered = useMemo(() => {
     const q = normalizeForSearch(query);
     return skills.filter((s) => {
+      if (favoritesOnly && !isFavorite(s.id)) return false;
       if (category !== "all" && s.category !== category) return false;
       if (!q) return true;
       // المعرّف والوسوم بالإنجليزية دائمًا؛ والاسم والملخّص باللغتين كي لا تحبس اللغةُ البحث
@@ -85,7 +101,7 @@ export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] })
         normalizeForSearch(term).includes(q),
       );
     });
-  }, [skills, query, category]);
+  }, [skills, query, category, favoritesOnly, isFavorite]);
 
   const categoryLabel = (c: SkillCategory) => t(CATEGORY_LABEL_KEY[c]);
 
@@ -119,6 +135,29 @@ export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] })
             </label>
           </div>
 
+          {/* المفضّلة: مرشّحٌ يُضاف إلى التصنيف والبحث لا يحلّ محلّهما */}
+          {favorites.available && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFavoritesOnly((v) => !v)}
+                aria-pressed={favoritesOnly}
+                className={`inline-flex items-center gap-1.5 ${chipCls(favoritesOnly)}`}
+              >
+                <Star size={13} aria-hidden="true" className={favoritesOnly ? "fill-current text-primary-glow" : undefined} />
+                {t("favoritesFilter")}
+                <span dir="ltr" className="text-ink-faint">
+                  {favorites.ids.length}
+                </span>
+              </button>
+              {favorites.notSaved && (
+                <p role="status" className="text-[11.5px] text-ink-faint">
+                  {t("favoritesNotSaved")}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* التصنيفات */}
           <div role="group" aria-label={t("skillCategoryFilter")} className="flex flex-wrap gap-1">
             <button
@@ -145,12 +184,21 @@ export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] })
           {/* النتائج: بطاقاتٌ بشبكةٍ تتّسع مع الشاشة — عمود على الجوال، واثنان ثم ثلاثة */}
           {filtered.length === 0 ? (
             <p role="status" className="py-14 text-center text-[13.5px] text-ink-dim">
-              {t("skillsNoMatch")}
+              {/* لا مفضّلة أصلًا ⇒ كيف تُضاف؛ مفضّلةٌ لا تطابق البحث أو التصنيف ⇒ لا نتائج */}
+              {favoritesOnly && favorites.ids.length === 0 ? t("favoritesEmpty") : t("skillsNoMatch")}
             </p>
           ) : (
             <ul aria-label={t("skillsList")} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
               {filtered.map((skill) => (
-                <SkillCard key={skill.id} skill={skill} />
+                <SkillCard
+                  key={skill.id}
+                  skill={skill}
+                  favorite={
+                    favorites.available
+                      ? { pressed: favorites.isFavorite(skill.id), onToggle: () => favorites.toggle(skill.id) }
+                      : null
+                  }
+                />
               ))}
             </ul>
           )}
@@ -162,17 +210,26 @@ export function ExtensionsView({ skills }: { skills: readonly SkillManifest[] })
   );
 }
 
-function SkillCard({ skill }: { skill: SkillManifest }) {
+function SkillCard({
+  skill,
+  favorite,
+}: {
+  skill: SkillManifest;
+  favorite: { pressed: boolean; onToggle: () => void } | null;
+}) {
   const { t, locale } = useI18n();
   const Icon = CATEGORY_ICON[skill.category];
   // قرار السياسة الصافية لكل صلاحية — لا استنتاج من حقول المواصفة في الواجهة
   const report = evaluateSkill(skill);
 
+  // زرّ التفضيل شقيقٌ للرابط لا داخله: لا عنصر تفاعليّ داخل آخر، ولكلٍّ تركيزه بلوحة المفاتيح
   return (
-    <li>
+    <li className="relative">
       <Link
         href={`/extensions/${skill.id}`}
-        className="flex h-full flex-col gap-3 rounded-2xl border border-line/60 bg-surface/40 p-4 hover:bg-raised/40 hover:border-line transition-colors"
+        className={`flex h-full flex-col gap-3 rounded-2xl border border-line/60 bg-surface/40 p-4 hover:bg-raised/40 hover:border-line transition-colors ${
+          favorite ? "pe-12" : ""
+        }`}
       >
         <span className="flex items-start gap-3">
           <Icon size={18} aria-hidden="true" className="mt-0.5 shrink-0 text-primary-glow" />
@@ -195,6 +252,11 @@ function SkillCard({ skill }: { skill: SkillManifest }) {
           </span>
         </span>
       </Link>
+      {favorite && (
+        <span className="absolute top-2.5 end-2.5">
+          <FavoriteToggle variant="icon" pressed={favorite.pressed} onToggle={favorite.onToggle} name={skill.name} />
+        </span>
+      )}
     </li>
   );
 }
