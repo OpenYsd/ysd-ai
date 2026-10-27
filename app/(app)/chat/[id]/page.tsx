@@ -8,6 +8,7 @@ import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 import { loadConversationEvidence } from "@/lib/evidence/evidence-reader";
 import { evidenceSummaryFromMetadata } from "@/lib/evidence/client-citation";
 import { readEvidenceLayout } from "@/lib/evidence/evidence-layout";
+import { chatDraftScopeFor } from "@/lib/chat/draft-scope";
 
 export default async function ConversationPage({
   params,
@@ -157,6 +158,8 @@ export default async function ConversationPage({
       greetingName={profile?.display_name ?? ""}
       initialAttachments={initialAttachments}
       devMode={process.env.NODE_ENV !== "production"}
+      // مسودة المحادثة القائمة بمفتاحها كما كانت؛ والنطاق يُعيد تركيب الواجهة إن تبدّل الحساب
+      draftScope={chatDraftScopeFor(ctx.userId)}
     />
   );
 }

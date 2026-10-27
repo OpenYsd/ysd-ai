@@ -6,6 +6,7 @@ import { listModelsForUser } from "@/lib/models/gateway";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
 import { SKILL_CHAT_PARAM } from "@/lib/skills/chat-draft";
 import { resolveSkillChatRequest } from "@/lib/skills/chat-request";
+import { chatDraftScopeFor } from "@/lib/chat/draft-scope";
 
 export default async function NewChatPage({
   searchParams,
@@ -54,6 +55,8 @@ export default async function NewChatPage({
       greetingName={profile?.display_name ?? ""}
       devMode={process.env.NODE_ENV !== "production"}
       skillRequest={skillRequest}
+      // مسودة المحادثة الجديدة لهذا الحساب وحده — بصمةٌ من الهويّة الموثَّقة لا المعرّف نفسه
+      draftScope={chatDraftScopeFor(ctx.userId)}
     />
   );
 }

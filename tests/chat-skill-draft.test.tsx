@@ -30,13 +30,16 @@ import { I18nProvider, type Locale } from "@/lib/i18n";
 import type { SkillChatRequest } from "@/lib/skills/chat-draft";
 import { resolveSkillChatRequest } from "@/lib/skills/chat-request";
 import { builtInSkillRegistry } from "@/lib/skills/registry";
+import { chatDraftScopeFor } from "@/lib/chat/draft-scope";
 
 const { renderToString } = createRequire(import.meta.url)("react-dom/server") as {
   renderToString: (element: React.ReactElement) => string;
 };
 
 const MODELS = [{ id: "ysd/free", nameAr: "YSD Free", nameEn: "YSD Free", provider: "", available: true }];
-const DRAFT_KEY = "ysd-draft:new";
+// المرحلة 3D: مسودة المحادثة الجديدة بنطاق الحساب — عزل الحسابات في chat-draft-account-switch.test.tsx
+const SCOPE = chatDraftScopeFor("33333333-3333-4333-8333-333333333333");
+const DRAFT_KEY = `ysd-draft:${SCOPE}:new`;
 const CONV = "22222222-2222-4222-8222-222222222222";
 
 const proof = builtInSkillRegistry().get("arabic-proofreader");
@@ -59,6 +62,7 @@ const chat = (locale: Locale, skillRequest: SkillChatRequest | null) => (
       greetingName=""
       initialAttachments={[]}
       skillRequest={skillRequest}
+      draftScope={SCOPE}
     />
   </I18nProvider>
 );

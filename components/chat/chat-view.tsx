@@ -24,6 +24,7 @@ import { ChatComposer } from "@/components/chat/chat-composer";
 import { SkillDraftNotice, type SkillDraftNoticeState } from "@/components/chat/skill-draft-notice";
 import { useComposerAttachments } from "@/components/chat/use-composer-attachments";
 import { mergeSkillDraft, SKILL_CHAT_PARAM, type SkillChatRequest, type SkillDraftMode } from "@/lib/skills/chat-draft";
+import { chatDraftStorageKey } from "@/lib/chat/draft-key";
 import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
 import { useHydrated } from "@/lib/use-hydrated";
@@ -208,6 +209,11 @@ interface ChatViewProps {
    * محادثةٌ جديدة وحدها تتسلّمها؛ وتصير مسودةً مرئيّة لا رسالةً ولا تعليمات نظام.
    */
   skillRequest?: SkillChatRequest | null;
+  /**
+   * نطاق مسودة المحادثة الجديدة لهذا الحساب — بصمةٌ يشتقّها الخادم من هويّته (المرحلة 3D).
+   * بلا نطاقٍ صالح لا تُحفظ مسودة المحادثة الجديدة ولا تُسترجع.
+   */
+  draftScope?: string | null;
 }
 
 interface SSEEvent {
@@ -261,7 +267,19 @@ interface SSEEvent {
   version?: number;
 }
 
-export function ChatView({
+/**
+ * ★ حالة الواجهة تخصّ حسابها (المرحلة 3D).
+ *
+ * المفتاح يحمل نطاق الحساب والمحادثة. فإن تبدّل الحساب والصفحة قائمة (تحديثٌ من الخادم بعد دخولٍ
+ * بحسابٍ آخر في لسانٍ آخر) يُركَّب المكوّن من جديد: لا يبقى في الذاكرة نصٌّ ولا تنبيه ولا قرارٌ
+ * معلَّق من الحساب السابق، ولا يُكتب نصّه تحت مفتاح غيره. ومسودة كل حسابٍ المحفوظةُ تحت مفتاحه
+ * لا تُمسّ. والنطاق نفسه لا يتغيّر للحساب الواحد، فلا إعادة تركيب بلا سبب.
+ */
+export function ChatView(props: ChatViewProps) {
+  return <ChatViewBody key={`${props.draftScope ?? ""}:${props.conversationId ?? "new"}`} {...props} />;
+}
+
+function ChatViewBody({
   conversationId,
   initialMessages,
   initialTitle,
@@ -271,6 +289,7 @@ export function ChatView({
   initialAttachments,
   devMode,
   skillRequest,
+  draftScope,
 }: ChatViewProps) {
   const { t, locale } = useI18n();
   const router = useRouter();
@@ -425,33 +444,44 @@ export function ChatView({
   /**
    * v0.6.6 — حفظ المسودة: ما يكتبه المستخدم لا يضيع عند إعادة المصادقة أو
    * إعادة تحميل الصفحة. المفتاح لكل محادثة، ويُمسح فور الإرسال الناجح.
+   *
+   * المرحلة 3D — مسودة المحادثة الجديدة لحسابها وحده (`lib/chat/draft-key.ts`): بلا نطاقٍ
+   * صالح لا مفتاح، فلا قراءة ولا كتابة. والمفتاح القديم المشترك لا يُمسّ هنا أبدًا.
    */
-  const draftKey = `ysd-draft:${conversationId ?? "new"}`;
+  const draftKey = chatDraftStorageKey(draftScope, conversationId);
   /**
    * المسودة كما استُرجعت عند التحميل — تقرأها مهارةٌ آتية (المرحلة 3B) لتعرف إن كان للمستخدم
-   * نصٌّ لم يُرسل. لا تُقرأ من التخزين بعد ذلك: تأثير الحفظ أدناه يمحو المفتاح في أول نبضة
-   * (الحالة ما زالت فارغة) قبل أن تُطبَّق المسودة المسترجعة.
+   * نصٌّ لم يُرسل. تُقرأ منها لا من الحالة: الحالة لم تُطبَّق بعد في نبضة الوصول.
    */
   const restoredDraftRef = useRef("");
+  /**
+   * ★ لا حفظ قبل الاسترجاع.
+   *
+   * في أول نبضة الحقل فارغٌ لأنه لم يُملأ بعد، لا لأن صاحبه أفرغه. والحفظ حينها كان يمحو
+   * المسودة المحفوظة ثم يعيد كتابتها في النبضة التالية — فإن تعذّرت الكتابة ضاعت.
+   */
+  const [draftRestored, setDraftRestored] = useState(false);
   useEffect(() => {
     try {
-      const saved = window.localStorage.getItem(draftKey);
+      const saved = draftKey ? window.localStorage.getItem(draftKey) : null;
       restoredDraftRef.current = saved ?? "";
       if (saved) setInput((cur) => (cur ? cur : saved));
     } catch {
       /* التخزين المحلي قد يكون محجوبًا */
     }
+    setDraftRestored(true);
     // مرة واحدة لكل محادثة
   }, [draftKey]);
 
   useEffect(() => {
+    if (!draftKey || !draftRestored) return;
     try {
       if (input.trim()) window.localStorage.setItem(draftKey, input);
       else window.localStorage.removeItem(draftKey);
     } catch {
       /* التخزين المحلي قد يكون محجوبًا */
     }
-  }, [input, draftKey]);
+  }, [input, draftKey, draftRestored]);
 
   /* تمرير تلقائي ذكي: يتوقف إذا رجع المستخدم للأعلى */
   useEffect(() => {
@@ -478,7 +508,8 @@ export function ChatView({
    *   المعامل فورًا. فإعادة التحميل، والرجوع والتقدّم (الحمولة المخزّنة تحمل الطلب نفسه
    *   والرابط بلا معامل)، وتكرار التأثير في الوضع الصارم — كلّها لا تُعيد الإضافة.
    * ★ لا مساس بمسودةٍ قائمة: تُقرأ كما استرجعها تأثير الاسترجاع أعلاه (`restoredDraftRef`) —
-   *   الحالة لم تُطبَّق بعد في هذه النبضة، والتخزين يمحوه تأثير الحفظ؛ فإن وُجدت انتظر الاختيار.
+   *   الحالة لم تُطبَّق بعد في هذه النبضة؛ فإن وُجدت انتظر الاختيار. ومسودة حسابٍ آخر ليست
+   *   «قائمة» هنا: مفتاحها غير مفتاح هذا الحساب، فلا تُقرأ أصلًا (المرحلة 3D).
    * ★ بعد الإماهة وحدها — عرض الخادم لا يعرف المهارة، فلا اختلاف بين العرضين.
    * ★ لا إرسال: النصّ يوضع في الحقل، والمستخدم يرسله أو يغيّره أو يحذفه بنفسه.
    */
