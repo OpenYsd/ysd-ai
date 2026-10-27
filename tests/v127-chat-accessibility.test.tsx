@@ -131,6 +131,7 @@ const CORE_SURFACES = [
   "components/chat/markdown.tsx",
   "components/chat/citation-button.tsx",
   "components/chat/evidence-source-panel.tsx",
+  "components/chat/skill-draft-notice.tsx",
   "components/extensions/extensions-view.tsx",
   "components/extensions/skill-detail.tsx",
 ];

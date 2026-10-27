@@ -4,8 +4,14 @@ import { createClient } from "@/lib/supabase/server";
 import { getRequestContext } from "@/lib/auth/request-context";
 import { listModelsForUser } from "@/lib/models/gateway";
 import { ChatView, type ChatModel } from "@/components/chat/chat-view";
+import { SKILL_CHAT_PARAM } from "@/lib/skills/chat-draft";
+import { resolveSkillChatRequest } from "@/lib/skills/chat-request";
 
-export default async function NewChatPage() {
+export default async function NewChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const supabase = await createClient();
   // الهوية من سياق الوسيط — يُسقط رحلة getUser (fallback شبكي آمن لو غاب السياق)
   const ctx = await getRequestContext(await headers(), supabase);
@@ -33,6 +39,12 @@ export default async function NewChatPage() {
     models.find((m) => !m.locked)?.id ??
     null;
 
+  /**
+   * «استخدام في محادثة» من صفحة مهارة: المعرّف يُحلّ هنا على السجلّ المدمج وسياسة الصلاحيات،
+   * والعميل يتسلّم نتيجةً مغلقة يضعها مسودةً يراجعها المستخدم — لا محادثة تُنشأ ولا إرسال.
+   */
+  const skillRequest = resolveSkillChatRequest((await searchParams)[SKILL_CHAT_PARAM]);
+
   return (
     <ChatView
       conversationId={null}
@@ -41,6 +53,7 @@ export default async function NewChatPage() {
       initialModelId={initialModelId}
       greetingName={profile?.display_name ?? ""}
       devMode={process.env.NODE_ENV !== "production"}
+      skillRequest={skillRequest}
     />
   );
 }

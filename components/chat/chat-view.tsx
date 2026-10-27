@@ -21,7 +21,9 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ChatComposer } from "@/components/chat/chat-composer";
+import { SkillDraftNotice, type SkillDraftNoticeState } from "@/components/chat/skill-draft-notice";
 import { useComposerAttachments } from "@/components/chat/use-composer-attachments";
+import { mergeSkillDraft, SKILL_CHAT_PARAM, type SkillChatRequest, type SkillDraftMode } from "@/lib/skills/chat-draft";
 import { modelNoteKey } from "@/lib/ai/model-notes";
 import { useI18n } from "@/lib/i18n";
 import { useHydrated } from "@/lib/use-hydrated";
@@ -201,6 +203,11 @@ interface ChatViewProps {
   initialAttachments?: Attachment[];
   /** وضع التطوير: يعرض معرّف النموذج الفعلي تحت الرد */
   devMode?: boolean;
+  /**
+   * مهارةٌ جاءت من صفحتها («استخدام في محادثة») — محلولةٌ على الخادم من السجلّ المدمج.
+   * محادثةٌ جديدة وحدها تتسلّمها؛ وتصير مسودةً مرئيّة لا رسالةً ولا تعليمات نظام.
+   */
+  skillRequest?: SkillChatRequest | null;
 }
 
 interface SSEEvent {
@@ -263,6 +270,7 @@ export function ChatView({
   greetingName,
   initialAttachments,
   devMode,
+  skillRequest,
 }: ChatViewProps) {
   const { t, locale } = useI18n();
   const router = useRouter();
@@ -419,9 +427,16 @@ export function ChatView({
    * إعادة تحميل الصفحة. المفتاح لكل محادثة، ويُمسح فور الإرسال الناجح.
    */
   const draftKey = `ysd-draft:${conversationId ?? "new"}`;
+  /**
+   * المسودة كما استُرجعت عند التحميل — تقرأها مهارةٌ آتية (المرحلة 3B) لتعرف إن كان للمستخدم
+   * نصٌّ لم يُرسل. لا تُقرأ من التخزين بعد ذلك: تأثير الحفظ أدناه يمحو المفتاح في أول نبضة
+   * (الحالة ما زالت فارغة) قبل أن تُطبَّق المسودة المسترجعة.
+   */
+  const restoredDraftRef = useRef("");
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(draftKey);
+      restoredDraftRef.current = saved ?? "";
       if (saved) setInput((cur) => (cur ? cur : saved));
     } catch {
       /* التخزين المحلي قد يكون محجوبًا */
@@ -455,6 +470,85 @@ export function ChatView({
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`;
   };
+
+  /**
+   * المرحلة 3B — مهارةٌ من صفحتها تصير مسودة.
+   *
+   * ★ مرّةً واحدة لكل وصول: تُطبَّق فقط ما دام الرابط الحاليّ يحمل المعرّف نفسه، ثم يُحذف
+   *   المعامل فورًا. فإعادة التحميل، والرجوع والتقدّم (الحمولة المخزّنة تحمل الطلب نفسه
+   *   والرابط بلا معامل)، وتكرار التأثير في الوضع الصارم — كلّها لا تُعيد الإضافة.
+   * ★ لا مساس بمسودةٍ قائمة: تُقرأ كما استرجعها تأثير الاسترجاع أعلاه (`restoredDraftRef`) —
+   *   الحالة لم تُطبَّق بعد في هذه النبضة، والتخزين يمحوه تأثير الحفظ؛ فإن وُجدت انتظر الاختيار.
+   * ★ بعد الإماهة وحدها — عرض الخادم لا يعرف المهارة، فلا اختلاف بين العرضين.
+   * ★ لا إرسال: النصّ يوضع في الحقل، والمستخدم يرسله أو يغيّره أو يحذفه بنفسه.
+   */
+  const [skillNotice, setSkillNotice] = useState<SkillDraftNoticeState | null>(null);
+  const pendingSkillRef = useRef<Extract<SkillChatRequest, { ok: true }> | null>(null);
+
+  const putSkillDraft = (instructions: string, mode: SkillDraftMode) => {
+    setInput((cur) => mergeSkillDraft(cur, instructions, mode));
+    requestAnimationFrame(() => {
+      autoGrow();
+      taRef.current?.focus();
+    });
+  };
+
+  useEffect(() => {
+    if (!skillRequest) return;
+    const url = new URL(window.location.href);
+    const param = url.searchParams.get(SKILL_CHAT_PARAM);
+    if (param === null) return;
+    if (skillRequest.ok && param !== skillRequest.id) return;
+    url.searchParams.delete(SKILL_CHAT_PARAM);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+
+    if (!skillRequest.ok) {
+      setSkillNotice({ kind: skillRequest.reason });
+      return;
+    }
+    const saved = restoredDraftRef.current;
+    const instructions = skillRequest.instructions[locale];
+    // المسودة تحمل التعليمات نفسها أصلًا (نقرةٌ ثانية على المهارة نفسها) — لا تكرار ولا سؤال
+    if (saved.includes(instructions)) {
+      setSkillNotice({ kind: "added", name: skillRequest.name });
+      return;
+    }
+    if (saved.trim()) {
+      pendingSkillRef.current = skillRequest;
+      setSkillNotice({ kind: "choice", name: skillRequest.name });
+      return;
+    }
+    putSkillDraft(instructions, "replace");
+    setSkillNotice({ kind: "added", name: skillRequest.name });
+    // الطلب يُقرأ عند الوصول وحده؛ وتغيّر اللغة بعده لا يُعيد إضافته
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillRequest]);
+
+  const resolveSkillChoice = (mode: SkillDraftMode | "cancel") => {
+    const pending = pendingSkillRef.current;
+    pendingSkillRef.current = null;
+    if (!pending || mode === "cancel") {
+      setSkillNotice(null);
+      return;
+    }
+    putSkillDraft(pending.instructions[locale], mode);
+    setSkillNotice({ kind: "added", name: pending.name });
+  };
+
+  // تذكير «أُضيفت» يصف المسودة — يزول حين تفرغ (أُرسلت أو حُذفت)
+  useEffect(() => {
+    if (skillNotice?.kind === "added" && !input.trim()) setSkillNotice(null);
+  }, [input, skillNotice]);
+
+  const skillDraftNotice = skillNotice ? (
+    <SkillDraftNotice
+      state={skillNotice}
+      onReplace={() => resolveSkillChoice("replace")}
+      onAppend={() => resolveSkillChoice("append")}
+      onCancel={() => resolveSkillChoice("cancel")}
+      onDismiss={() => setSkillNotice(null)}
+    />
+  ) : null;
 
   /** يرسل الطلب إلى /api/chat ويقرأ بث SSE */
   const streamRequest = useCallback(
@@ -1153,6 +1247,7 @@ export function ChatView({
               <p className="text-[14px] text-ink-faint">{t("welcomeSub")}</p>
             </div>
 
+            {skillDraftNotice}
             <ChatComposer
               input={input}
               setInput={setInput}
@@ -1472,6 +1567,7 @@ export function ChatView({
 
           <div className="px-4 md:px-6 pb-4 pt-1">
             <div className="max-w-[860px] mx-auto">
+              {skillDraftNotice}
               <ChatComposer
                 input={input}
                 setInput={setInput}

@@ -37,7 +37,9 @@ vi.mock("@/components/shell/app-shell", () => ({ MobileMenuButton: () => null })
 import { ExtensionsView } from "@/components/extensions/extensions-view";
 import { SkillDetail } from "@/components/extensions/skill-detail";
 import { I18nProvider, type Locale } from "@/lib/i18n";
+import { skillChatHref } from "@/lib/skills/chat-draft";
 import type { SkillManifest } from "@/lib/skills/manifest";
+import { evaluateSkill } from "@/lib/skills/permissions";
 import { builtInSkillRegistry } from "@/lib/skills/registry";
 
 // عرض الخادم الحقيقي (react-dom/server) — المشروع بلا @types/react-dom، فيُحمَّل بنوعٍ صريح لما نستعمله وحده
@@ -58,6 +60,9 @@ const DOCUMENT_QA = skill("document-qa");
 /** ما لا يجوز أن يعد به زرٌّ أو رابط ما دام التنفيذ لم يُبنَ */
 const PROMISE =
   /ثبّت|تثبيت|تفعيل|فعّل|تشغيل|شغّل|استخدام في المحادثة|قريبًا|install|enable|activate|run\b|execute|use in chat|coming soon/i;
+
+/** نصّ رابط «استخدام في محادثة» — المفتاح القائم نفسه الذي تستعمله المكتبة */
+const USE_IN_CHAT = { ar: "استخدام في محادثة", en: "Use in chat" } as const;
 
 const LABELS = {
   ar: { list: "قائمة المهارات", search: "بحث في المهارات", filter: "تصفية حسب التصنيف", copy: "نسخ التعليمات" },
@@ -304,7 +309,18 @@ describe("الصدق: لا وعد بما لم يُبنَ", () => {
         const only = screen.getAllByRole("button");
         expect(only, `${s.id}/${locale}`).toHaveLength(1);
         expect(only[0]?.textContent, `${s.id}/${locale}`).toBe(LABELS[locale].copy);
-        for (const el of [...only, ...screen.getAllByRole("link")]) {
+        /**
+         * المرحلة 3B: «استخدام في محادثة» فعلٌ يعمل — رابطٌ بالمعرّف وحده، للمهارة التصريحية
+         * وحدها. فيُستثنى من فحص الوعود بعد التحقّق منه، ويُمنع على المعطّلة منعًا صريحًا.
+         */
+        const useInChat = screen.queryAllByRole("link", { name: USE_IN_CHAT[locale] });
+        if (evaluateSkill(s).executable) {
+          expect(useInChat, `${s.id}/${locale}`).toHaveLength(1);
+          expect(useInChat[0]?.getAttribute("href"), `${s.id}/${locale}`).toBe(skillChatHref(s.id));
+        } else {
+          expect(useInChat, `${s.id}/${locale} must not offer chat`).toHaveLength(0);
+        }
+        for (const el of [...only, ...screen.getAllByRole("link").filter((a) => !useInChat.includes(a))]) {
           expect(nameOf(el), `${s.id}/${locale}: ${el.outerHTML.slice(0, 120)}`).not.toMatch(PROMISE);
         }
         expect(document.body.textContent, `${s.id}/${locale}`).not.toMatch(/قريبًا|coming soon/i);

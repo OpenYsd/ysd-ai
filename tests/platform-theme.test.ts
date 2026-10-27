@@ -178,6 +178,7 @@ describe("الهوية: خلفيات محايدة وتمييز غير بنفسج
       "components/chat/chat-view.tsx",
       "components/chat/chat-composer.tsx",
       "components/chat/attachment-card.tsx",
+      "components/chat/skill-draft-notice.tsx",
       "components/files/files-view.tsx",
       "components/files/project-files.tsx",
       "components/projects/projects-view.tsx",

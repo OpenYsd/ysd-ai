@@ -1327,6 +1327,28 @@ const dict = {
     en: "No external installs and no automatic execution: skills here are instructions you read and copy, and every capability that is not enabled stays off.",
   },
   skillsList: { ar: "قائمة المهارات", en: "Skills list" },
+  // ── المهارة في المحادثة (المرحلة 3B) — المسودة يراجعها المستخدم ويرسلها بنفسه ──
+  useSkillInChatHint: {
+    ar: "تُضاف التعليمات إلى مسودة محادثة جديدة لتراجعها وتعدّلها — لا يُرسل شيء حتى ترسله أنت.",
+    en: "The instructions go into a new chat draft for you to review and edit — nothing is sent until you send it.",
+  },
+  skillDraftAdded: { ar: "أُضيفت إلى المسودة تعليمات:", en: "Added to your draft: instructions for" },
+  skillDraftReview: { ar: "راجعها وعدّلها قبل الإرسال.", en: "Review and edit them before sending." },
+  skillDraftConflict: {
+    ar: "لديك مسودة لم تُرسل. ماذا نفعل بتعليمات:",
+    en: "You have an unsent draft. What should happen with the instructions for",
+  },
+  skillDraftChoice: { ar: "اختيار مكان تعليمات المهارة", en: "Choose where the skill instructions go" },
+  skillDraftReplace: { ar: "استبدال المسودة", en: "Replace draft" },
+  skillDraftAppend: { ar: "إضافتها بعد المسودة", en: "Add after draft" },
+  skillChatUnknown: {
+    ar: "تعذّر فتح المهارة في المحادثة: لا توجد مهارة بهذا المعرّف.",
+    en: "Couldn't open the skill in chat: no skill has this ID.",
+  },
+  skillChatUnsupported: {
+    ar: "هذه المهارة تعتمد على صلاحية غير مفعّلة، فلا تُضاف إلى المحادثة بعد — تعليماتها في صفحتها للقراءة والنسخ.",
+    en: "This skill depends on a capability that isn't enabled, so it can't be added to a chat yet — its instructions are on its page to read and copy.",
+  },
 } as const;
 
 export type DictKey = keyof typeof dict;

@@ -4,16 +4,18 @@
  * صفحة المهارة: ما تفعله، وصلاحياتها بحالتها الفعلية (تصريحيةٌ تعمل كتعليمات، أو
  * معطّلةٌ في هذا الإصدار)، وتعليماتها نصًّا يُقرأ ويُنسخ، وأمثلةٌ على طلبها.
  *
- * الفعل الوحيد هنا نسخ التعليمات إلى الحافظة — لا تفعيل ولا تشغيل ولا «استخدم في
- * المحادثة»: التنفيذ لم يُبنَ، والواجهة لا تعد بما لا تملك. والمهارة التي تعتمد على
- * صلاحيةٍ معطّلة تُعلن ذلك في موضعه بدل أن تبدو عاملة.
+ * فعلان لا أكثر: نسخ التعليمات إلى الحافظة، و(للمهارة التصريحية وحدها) نقلُها إلى مسودة
+ * محادثةٍ جديدة يراجعها المستخدم ويرسلها بنفسه (المرحلة 3B). لا تفعيل ولا تشغيل: التنفيذ لم
+ * يُبنَ، والواجهة لا تعد بما لا تملك. والمهارة التي تعتمد على صلاحيةٍ معطّلة لا رابطَ محادثةٍ
+ * لها، وتُعلن حدّها في موضعه بدل أن تبدو عاملة.
  */
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, Ban, Check, Copy } from "lucide-react";
+import { ArrowLeft, ArrowRight, Ban, Check, Copy, MessageSquarePlus } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { MobileMenuButton } from "@/components/shell/app-shell";
+import { skillChatHref } from "@/lib/skills/chat-draft";
 import type { SkillManifest } from "@/lib/skills/manifest";
 import { evaluateSkill } from "@/lib/skills/permissions";
 import { CATEGORY_ICON, CATEGORY_LABEL_KEY, capabilityLabel } from "./extensions-view";
@@ -91,6 +93,21 @@ export function SkillDetail({ skill }: { skill: SkillManifest }) {
               <span>{t("skillSourceBuiltIn")}</span>
             </div>
             <p className="text-[13px] leading-relaxed text-ink-dim">{skill.description[locale]}</p>
+
+            {/* المعرّف وحده في الرابط — والخادم يحلّه على السجلّ؛ لا جلبَ مسبق لصفحةٍ لم تُطلب */}
+            {report.executable && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1">
+                <Link
+                  href={skillChatHref(skill.id)}
+                  prefetch={false}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium text-white bg-primary hover:bg-primary-deep transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                >
+                  <MessageSquarePlus size={15} aria-hidden="true" />
+                  {t("useInChat")}
+                </Link>
+                <p className="text-[12px] text-ink-faint">{t("useSkillInChatHint")}</p>
+              </div>
+            )}
           </div>
 
           {/* الصلاحيات: حالةٌ نصّية لكلٍّ منها — لا مفاتيح تبديل لما لم يُبنَ */}
