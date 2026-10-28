@@ -10,12 +10,14 @@
  * ★ المعرّفات تُولَّد عند النقر، لا أثناء العرض.
  */
 
-import { useState } from "react";
-import { Eye, Pencil, Plus, Trash2 } from "lucide-react";
+import { useDeferredValue, useMemo, useState } from "react";
+import { Copy, Eye, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { useHydrated } from "@/lib/use-hydrated";
 import { MobileMenuButton } from "@/components/shell/app-shell";
-import { newStepId, newWorkflowId, type AutomationSkillOption, type Workflow } from "@/lib/automations/workflow";
+import { newStepId, newWorkflowId, validateWorkflow, type AutomationSkillOption, type Workflow, type WorkflowIssue } from "@/lib/automations/workflow";
+import { duplicateWorkflow, filterDrafts, sortDrafts, type DraftSort } from "@/lib/automations/manage";
+import { issueText } from "./labels";
 import { instantiateTemplate, type WorkflowTemplate } from "@/lib/automations/templates";
 import { useWorkflowDrafts, type SaveResult } from "./use-workflow-drafts";
 import { WorkflowEditor, draftFromWorkflow, emptyStep, type EditorDraft } from "./workflow-editor";
@@ -58,16 +60,25 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
   const drafts = useWorkflowDrafts(draftsScope);
   const [view, setView] = useState<View>({ kind: "list" });
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [notice, setNotice] = useState<"saved" | "deleted" | null>(null);
+  const [notice, setNotice] = useState<"saved" | "deleted" | "duplicated" | null>(null);
+  // المرحلة 4C: بحثٌ وترتيبٌ للعرض وحده — المسودات المحفوظة لا تُعاد كتابتها ولا ترتيبها
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<DraftSort>("created");
+  const [duplicateError, setDuplicateError] = useState<{ kind: "limit" } | { kind: "unavailable" } | { kind: "invalid"; issue: WorkflowIssue | null } | null>(null);
+  const query = useDeferredValue(search);
+  const knownSkillIds = useMemo(() => new Set(skills.map((s) => s.id)), [skills]);
+  const visible = useMemo(() => sortDrafts(filterDrafts(drafts.workflows, query), sort, locale), [drafts.workflows, query, sort, locale]);
 
   const startNew = () => {
     setNotice(null);
     setPendingDelete(null);
+    setDuplicateError(null);
     setView({ kind: "edit", isNew: true, draft: { id: newWorkflowId(), name: "", description: "", steps: [emptyStep("instruction", newStepId())] } });
   };
   const startEdit = (w: Workflow) => {
     setNotice(null);
     setPendingDelete(null);
+    setDuplicateError(null);
     setView({ kind: "edit", isNew: false, draft: draftFromWorkflow(w) });
   };
   /**
@@ -78,6 +89,7 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
   const startFromTemplate = (tpl: WorkflowTemplate) => {
     setNotice(null);
     setPendingDelete(null);
+    setDuplicateError(null);
     setView({ kind: "edit", isNew: true, origin: tpl.title[locale], draft: draftFromWorkflow(instantiateTemplate(tpl, locale)) });
   };
   const save = (w: Workflow): SaveResult => {
@@ -91,7 +103,27 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
   const confirmDelete = (id: string) => {
     drafts.remove(id);
     setPendingDelete(null);
+    setDuplicateError(null);
     setNotice("deleted");
+  };
+  /**
+   * المرحلة 4C — نسخةٌ بفعلٍ صريح: معرّفٌ جديد لا يطابق مسودةً قائمة ومعرّفات خطواتٍ جديدة، وتحقّقٌ بقواعد المسودة
+   * نفسها، وحفظٌ بالخطّاف نفسه (حدّ الخمسين، وذاكرة التبويب عند تعذّر التخزين). الأصل لا يُمسّ. والقائمة لا
+   * تُعرض أثناء التحرير، فلا تُمسّ تعديلاتٌ غير محفوظة.
+   */
+  const duplicate = (w: Workflow) => {
+    setNotice(null);
+    setPendingDelete(null);
+    setDuplicateError(null);
+    const copy = duplicateWorkflow(w, { existingIds: new Set(drafts.workflows.map((x) => x.id)), suffix: t("duplicateSuffix") });
+    const v = validateWorkflow(copy, knownSkillIds);
+    if (!v.ok) {
+      setDuplicateError({ kind: "invalid", issue: v.issues[0] ?? null });
+      return;
+    }
+    const result = drafts.save(v.workflow);
+    if (result === "saved") setNotice("duplicated");
+    else setDuplicateError(result === "limit" ? { kind: "limit" } : { kind: "unavailable" });
   };
 
   // مسودةٌ حُذفت من تبويبٍ آخر أثناء معاينتها: تعود الصفحة إلى القائمة بدل معاينة فراغ
@@ -162,7 +194,18 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
                 </button>
                 {notice && (
                   <p role="status" data-drafts-notice className="text-[12px] text-ink-dim">
-                    {t(notice === "saved" ? "workflowSaved" : "workflowDeleted")}
+                    {notice === "duplicated"
+                      ? t(drafts.notSaved ? "duplicateNotPersisted" : "workflowDuplicated")
+                      : t(notice === "saved" ? "workflowSaved" : "workflowDeleted")}
+                  </p>
+                )}
+                {duplicateError && (
+                  <p role="alert" data-duplicate-error className="text-[12px] text-red-400">
+                    {duplicateError.kind === "limit"
+                      ? t("issueDraftsLimit")
+                      : duplicateError.kind === "unavailable"
+                        ? t("automationsUnavailable")
+                        : `${t("duplicateInvalid")}${duplicateError.issue ? ` ${issueText(t, duplicateError.issue)}` : ""}`}
                   </p>
                 )}
               </div>
@@ -175,8 +218,39 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
                   {t("automationsEmpty")}
                 </p>
               ) : (
+                <div className="space-y-3">
+                  {/* المرحلة 4C: بحثٌ وترتيبٌ للعرض وحده — لا يمسّان المحفوظ ولا معرض القوالب */}
+                  <div className="flex flex-wrap items-center gap-2" data-drafts-toolbar>
+                    <h2 className="me-auto text-[14px] font-semibold text-ink-strong">{t("myWorkflowDrafts")}</h2>
+                    <label className="flex min-w-0 flex-1 basis-56 items-center gap-2 rounded-lg bg-raised/70 border border-line/70 px-3 py-1.5 focus-within:border-primary">
+                      <Search size={14} aria-hidden="true" className="text-ink-faint shrink-0" />
+                      <input
+                        type="search"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder={t("searchWorkflowDrafts")}
+                        aria-label={t("searchWorkflowDrafts")}
+                        className="bg-transparent w-full min-w-0 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none"
+                      />
+                    </label>
+                    <select
+                      value={sort}
+                      onChange={(e) => setSort(e.target.value as DraftSort)}
+                      aria-label={t("sortWorkflowDrafts")}
+                      className="rounded-lg bg-raised/70 border border-line/70 px-2.5 py-1.5 text-[12.5px] text-ink focus:outline-none focus:border-primary"
+                    >
+                      <option value="created">{t("sortDraftsCreated")}</option>
+                      <option value="name-asc">{t("sortDraftsNameAsc")}</option>
+                      <option value="name-desc">{t("sortDraftsNameDesc")}</option>
+                    </select>
+                  </div>
+                  {visible.length === 0 ? (
+                    <p role="status" className="py-10 text-center text-[13px] text-ink-dim">
+                      {t("draftsNoMatch")}
+                    </p>
+                  ) : (
                 <ul aria-label={t("workflowDraftsList")} className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {drafts.workflows.map((w) => (
+                  {visible.map((w) => (
                     <li key={w.id} className="flex flex-col gap-2.5 rounded-2xl border border-line/60 bg-surface/40 p-4">
                       <div className="flex flex-wrap items-start gap-2">
                         <h2 className="min-w-0 flex-1 text-[13.5px] font-medium text-ink-strong">
@@ -204,7 +278,7 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
                         </div>
                       ) : (
                         <div className="mt-auto flex flex-wrap items-center gap-1">
-                          <button type="button" className={ghostBtn} onClick={() => { setNotice(null); setView({ kind: "preview", id: w.id }); }} aria-label={`${t("previewWorkflow")}: ${w.name}`}>
+                          <button type="button" className={ghostBtn} onClick={() => { setNotice(null); setDuplicateError(null); setView({ kind: "preview", id: w.id }); }} aria-label={`${t("previewWorkflow")}: ${w.name}`}>
                             <Eye size={14} aria-hidden="true" />
                             {t("previewWorkflow")}
                           </button>
@@ -212,7 +286,11 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
                             <Pencil size={14} aria-hidden="true" />
                             {t("editWorkflow")}
                           </button>
-                          <button type="button" className={ghostBtn} onClick={() => { setNotice(null); setPendingDelete(w.id); }} aria-label={`${t("deleteWorkflow")}: ${w.name}`}>
+                          <button type="button" className={ghostBtn} onClick={() => duplicate(w)} aria-label={`${t("duplicateWorkflow")}: ${w.name}`}>
+                            <Copy size={14} aria-hidden="true" />
+                            {t("duplicateWorkflow")}
+                          </button>
+                          <button type="button" className={ghostBtn} onClick={() => { setNotice(null); setDuplicateError(null); setPendingDelete(w.id); }} aria-label={`${t("deleteWorkflow")}: ${w.name}`}>
                             <Trash2 size={14} aria-hidden="true" />
                             {t("deleteWorkflow")}
                           </button>
@@ -221,6 +299,8 @@ function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProp
                     </li>
                   ))}
                 </ul>
+                  )}
+                </div>
               )}
 
               {templates && (

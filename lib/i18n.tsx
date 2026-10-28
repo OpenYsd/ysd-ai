@@ -1476,6 +1476,22 @@ const dict = {
   discardChangesGroup: { ar: "تأكيد تجاهل التعديلات", en: "Confirm discarding changes" },
   discardChanges: { ar: "تجاهل التعديلات", en: "Discard changes" },
   keepEditing: { ar: "متابعة التعديل", en: "Keep editing" },
+  // ── إدارة المسودات (المرحلة 4C) — بحثٌ وترتيبٌ ونسخة؛ لا تشغيل ──
+  myWorkflowDrafts: { ar: "مسوداتي", en: "My drafts" },
+  searchWorkflowDrafts: { ar: "بحث في المسودات", en: "Search drafts" },
+  sortWorkflowDrafts: { ar: "ترتيب المسودات", en: "Sort drafts" },
+  sortDraftsCreated: { ar: "ترتيب الإنشاء", en: "Creation order" },
+  sortDraftsNameAsc: { ar: "الاسم تصاعديًّا", en: "Name, A to Z" },
+  sortDraftsNameDesc: { ar: "الاسم تنازليًّا", en: "Name, Z to A" },
+  draftsNoMatch: { ar: "لا مسودات تطابق البحث.", en: "No drafts match your search." },
+  duplicateWorkflow: { ar: "إنشاء نسخة", en: "Duplicate" },
+  duplicateSuffix: { ar: " (نسخة)", en: " (copy)" },
+  workflowDuplicated: { ar: "أُنشئت نسخة جديدة.", en: "A new copy was created." },
+  duplicateNotPersisted: {
+    ar: "أُنشئت النسخة لكنها لم تُحفظ في هذا المتصفح — تبقى حتى تُغلق التبويب أو تُعيد تحميله.",
+    en: "The copy was created but couldn't be saved in this browser — it lasts until you close or reload this tab.",
+  },
+  duplicateInvalid: { ar: "لم تُنشأ النسخة: صحّح المسودة الأصلية أولًا.", en: "The copy wasn't created: fix the original draft first." },
 } as const;
 
 export type DictKey = keyof typeof dict;
