@@ -11,7 +11,7 @@
 | Models | خادمية فقط | — | `lib/models/*` فوق `lib/ai/*` | `ModelDescriptor`، `PickerModel`، `orderForPicker` |
 | Code | مخطَّطة | — | — | — |
 | Extensions | متاحة (فهرس المهارات المدمجة) | `/extensions`, `/extensions/[id]` | `components/extensions/*`، `lib/skills/*` | بيان المهارة وسياسة الصلاحيات (`lib/skills/manifest.ts`، `lib/skills/permissions.ts`) — انظر `extensions-skills.md` |
-| Automations | مخطَّطة | — | — | — |
+| Automations | متاحة (مسودات سير عمل؛ لا تشغيل) | `/automations` | `components/automations/*`، `lib/automations/*` | مخطّط المسودة وحدود التنفيذ (`lib/automations/workflow.ts`) — انظر `automations.md` |
 
 ## القواعد
 

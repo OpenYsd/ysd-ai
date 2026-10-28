@@ -38,15 +38,15 @@ describe("سجلّ الوحدات", () => {
     }
   });
 
-  it("المخطَّط اليوم: الشيفرة والأتمتة وصفحة النماذج — لا تُعرض", () => {
+  it("المخطَّط اليوم: الشيفرة وصفحة النماذج — لا تُعرض", () => {
     const planned = PLATFORM_MODULES.filter((m) => m.status === "planned").map((m) => m.id).sort();
-    expect(planned).toEqual(["automations", "code", "models"]);
+    expect(planned).toEqual(["code", "models"]);
     const shown = [...railModules("primary"), ...railModules("secondary"), ...availableModules()].map((m) => m.id);
     for (const id of planned) expect(shown, id).not.toContain(id);
   });
 
-  it("شريط الأيقونات: المحادثة والمشاريع والمكتبة والإضافات أعلاه، والإعدادات أسفله", () => {
-    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library", "extensions"]);
+  it("شريط الأيقونات: المحادثة والمشاريع والمكتبة والإضافات والأتمتة أعلاه، والإعدادات أسفله", () => {
+    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library", "extensions", "automations"]);
     expect(railModules("secondary").map((m) => m.id)).toEqual(["settings"]);
   });
 
@@ -66,6 +66,8 @@ describe("سجلّ الوحدات", () => {
     expect(activeModuleId("/extensions")).toBe("extensions");
     expect(activeModuleId("/extensions/arabic-proofreader")).toBe("extensions");
     expect(activeModuleId("/extensionsx")).toBeNull();
+    expect(activeModuleId("/automations")).toBe("automations");
+    expect(activeModuleId("/automationsx")).toBeNull();
     expect(activeModuleId("/settings")).toBe("settings");
     expect(activeModuleId("/account")).toBeNull();
     expect(activeModuleId("/chatter")).toBeNull();

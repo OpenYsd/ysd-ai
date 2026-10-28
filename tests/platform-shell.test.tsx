@@ -67,8 +67,9 @@ describe("شريط الأيقونات", () => {
     expect(rail.getByRole("link", { name: "المشاريع" }).getAttribute("href")).toBe("/projects");
     expect(rail.getByRole("link", { name: "المكتبة" }).getAttribute("href")).toBe("/files");
     expect(rail.getByRole("link", { name: "الإضافات" }).getAttribute("href")).toBe("/extensions");
+    expect(rail.getByRole("link", { name: "الأتمتة" }).getAttribute("href")).toBe("/automations");
     expect(rail.getByRole("link", { name: "الإعدادات" }).getAttribute("href")).toBe("/settings");
-    for (const label of ["الشيفرة", "الأتمتة", "النماذج", "العمل"]) {
+    for (const label of ["الشيفرة", "النماذج", "العمل"]) {
       expect(rail.queryByRole("link", { name: label }), label).toBeNull();
     }
     // أيقونات فقط: لا تسميات مرئية تزاحم الشريط
@@ -193,6 +194,14 @@ describe("اللوحة تتبع الوحدة", () => {
       cleanup();
     }
   });
+
+  it("الأتمتة (المرحلة 4A): صفحةٌ بعرضها — لا لوحة، والوحدة النشطة معلَنة", () => {
+    pathname = "/automations";
+    renderShell();
+    expect(panel()).toBeNull();
+    expect(within(nav()).queryByRole("button", { name: "طي الشريط الجانبي" })).toBeNull();
+    expect(within(nav()).getByRole("link", { name: "الأتمتة" }).getAttribute("aria-current")).toBe("page");
+  });
 });
 
 describe("البحث السريع", () => {
@@ -232,7 +241,7 @@ describe("البحث السريع", () => {
     renderShell();
     fireEvent.click(within(panel()!).getByRole("button", { name: "بحث سريع" }));
     const box = within(screen.getByRole("dialog")).getByRole("combobox");
-    fireEvent.change(box, { target: { value: "الأتمتة" } });
+    fireEvent.change(box, { target: { value: "الشيفرة" } });
     expect(screen.getByText("لا نتائج")).toBeTruthy();
   });
 });
@@ -250,7 +259,7 @@ describe("الإتاحة والاتجاه", () => {
   it("الإنجليزية: نفس البنية بأسماء إنجليزية", () => {
     renderShell({ locale: "en" });
     const n = within(screen.getByRole("navigation", { name: "Main navigation" }));
-    for (const label of ["Chat", "Projects", "Library", "Extensions", "Settings"]) expect(n.getByRole("link", { name: label })).toBeTruthy();
+    for (const label of ["Chat", "Projects", "Library", "Extensions", "Automations", "Settings"]) expect(n.getByRole("link", { name: label })).toBeTruthy();
     expect(n.getByRole("button", { name: "Account menu" })).toBeTruthy();
   });
 

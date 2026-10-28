@@ -61,6 +61,7 @@ export const PROTECTED_PREFIXES: readonly string[] = [
   "/reset-password",
   "/browser",
   "/extensions",
+  "/automations",
 ];
 
 /**

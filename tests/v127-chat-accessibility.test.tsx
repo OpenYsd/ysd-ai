@@ -135,6 +135,10 @@ const CORE_SURFACES = [
   "components/extensions/extensions-view.tsx",
   "components/extensions/skill-detail.tsx",
   "components/extensions/favorite-toggle.tsx",
+  // المرحلة 4A: مساحة الأتمتة ومحرّرها ومعاينتها
+  "components/automations/automations-view.tsx",
+  "components/automations/workflow-editor.tsx",
+  "components/automations/workflow-preview.tsx",
 ];
 
 describe("★ (١) كل زرٍّ له اسمٌ مسموع", () => {

@@ -58,7 +58,8 @@ export const PLATFORM_MODULES: readonly PlatformModule[] = [
   { id: "code", labelKey: "moduleCode", status: "planned", href: null, routes: [], placement: "primary" },
   // Extensions = فهرس المهارات المدمجة (lib/skills) — تصفّحٌ وقراءة؛ لا تثبيت ولا تنفيذ بعد
   { id: "extensions", labelKey: "moduleExtensions", status: "available", href: "/extensions", routes: ["/extensions"], placement: "primary" },
-  { id: "automations", labelKey: "moduleAutomations", status: "planned", href: null, routes: [], placement: "primary" },
+  // Automations = مسودات سير عمل للتصميم والمعاينة (lib/automations) — لا تشغيل ولا جدولة بعد
+  { id: "automations", labelKey: "moduleAutomations", status: "available", href: "/automations", routes: ["/automations"], placement: "primary" },
   // Models: بوابة النماذج موجودة خادميًّا (lib/models) ولا صفحة مستخدم لها بعد
   { id: "models", labelKey: "moduleModels", status: "planned", href: null, routes: [], placement: "none" },
   { id: "settings", labelKey: "settings", status: "available", href: "/settings", routes: ["/settings"], placement: "secondary" },

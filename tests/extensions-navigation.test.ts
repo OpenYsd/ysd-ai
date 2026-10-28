@@ -38,8 +38,8 @@ describe("سجلّ الوحدات: الإضافات متاحة", () => {
     });
   });
 
-  it("ترتيب الشريط الأعلى: المحادثة ثم المشاريع ثم المكتبة ثم الإضافات — والإعدادات أسفله وحدها", () => {
-    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library", "extensions"]);
+  it("ترتيب الشريط الأعلى: المحادثة ثم المشاريع ثم المكتبة ثم الإضافات (ثم الأتمتة، المرحلة 4A) — والإعدادات أسفله وحدها", () => {
+    expect(railModules("primary").map((m) => m.id)).toEqual(["chat", "projects", "library", "extensions", "automations"]);
     expect(railModules("secondary").map((m) => m.id)).toEqual(["settings"]);
   });
 

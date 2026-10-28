@@ -36,6 +36,7 @@ import {
   SquarePen,
   Trash2,
   UserRound,
+  Workflow,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -72,6 +73,7 @@ const MODULE_ICONS: Partial<Record<PlatformModuleId, LucideIcon>> = {
   projects: FolderKanban,
   library: Library,
   extensions: Puzzle,
+  automations: Workflow,
   settings: Settings,
 };
 
@@ -80,8 +82,8 @@ type PanelKind = "conversations" | "settings" | null;
 
 function panelFor(id: PlatformModuleId | null): PanelKind {
   if (id === "settings") return "settings";
-  // المكتبة والإضافات: فهارس بعرض الصفحة — لا لوحة محادثات تزاحمها
-  if (id === "library" || id === "extensions") return null;
+  // المكتبة والإضافات والأتمتة: صفحاتٌ بعرضها — لا لوحة محادثات تزاحمها
+  if (id === "library" || id === "extensions" || id === "automations") return null;
   return "conversations";
 }
 
