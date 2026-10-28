@@ -207,6 +207,8 @@ describe("الإنشاء والتعديل والحذف", () => {
     fireEvent.click(btn("تعديل: أ"));
     fireEvent.change(screen.getByLabelText(L.ar.name), { target: { value: "أ معدّلة" } });
     fireEvent.click(btn(L.ar.cancel));
+    // المرحلة 4B: تعديلٌ لم يُحفظ لا يُتجاهل بصمت — تجاهلٌ صريح
+    fireEvent.click(btn("تجاهل التعديلات"));
     expect(stored(scope)!.workflows.map((w) => w.name)).toEqual(["أ", "ب"]);
     fireEvent.click(btn("تعديل: أ"));
     expect((screen.getByLabelText(L.ar.name) as HTMLInputElement).value).toBe("أ");

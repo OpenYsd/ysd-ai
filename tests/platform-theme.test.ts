@@ -189,6 +189,8 @@ describe("الهوية: خلفيات محايدة وتمييز غير بنفسج
       "components/automations/automations-view.tsx",
       "components/automations/workflow-editor.tsx",
       "components/automations/workflow-preview.tsx",
+      "components/automations/template-gallery.tsx",
+      "components/automations/template-preview.tsx",
       "components/account/account-view.tsx",
       "components/usage/usage-view.tsx",
       "components/settings/settings-form.tsx",

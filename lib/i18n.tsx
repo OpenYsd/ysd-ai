@@ -1453,6 +1453,29 @@ const dict = {
     en: "No built-in skill has this ID.",
   },
   backToWorkflowDrafts: { ar: "العودة إلى المسودات", en: "Back to drafts" },
+  // ── قوالب سير العمل (المرحلة 4B) — بياناتٌ مدمجة تُنسخ إلى مسودة؛ لا تشغيل ──
+  workflowTemplates: { ar: "قوالب جاهزة", en: "Ready-made templates" },
+  workflowTemplatesIntro: {
+    ar: "ابدأ من قالبٍ مدمج: عاين خطواته، ثم أنشئ منه مسودة تعدّلها وتحفظها بنفسك. القوالب بياناتٌ لا برامج، ولا يُنفَّذ منها شيء.",
+    en: "Start from a built-in template: preview its steps, then create a draft you edit and save yourself. Templates are data, not programs, and nothing in them is executed.",
+  },
+  workflowTemplatesList: { ar: "القوالب", en: "Templates" },
+  workflowTemplatesEmpty: { ar: "لا قوالب متاحة حاليًّا.", en: "No templates are available right now." },
+  workflowTemplateBadge: { ar: "قالب · مسودة فقط", en: "Template · draft only" },
+  viewTemplateSteps: { ar: "عرض الخطوات", en: "View steps" },
+  useWorkflowTemplate: { ar: "استخدام القالب", en: "Use template" },
+  templatePreviewNote: {
+    ar: "معاينة قالبٍ للقراءة فقط: لا يُحفظ شيء ولا يُنفَّذ. «استخدام القالب» يفتح مسودةً جديدة في المحرّر، ولا تُحفظ إلا حين تحفظها بنفسك.",
+    en: "Read-only template preview: nothing is saved or executed. “Use template” opens a new draft in the editor, saved only when you save it yourself.",
+  },
+  draftFromTemplate: { ar: "من القالب", en: "From template" },
+  templateCategoryLearning: { ar: "التعلّم", en: "Learning" },
+  templateCategorySoftware: { ar: "البرمجيات", en: "Software" },
+  templateCategoryResearch: { ar: "البحث العلمي", en: "Scientific research" },
+  discardChangesPrompt: { ar: "لديك تعديلات غير محفوظة. هل تتجاهلها؟", en: "You have unsaved changes. Discard them?" },
+  discardChangesGroup: { ar: "تأكيد تجاهل التعديلات", en: "Confirm discarding changes" },
+  discardChanges: { ar: "تجاهل التعديلات", en: "Discard changes" },
+  keepEditing: { ar: "متابعة التعديل", en: "Keep editing" },
 } as const;
 
 export type DictKey = keyof typeof dict;

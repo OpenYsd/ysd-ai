@@ -286,7 +286,8 @@ describe("حدود الشيفرة", () => {
 
   it("الواجهة: لا شبكة ولا تنفيذ ولا مؤقّتات ولا HTML خام ولا تنقّل برمجي ولا ساعة", () => {
     expect(UI.sort()).toEqual(
-      ["automations-view.tsx", "labels.ts", "use-workflow-drafts.ts", "workflow-editor.tsx", "workflow-preview.tsx"].map((f) => `components/automations/${f}`).sort(),
+      // المرحلة 4B: معرض القوالب ومعاينتها تحت الحرّاس نفسها
+      ["automations-view.tsx", "labels.ts", "template-gallery.tsx", "template-preview.tsx", "use-workflow-drafts.ts", "workflow-editor.tsx", "workflow-preview.tsx"].map((f) => `components/automations/${f}`).sort(),
     );
     for (const f of UI) {
       const code = stripComments(read(f));

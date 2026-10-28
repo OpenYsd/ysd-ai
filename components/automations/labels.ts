@@ -6,6 +6,14 @@
 import type { DictKey, useI18n } from "@/lib/i18n";
 import type { CapabilitySpec } from "@/lib/skills/permissions";
 import type { WorkflowIssue, WorkflowIssueCode, WorkflowStepKind } from "@/lib/automations/workflow";
+import type { TemplateCategory } from "@/lib/automations/templates";
+
+/** تصنيف القالب (المرحلة 4B) */
+export const TEMPLATE_CATEGORY_LABEL = {
+  learning: "templateCategoryLearning",
+  software: "templateCategorySoftware",
+  research: "templateCategoryResearch",
+} as const satisfies Record<TemplateCategory, DictKey>;
 
 export const STEP_KIND_LABEL = {
   instruction: "stepKindInstruction",

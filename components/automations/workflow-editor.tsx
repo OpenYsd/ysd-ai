@@ -80,12 +80,15 @@ const ghostBtn =
 export function WorkflowEditor({
   initial,
   isNew,
+  origin,
   skills,
   onSave,
   onCancel,
 }: {
   initial: EditorDraft;
   isNew: boolean;
+  /** عنوان القالب الذي نُسخت منه المسودة (المرحلة 4B) — للعرض وحده */
+  origin?: string;
   skills: readonly AutomationSkillOption[];
   onSave: (workflow: Workflow) => SaveResult;
   onCancel: () => void;
@@ -94,7 +97,20 @@ export function WorkflowEditor({
   const [draft, setDraft] = useState<EditorDraft>(initial);
   const [issues, setIssues] = useState<readonly WorkflowIssue[] | null>(null);
   const [saveError, setSaveError] = useState<Exclude<SaveResult, "saved"> | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const summaryRef = useRef<HTMLDivElement>(null);
+  const keepEditingRef = useRef<HTMLButtonElement>(null);
+  // تعديلاتٌ لم تُحفظ: الإلغاء لا يتجاهلها بصمت — يطلب اختيارًا صريحًا (المرحلة 4B)
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]);
+
+  useEffect(() => {
+    if (confirmDiscard) keepEditingRef.current?.focus();
+  }, [confirmDiscard]);
+
+  const requestCancel = () => {
+    if (dirty) setConfirmDiscard(true);
+    else onCancel();
+  };
   const base = useId();
   const known = useMemo(() => new Set(skills.map((s) => s.id)), [skills]);
   const executable = useMemo(() => new Map(skills.map((s) => [s.id, evaluateSkill(s).executable])), [skills]);
@@ -142,6 +158,11 @@ export function WorkflowEditor({
       <h2 id={`${base}-title`} className="text-[15px] font-semibold text-ink-strong">
         {isNew ? t("workflowEditorNew") : t("workflowEditorEdit")}
       </h2>
+      {origin && (
+        <p className="text-[12px] text-ink-dim" data-editor-origin>
+          {t("draftFromTemplate")}: <bdi>{origin}</bdi>
+        </p>
+      )}
 
       {((issues && issues.length > 0) || saveError) && (
         <div
@@ -323,10 +344,26 @@ export function WorkflowEditor({
         >
           {t("saveWorkflowDraft")}
         </button>
-        <button type="button" className={ghostBtn} onClick={onCancel}>
+        <button type="button" className={ghostBtn} onClick={requestCancel}>
           {t("cancel")}
         </button>
       </div>
+      {confirmDiscard && (
+        <div
+          role="group"
+          aria-label={t("discardChangesGroup")}
+          data-discard-confirm
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2"
+        >
+          <p className="text-[12.5px] text-ink">{t("discardChangesPrompt")}</p>
+          <button type="button" className={ghostBtn} onClick={onCancel}>
+            {t("discardChanges")}
+          </button>
+          <button ref={keepEditingRef} type="button" className={ghostBtn} onClick={() => setConfirmDiscard(false)}>
+            {t("keepEditing")}
+          </button>
+        </div>
+      )}
     </form>
   );
 }

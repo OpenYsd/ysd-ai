@@ -139,6 +139,9 @@ const CORE_SURFACES = [
   "components/automations/automations-view.tsx",
   "components/automations/workflow-editor.tsx",
   "components/automations/workflow-preview.tsx",
+  // المرحلة 4B: معرض القوالب ومعاينتها
+  "components/automations/template-gallery.tsx",
+  "components/automations/template-preview.tsx",
 ];
 
 describe("★ (١) كل زرٍّ له اسمٌ مسموع", () => {

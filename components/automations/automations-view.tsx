@@ -16,11 +16,18 @@ import { useI18n } from "@/lib/i18n";
 import { useHydrated } from "@/lib/use-hydrated";
 import { MobileMenuButton } from "@/components/shell/app-shell";
 import { newStepId, newWorkflowId, type AutomationSkillOption, type Workflow } from "@/lib/automations/workflow";
+import { instantiateTemplate, type WorkflowTemplate } from "@/lib/automations/templates";
 import { useWorkflowDrafts, type SaveResult } from "./use-workflow-drafts";
 import { WorkflowEditor, draftFromWorkflow, emptyStep, type EditorDraft } from "./workflow-editor";
 import { WorkflowPreview } from "./workflow-preview";
+import { TemplateGallery } from "./template-gallery";
+import { TemplatePreview } from "./template-preview";
 
-type View = { kind: "list" } | { kind: "edit"; draft: EditorDraft; isNew: boolean } | { kind: "preview"; id: string };
+type View =
+  | { kind: "list" }
+  | { kind: "edit"; draft: EditorDraft; isNew: boolean; origin?: string }
+  | { kind: "preview"; id: string }
+  | { kind: "template"; id: string };
 
 const ghostBtn =
   "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12.5px] text-ink hover:bg-raised transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60";
@@ -31,6 +38,8 @@ interface AutomationsViewProps {
   skills: readonly AutomationSkillOption[];
   /** نطاق مسودات المستخدم من الخادم — غيابه يعني لا مسودات ولا إنشاء */
   draftsScope?: string | null;
+  /** قوالب سير العمل المدمجة (المرحلة 4B) — غيابها يعني لا معرض قوالب */
+  templates?: readonly WorkflowTemplate[];
 }
 
 /**
@@ -43,8 +52,8 @@ export function AutomationsView(props: AutomationsViewProps) {
   return <AutomationsBody key={props.draftsScope ?? ""} {...props} />;
 }
 
-function AutomationsBody({ skills, draftsScope }: AutomationsViewProps) {
-  const { t } = useI18n();
+function AutomationsBody({ skills, draftsScope, templates }: AutomationsViewProps) {
+  const { t, locale } = useI18n();
   const hydrated = useHydrated();
   const drafts = useWorkflowDrafts(draftsScope);
   const [view, setView] = useState<View>({ kind: "list" });
@@ -60,6 +69,16 @@ function AutomationsBody({ skills, draftsScope }: AutomationsViewProps) {
     setNotice(null);
     setPendingDelete(null);
     setView({ kind: "edit", isNew: false, draft: draftFromWorkflow(w) });
+  };
+  /**
+   * القالب يُنسخ إلى مسودةٍ جديدة بلغة الواجهة، بمعرّفاتٍ جديدة من المولِّد المعتمد في كل مرّة، وتُفتح في
+   * المحرّر نفسه. لا حفظ هنا: المسودة لا تُكتب حتى يحفظها المستخدم وتنجح في التحقّق. ولا محرّر مفتوح حين
+   * يُختار قالب — المعرض لا يُعرض أثناء التحرير، فلا تُستبدل تعديلاتٌ قائمة.
+   */
+  const startFromTemplate = (tpl: WorkflowTemplate) => {
+    setNotice(null);
+    setPendingDelete(null);
+    setView({ kind: "edit", isNew: true, origin: tpl.title[locale], draft: draftFromWorkflow(instantiateTemplate(tpl, locale)) });
   };
   const save = (w: Workflow): SaveResult => {
     const result = drafts.save(w);
@@ -77,7 +96,8 @@ function AutomationsBody({ skills, draftsScope }: AutomationsViewProps) {
 
   // مسودةٌ حُذفت من تبويبٍ آخر أثناء معاينتها: تعود الصفحة إلى القائمة بدل معاينة فراغ
   const previewed = view.kind === "preview" ? (drafts.workflows.find((w) => w.id === view.id) ?? null) : null;
-  const showList = view.kind === "list" || (view.kind === "preview" && !previewed);
+  const previewedTemplate = view.kind === "template" ? ((templates ?? []).find((x) => x.id === view.id) ?? null) : null;
+  const showList = view.kind === "list" || (view.kind === "preview" && !previewed) || (view.kind === "template" && !previewedTemplate);
 
   return (
     <>
@@ -110,12 +130,27 @@ function AutomationsBody({ skills, draftsScope }: AutomationsViewProps) {
               {t("automationsUnavailable")}
             </p>
           ) : view.kind === "edit" ? (
-            <WorkflowEditor key={view.draft.id} initial={view.draft} isNew={view.isNew} skills={skills} onSave={save} onCancel={() => setView({ kind: "list" })} />
+            <WorkflowEditor
+              key={view.draft.id}
+              initial={view.draft}
+              isNew={view.isNew}
+              origin={view.origin}
+              skills={skills}
+              onSave={save}
+              onCancel={() => setView({ kind: "list" })}
+            />
           ) : previewed ? (
             <WorkflowPreview
               workflow={previewed}
               skills={skills}
               onEdit={() => startEdit(previewed)}
+              onBack={() => setView({ kind: "list" })}
+            />
+          ) : previewedTemplate ? (
+            <TemplatePreview
+              template={previewedTemplate}
+              skills={skills}
+              onUse={() => startFromTemplate(previewedTemplate)}
               onBack={() => setView({ kind: "list" })}
             />
           ) : showList ? (
@@ -186,6 +221,19 @@ function AutomationsBody({ skills, draftsScope }: AutomationsViewProps) {
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {templates && (
+                <TemplateGallery
+                  templates={templates}
+                  disabled={!hydrated}
+                  onPreview={(id) => {
+                    setNotice(null);
+                    setPendingDelete(null);
+                    setView({ kind: "template", id });
+                  }}
+                  onUse={startFromTemplate}
+                />
               )}
             </div>
           ) : null}
