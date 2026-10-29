@@ -71,6 +71,22 @@ const nextConfig = {
   outputFileTracingRoot: import.meta.dirname,
   // نموذج Embeddings المحلي — لا يُحزَّم مع webpack (native/onnx)
   serverExternalPackages: ["@huggingface/transformers", "onnxruntime-node"],
+  /**
+   * مزوّدات GPU لـ onnxruntime-node لا تدخل standalone.
+   *
+   * `npm ci` على linux/x64 يُنزّل من NuGet مكتباتِ CUDA وTensorRT
+   * (`libonnxruntime_providers_{cuda,tensorrt,shared}.so`، نحو 302MB) — وليست
+   * من حزمة npm نفسها. ومتتبّعُ الملفات يضمّ كلَّ `*.so` في الحزمة متى ضمّ
+   * ثنائيَّها `.node`، فكانت تُنسخ إلى standalone ثم إلى الصورة وتُصدَّر في كل
+   * بناء — وهو وقتٌ في بناءٍ له مهلة (Staging: DeadlineExceeded بعد ~300ث).
+   *
+   * والتشغيل على المعالج وحده: F2LLM يطلب `executionProviders: ["cpu"]` صراحةً،
+   * وtransformers.js على Node افتراضه `cpu`. ومكتبةُ المعالج `libonnxruntime.so.1`
+   * من حزمة npm نفسها، فلا يطالها النمط.
+   */
+  outputFileTracingExcludes: {
+    "*": ["node_modules/onnxruntime-node/bin/napi-v6/linux/x64/libonnxruntime_providers_*.so"],
+  },
   experimental: {
     // مع وجود middleware يخزّن Next جسم الطلب بحد افتراضي 10MB —
     // نرفعه ليتسع لسقف مزود التخزين (50MB) + هامش multipart

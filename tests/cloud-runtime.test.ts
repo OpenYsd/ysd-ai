@@ -223,7 +223,7 @@ describe("★ Dockerfile — PORT والنموذج والأسرار", () => {
   });
 
   it("★ الكاش مملوك لمستخدم node غير الجذر", () => {
-    expect(DOCKERFILE).toMatch(/COPY --from=builder --chown=node:node \/app\/\.model-cache/);
+    expect(DOCKERFILE).toMatch(/COPY --from=embeddings --chown=node:node \/app\/\.model-cache/);
     expect(DOCKERFILE).toContain("USER node");
   });
 

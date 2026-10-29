@@ -35,6 +35,26 @@ COPY package.json package-lock.json ./
 # ci = تثبيت حتمي مطابق للقفل (بما فيه devDependencies — يحتاجها البناء)
 RUN npm ci --no-audit --no-fund
 
+# ---------- 1ب) خبز نموذج Embeddings في الصورة ----------
+# نظام ملفات الحاويات السحابية زائل: بدون هذا يُنزَّل النموذج (~112MB) عند أول
+# طلب RAG بعد كل نشر — تأخير ~18ث على مستخدم حقيقي واعتماد على الإنترنت في
+# مسار حيّ. السكربت يفشل بصوت عالٍ (تحقّق وظيفي + حجم) فلا تُبنى صورة ناقصة.
+#
+# ★ مرحلةٌ مستقلّة، لا خطوةٌ في آخر مرحلة البناء.
+#
+#   مدخلاتُ التنزيل الاعتمادياتُ والسكربتُ وحدهما — لا شيفرةُ التطبيق. وكان يأتي
+#   بعد `COPY . .` فيُبطل كلُّ تعديلٍ في الشيفرة طبقتَه: يُنزَّل النموذجُ نفسُه
+#   ويُفحص من جديد في كل بناء، متسلسلًا بعد `npm run build`. وهنا يبقى مخبّأً ما
+#   لم تتغيّر الاعتماديات أو السكربت، ويجري بالتوازي مع البناء حين لا يكون.
+#   (Staging: فشل بناءان بـ DeadlineExceeded بعد ~300ث من بدء البناء.)
+#   وتبدأ من `deps` نفسها: node_modules وpackage.json حاضرة بلا نسخ (~1.1GB).
+FROM deps AS embeddings
+COPY scripts/embeddings-prefetch.mjs ./scripts/
+ENV YSD_MODEL_CACHE=/app/.model-cache
+RUN npm run embeddings:prefetch \
+    && test -d /app/.model-cache \
+    && echo "حجم كاش النموذج:" && du -sh /app/.model-cache
+
 # ---------- 2) البناء ----------
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
@@ -123,15 +143,6 @@ RUN test -f /app/.next/standalone/server.js || (echo "خطأ: لا يوجد .nex
 RUN test -d /app/.next/standalone/node_modules/onnxruntime-node \
     || (echo "تحذير: onnxruntime-node غير متتبَّع في standalone — سيُنسخ يدويًا")
 
-# ---------- 2ب) خبز نموذج Embeddings في الصورة ----------
-# نظام ملفات الحاويات السحابية زائل: بدون هذا يُنزَّل النموذج (~112MB) عند أول
-# طلب RAG بعد كل نشر — تأخير ~18ث على مستخدم حقيقي واعتماد على الإنترنت في
-# مسار حيّ. السكربت يفشل بصوت عالٍ (تحقّق وظيفي + حجم) فلا تُبنى صورة ناقصة.
-ENV YSD_MODEL_CACHE=/app/.model-cache
-RUN npm run embeddings:prefetch \
-    && test -d /app/.model-cache \
-    && echo "حجم كاش النموذج:" && du -sh /app/.model-cache
-
 # ---------- 2ج) نموذج F2LLM المثبَّت (اختياري — يُخبز فقط عند F2LLM_BAKE=1) ----------
 # ★ الافتراضي F2LLM_BAKE=0: لا يُنسخ شيء والصورة كما كانت (مجلّد فارغ). فلا يزيد حجم صورة الإنتاج ولا
 #   تتغيّر بصمتها الوظيفية بسبب هذا الترحيل.
@@ -173,8 +184,8 @@ COPY --from=builder --chown=node:node /app/.next/standalone ./
 # الأصول الساكنة لا يتتبّعها standalone — تُنسخ صراحةً
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/public ./public
-# نموذج Embeddings المخبوز — مقروء لمستخدم node غير الجذر
-COPY --from=builder --chown=node:node /app/.model-cache ./.model-cache
+# نموذج Embeddings المخبوز (مرحلة 1ب) — مقروء لمستخدم node غير الجذر
+COPY --from=embeddings --chown=node:node /app/.model-cache ./.model-cache
 
 # نموذج F2LLM المثبَّت (فارغ ما لم يُبنَ بـ F2LLM_BAKE=1) — لا يُحمَّل إلا إن اشتعل عَلَم staging
 COPY --from=f2llm-model --chown=node:node /out ./.f2llm-model
